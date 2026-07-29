@@ -62,25 +62,42 @@ export function resolveCheckOutcome(
   diceType: string,
   total: number,
   targetValue?: number,
+  /** CoC：完整技能％（用於大失敗門檻與成功等級）；缺省則用 targetValue */
+  fullSkillValue?: number,
 ): string {
   if (targetValue == null) return "ROLLED";
 
   const isD100 = diceType.toLowerCase().includes("100");
   if (isD100) {
-    if (total === 1) return "CRITICAL_SUCCESS";
-    if (total >= 96) return "FUMBLE";
-    if (total <= Math.floor(targetValue / 5)) return "EXTREME_SUCCESS";
-    if (total <= Math.floor(targetValue / 2)) return "HARD_SUCCESS";
-    if (total <= targetValue) return "SUCCESS";
-    return "FAILURE";
+    return resolveCocPercentileOutcome(
+      total,
+      fullSkillValue ?? targetValue,
+      targetValue,
+    );
   }
 
-  // d20: meet or beat
-  if (total === 20 + (parseDiceType(diceType).modifier || 0) && parseDiceType(diceType).sides === 20) {
-    // natural 20 approximated when total rolls include 20 - handled loosely
-  }
   if (total >= targetValue) return "SUCCESS";
   return "FAILURE";
+}
+
+/**
+ * CoC 7e 百分骰：
+ * - 成功條件：roll ≤ 本次門檻（一般=技能，困難=⌊技能/2⌋，極限=⌊技能/5⌋）
+ * - 成功品質仍以完整技能切分：≤⌊技能/5⌋ 極限成功、≤⌊技能/2⌋ 困難成功
+ * - 大成功 01；大失敗：技能&lt;50 → 96–100，技能≥50 → 僅 100
+ */
+export function resolveCocPercentileOutcome(
+  total: number,
+  skill: number,
+  threshold: number,
+): string {
+  if (total === 1) return "CRITICAL_SUCCESS";
+  const fumbleFloor = skill >= 50 ? 100 : 96;
+  if (total >= fumbleFloor) return "FUMBLE";
+  if (total > threshold) return "FAILURE";
+  if (total <= Math.floor(skill / 5)) return "EXTREME_SUCCESS";
+  if (total <= Math.floor(skill / 2)) return "HARD_SUCCESS";
+  return "SUCCESS";
 }
 
 export function resolveD20Outcome(

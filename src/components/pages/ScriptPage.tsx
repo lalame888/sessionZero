@@ -10,7 +10,7 @@ import { HoverTooltip } from "@/components/ui/hover-tooltip";
 import { Modal } from "@/components/ui/modal";
 import { sendPlayerAction } from "@/lib/pedelec/createGameSession";
 import { getActiveSession } from "@/lib/pedelec/createGameSession";
-import { AUTO_GENERATE_COC_SCRIPT_PROMPT } from "@/prompts/gmDirectives";
+import { buildAutoGenerateCocScriptPrompt } from "@/prompts/gmDirectives";
 import { useGameStore } from "@/store/useGameStore";
 import {
   CREATION_MODE_HINTS,
@@ -18,16 +18,24 @@ import {
   normalizeCreationMode,
   resolveSkillBaseValue,
 } from "@/engine/creation";
-import type { CreationMode } from "@/types/game";
+import {
+  SCENARIO_SCALE_HINTS,
+  SCENARIO_SCALE_LABELS,
+  normalizeScenarioScale,
+} from "@/engine/scenarioScale";
+import type { CreationMode, ScenarioScale } from "@/types/game";
 
 export function ScriptPage({
   composerDisabled,
   onRegenerate,
+  onRetry,
 }: {
   composerDisabled: boolean;
   onRegenerate?: () => void;
+  onRetry?: () => void | Promise<void>;
 }) {
   const script = useGameStore((s) => s.script);
+  const setScenarioScale = useGameStore((s) => s.setScenarioScale);
   const appendSystem = useGameStore((s) => s.appendSystem);
   const characterSchema = useGameStore((s) => s.characterSchema);
   const history = useGameStore((s) => s.history);
@@ -79,7 +87,7 @@ export function ScriptPage({
           `請提供 attribute_defs（含繁中 label 與 dice_formula）、` +
           `mode_config（ARRAY 給 standard_array；POINT_BUY 給 point_buy_pool/min/max；` +
           `SKILL_ALLOC 給 occupational_point_formula 與 interest_point_formula）、` +
-          `recommended_skills（name/description 繁中，並請標 is_occupational=true 的職業技能）。` +
+          `recommended_skills（name/description 繁中；CoC 請標約 8 項 is_occupational=true 的職業技能，否則職業點花不完）。` +
           `background_questions 請回傳為物件陣列 {id, category, question}。` +
           `starting_inventory、role_title_suggestion、mode_instructions 也請提供。` +
           `此為藍圖預覽：請不要在文字中給出最終屬性數字；最終數值由前端按藍圖規則處理（DICE/ARRAY/POINT_BUY/SKILL_ALLOC）。`,
@@ -105,11 +113,13 @@ export function ScriptPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recommendedMode, composerDisabled, generating, characterSchema]);
 
+  const scenarioScale = normalizeScenarioScale(script.scenario_scale);
+
   const generateCocScript = async () => {
     if (composerDisabled || generating) return;
     setGenerating(true);
     try {
-      await sendPlayerAction(AUTO_GENERATE_COC_SCRIPT_PROMPT);
+      await sendPlayerAction(buildAutoGenerateCocScriptPrompt(scenarioScale));
     } catch (err) {
       appendSystem(
         `自動生成失敗：${err instanceof Error ? err.message : "未知錯誤"}`,
@@ -128,19 +138,49 @@ export function ScriptPage({
             這裡只顯示你的送出內容；GM 回覆以「劇本與藍圖資料」呈現。
           </p>
           <div className="mt-2">
-            <TaskFeedback />
+            <TaskFeedback onRetry={onRetry} />
           </div>
 
-          {userMessages.length === 0 && !script.public_summary ? (
-            <div className="mt-3">
-              <Button
-                className="w-full"
-                disabled={composerDisabled || generating}
-                onClick={() => void generateCocScript()}
-              >
-                <Sparkles className="h-4 w-4" />
-                {generating ? "正在生成…" : "請 AI 生成 CoC 劇本"}
-              </Button>
+          {!script.public_summary ? (
+            <div className="mt-3 space-y-2">
+              <div>
+                <div className="mb-1 text-xs text-muted">劇本規模</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {(Object.keys(SCENARIO_SCALE_LABELS) as ScenarioScale[]).map(
+                    (scale) => (
+                      <Button
+                        key={scale}
+                        type="button"
+                        size="sm"
+                        variant={
+                          scenarioScale === scale ? "default" : "secondary"
+                        }
+                        className="h-7 px-2 text-[11px]"
+                        disabled={composerDisabled || generating}
+                        onClick={() => setScenarioScale(scale)}
+                        title={SCENARIO_SCALE_HINTS[scale]}
+                      >
+                        {SCENARIO_SCALE_LABELS[scale]}
+                      </Button>
+                    ),
+                  )}
+                </div>
+                <p className="mt-1.5 text-[10px] text-muted">
+                  {SCENARIO_SCALE_HINTS[scenarioScale]}
+                </p>
+              </div>
+              {userMessages.length === 0 ? (
+                <Button
+                  className="w-full"
+                  disabled={composerDisabled || generating}
+                  onClick={() => void generateCocScript()}
+                >
+                  <Sparkles className="h-4 w-4" />
+                  {generating
+                    ? "正在生成…"
+                    : `請 AI 生成 CoC（${SCENARIO_SCALE_LABELS[scenarioScale]}）`}
+                </Button>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -202,17 +242,50 @@ export function ScriptPage({
                   </div>
                   <div className="mt-1 text-sm text-muted">
                     {script.system_id} · {script.public_summary.genre}
+                    {script.scenario_scale
+                      ? ` · ${SCENARIO_SCALE_LABELS[normalizeScenarioScale(script.scenario_scale)]}`
+                      : ""}
                   </div>
                   <p className="mt-2 text-sm text-ink/90">
                     {script.public_summary.background}
                   </p>
+                  {script.public_summary.player_hook ? (
+                    <p className="mt-2 text-sm text-ink/90">
+                      <span className="text-muted">開場鉤子：</span>
+                      {script.public_summary.player_hook}
+                    </p>
+                  ) : null}
+                  {script.public_summary.geography ? (
+                    <p className="mt-2 text-sm text-muted">
+                      舞台：{script.public_summary.geography}
+                    </p>
+                  ) : null}
+                  {script.public_summary.known_facts?.length ? (
+                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-ink/90">
+                      {script.public_summary.known_facts.map((f) => (
+                        <li key={f}>{f}</li>
+                      ))}
+                    </ul>
+                  ) : null}
                   <p className="mt-2 text-sm text-muted">
                     主角定位：{script.public_summary.protagonist_role}
                   </p>
+                  {script.hidden_full_script ? (
+                    <p className="mt-2 text-[11px] text-accent-2">
+                      GM 備註已就緒：場景{" "}
+                      {script.hidden_full_script.scenes?.length ?? 0} · NPC{" "}
+                      {script.hidden_full_script.npcs?.length ?? 0} · 時間線{" "}
+                      {script.hidden_full_script.timeline?.length ?? 0}
+                      {script.hidden_full_script.factions?.length
+                        ? ` · 勢力 ${script.hidden_full_script.factions.length}`
+                        : ""}
+                      （細節對玩家隱藏，供 GM／AI 遵循）
+                    </p>
+                  ) : null}
                 </div>
               ) : (
                 <p className="text-sm text-muted">
-                  尚未建立劇本。點上方按鈕讓 AI 生成，或在左側送出想玩的氛圍與方向。
+                  尚未建立劇本。先選規模，再點左側按鈕讓 AI 生成，或直接描述想玩的氛圍。
                 </p>
               )}
 

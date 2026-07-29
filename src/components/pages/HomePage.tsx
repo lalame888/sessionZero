@@ -2,6 +2,10 @@ import { FolderOpen, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { CampaignMeta } from "@/lib/campaignStorage";
 import { cn } from "@/lib/utils";
+import {
+  SCENARIO_SCALE_LABELS,
+  normalizeScenarioScale,
+} from "@/engine/scenarioScale";
 import type { GamePhase } from "@/types/game";
 
 const PHASE_LABEL: Record<GamePhase, string> = {
@@ -11,6 +15,11 @@ const PHASE_LABEL: Record<GamePhase, string> = {
   PLAYING: "冒險進行",
   ENDING: "結算回放",
 };
+
+function scaleLabel(meta: CampaignMeta): string {
+  if (!meta.scenarioScale) return "規模未定";
+  return SCENARIO_SCALE_LABELS[normalizeScenarioScale(meta.scenarioScale)];
+}
 
 export function HomePage({
   sessions,
@@ -83,7 +92,8 @@ export function HomePage({
                 >
                   <div className="truncate font-medium text-ink">{s.title}</div>
                   <div className="mt-1 text-xs text-muted">
-                    {s.systemId ?? "系統未定"} · {PHASE_LABEL[s.phase]} ·{" "}
+                    {s.systemId ?? "系統未定"} · {scaleLabel(s)} ·{" "}
+                    {PHASE_LABEL[s.phase]} ·{" "}
                     {new Date(s.updatedAt).toLocaleString()}
                   </div>
                 </button>

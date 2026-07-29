@@ -23,12 +23,45 @@ export interface UniversalCharacterSheet {
     ac?: number;
     proficiency_bonus?: number;
     dodge?: number;
+    /** CoC：移動力 */
+    mov?: number;
+    /** CoC：體格 */
+    build?: number;
+    /** CoC：傷害加值字串，如 "0"、"+1D4"、"-1" */
+    damage_bonus?: string;
   };
   skills: Record<string, number>;
   markedSkillsForGrowth?: string[];
   inventory: string[];
   /** 劇情鉤子：信念、重要之人、羈絆、缺點等 */
   backstory_hooks: Record<string, string>;
+
+  /** 共通身分 */
+  age?: string;
+  gender?: string;
+  appearance?: string;
+  residence?: string;
+  birthplace?: string;
+  languages?: string;
+  personal_bio?: string;
+  wealth?: string;
+
+  /** CoC 專屬 */
+  profile_coc?: {
+    occupation?: string;
+    cash_assets?: string;
+  };
+
+  /** D&D 專屬 */
+  profile_dnd?: {
+    race?: string;
+    class_name?: string;
+    background?: string;
+    alignment?: string;
+    speed?: number;
+    proficiencies?: string;
+    features?: string;
+  };
 }
 
 export interface HouseRuleConfig {
@@ -86,13 +119,72 @@ export interface ScriptPublicSummary {
   background: string;
   protagonist_role: string;
   genre: string;
+  /** 給玩家的開場鉤子（委託／報導／為何來到此地） */
+  player_hook?: string;
+  /** 開場前已知的公開事實 */
+  known_facts?: string[];
+  /** 地理／舞台範圍简述 */
+  geography?: string;
+}
+
+export interface ScenarioTimelineBeat {
+  when: string;
+  what: string;
+}
+
+export interface ScenarioScene {
+  id: string;
+  name: string;
+  summary: string;
+  clues?: string[];
+  dangers?: string[];
+  linked_npc_ids?: string[];
+}
+
+export interface ScenarioNpcPrep {
+  id: string;
+  name: string;
+  role: string;
+  appearance?: string;
+  motivation: string;
+  knows: string;
+  attitude_to_pc: string;
+}
+
+export interface ScenarioFaction {
+  id: string;
+  name: string;
+  goal: string;
+  methods?: string;
+}
+
+export interface ScenarioAct {
+  name: string;
+  summary: string;
 }
 
 export interface HiddenFullScript {
   truth_and_secrets: string;
   key_clues: string[];
   winning_condition: string;
+  /** 失敗／拖延的後果 */
+  failure_consequences?: string;
+  /** 時間壓力與事件節點 */
+  timeline?: ScenarioTimelineBeat[];
+  /** 可探索場景 */
+  scenes?: ScenarioScene[];
+  /** 重要 NPC 備註 */
+  npcs?: ScenarioNpcPrep[];
+  /** 長篇用：勢力 */
+  factions?: ScenarioFaction[];
+  /** SAN／威脅備註 */
+  san_and_threats?: string;
+  /** 長篇用：幕結構 */
+  acts?: ScenarioAct[];
 }
+
+/** 劇本規模：影響 setup_script 應產出的深度 */
+export type ScenarioScale = "seed" | "oneshot" | "arc";
 
 export interface ScriptState {
   system_id: GameSystemID | null;
@@ -100,6 +192,8 @@ export interface ScriptState {
   hidden_full_script: HiddenFullScript | null;
   recommended_creation_mode: string | null;
   revealed: boolean;
+  /** 玩家選擇的劇本規模；舊存檔可能缺此欄 */
+  scenario_scale?: ScenarioScale | null;
 }
 
 export interface ChapterSummary {
@@ -178,6 +272,10 @@ export interface PendingDice {
   check_target_name: string;
   dice_type: string;
   target_value?: number;
+  /** CoC：角色卡上的完整技能％（用於成功等級與大失敗） */
+  skill_value?: number;
+  /** CoC：一般 / 困難 / 極限 */
+  difficulty?: "regular" | "hard" | "extreme";
   dnd_advantage_mode?: "normal" | "advantage" | "disadvantage" | string;
   reason: string;
   isSecret: boolean;
@@ -217,4 +315,14 @@ export interface PreflightState {
   reason: PreflightReason;
   provider?: string;
   message?: string;
+}
+
+/** 連線／Session 失敗後可重試的動作 */
+export type RetryAction =
+  | { kind: "opening"; label: string }
+  | { kind: "player"; label: string; text: string };
+
+export interface SessionErrorInfo {
+  code: string;
+  message: string;
 }

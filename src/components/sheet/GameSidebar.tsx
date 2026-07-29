@@ -41,6 +41,48 @@ function CharacterPanel() {
       <div>
         <div className="brand-title text-base text-ink">{character.name}</div>
         <div className="text-xs text-muted">{character.role_title}</div>
+        {character.appearance?.trim() ? (
+          <p className="mt-1 text-xs text-ink/80 line-clamp-2">
+            {character.appearance.trim()}
+          </p>
+        ) : null}
+        {isCoc ? (
+          <div className="mt-1 space-y-0.5 text-[11px] text-muted">
+            {character.profile_coc?.occupation?.trim() ? (
+              <div>職業：{character.profile_coc.occupation.trim()}</div>
+            ) : null}
+            {character.skills["信用評級"] != null ? (
+              <div>信用評級：{character.skills["信用評級"]}%</div>
+            ) : null}
+            {character.derived.mov != null ||
+            character.derived.build != null ||
+            character.derived.damage_bonus ? (
+              <div>
+                MOV {character.derived.mov ?? "—"} · 體格{" "}
+                {character.derived.build ?? "—"} · DB{" "}
+                {character.derived.damage_bonus ?? "—"}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {isDnd ? (
+          <div className="mt-1 space-y-0.5 text-[11px] text-muted">
+            {(() => {
+              const line = [
+                character.profile_dnd?.race,
+                character.profile_dnd?.class_name,
+                character.profile_dnd?.background,
+              ]
+                .map((x) => x?.trim())
+                .filter(Boolean)
+                .join(" · ");
+              return line ? <div>{line}</div> : null;
+            })()}
+            {character.profile_dnd?.alignment?.trim() ? (
+              <div>陣營：{character.profile_dnd.alignment.trim()}</div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       <StatBar
         label="HP"

@@ -265,13 +265,34 @@ export function createEmptyCharacterShell(
       hp: { current: 0, max: 0 },
       mp_or_slots: { current: 0, max: 0 },
       ...(systemId === "COC_7E"
-        ? { san: { current: 0, max: 0 }, dodge: 0 }
+        ? { san: { current: 0, max: 0 }, dodge: 0, mov: 0, build: 0, damage_bonus: "0" }
         : { ac: 10 }),
     },
     skills: {},
     markedSkillsForGrowth: [],
     inventory: [],
     backstory_hooks: {},
+    age: "",
+    gender: "",
+    appearance: "",
+    residence: "",
+    birthplace: "",
+    languages: "",
+    personal_bio: "",
+    wealth: "",
+    ...(systemId === "COC_7E"
+      ? { profile_coc: { occupation: "", cash_assets: "" } }
+      : {
+          profile_dnd: {
+            race: "",
+            class_name: "",
+            background: "",
+            alignment: "",
+            speed: 30,
+            proficiencies: "",
+            features: "",
+          },
+        }),
   };
 }
 
@@ -305,7 +326,7 @@ export const CREATION_MODE_HINTS: Record<CreationMode, string> = {
 };
 
 /** CoC 常見技能預設基礎值；AI 若回傳 0 則回退到此表 */
-const COC_SKILL_BASE_DEFAULTS: Record<string, number> = {
+export const COC_SKILL_BASE_DEFAULTS: Record<string, number> = {
   會計: 5,
   人類學: 1,
   鑑定: 5,
@@ -353,6 +374,9 @@ const COC_SKILL_BASE_DEFAULTS: Record<string, number> = {
   語言: 1,
 };
 
+/** 創角時單技上限（％）。規則未強制，但大師級描述止於 99%；>100% 多為遊玩後成長。 */
+export const COC_CREATION_SKILL_CAP = 99;
+
 export function resolveSkillBaseValue(
   systemId: GameSystemID,
   name: string,
@@ -365,4 +389,11 @@ export function resolveSkillBaseValue(
     if (name === key || name.startsWith(key)) return val;
   }
   return 5;
+}
+
+/** 創角可新增的 CoC 技能目錄（名稱＋基礎％） */
+export function listCocSkillCatalog(): { name: string; base_value: number }[] {
+  return Object.entries(COC_SKILL_BASE_DEFAULTS)
+    .map(([name, base_value]) => ({ name, base_value }))
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
 }

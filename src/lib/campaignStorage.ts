@@ -10,16 +10,20 @@ import type {
   HouseRuleConfig,
   MadnessStatus,
   NPCItem,
+  ScenarioScale,
   ScriptState,
   ThemeId,
   UniversalCharacterSheet,
 } from "@/types/game";
+import { normalizeScenarioScale } from "@/engine/scenarioScale";
 
 export interface CampaignMeta {
   id: string;
   title: string;
   systemId: GameSystemID | null;
   phase: GamePhase;
+  /** 劇本規模；舊索引可能缺此欄 */
+  scenarioScale?: ScenarioScale | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -47,6 +51,8 @@ export interface CampaignPersist {
   timelineIndex: number | null;
   lastPlayerAction: string;
   composerDraft: string;
+  /** 冒險進行時是否請 GM 在敘事後提供可採取行動建議 */
+  suggestPlayerActions: boolean;
 }
 
 export interface CampaignIndex {
@@ -57,6 +63,8 @@ export interface CampaignIndex {
 export interface AgentPrefs {
   selectedProvider: string | null;
   selectedModel: string;
+  suggestPlayerActions?: boolean;
+  scenarioScale?: import("@/types/game").ScenarioScale;
 }
 
 const INDEX_KEY = "sessionzero.campaigns.index";
@@ -73,9 +81,26 @@ function readJson<T>(key: string): T | null {
 }
 
 export function loadCampaignIndex(): CampaignIndex {
-  return (
-    readJson<CampaignIndex>(INDEX_KEY) ?? { activeId: null, sessions: [] }
-  );
+  const index =
+    readJson<CampaignIndex>(INDEX_KEY) ?? { activeId: null, sessions: [] };
+  // 舊索引缺 scenarioScale 時，從完整存檔回填一次
+  let changed = false;
+  const sessions = index.sessions.map((meta) => {
+    if (meta.scenarioScale) return meta;
+    const full = loadCampaign(meta.id);
+    const scale = full?.script?.scenario_scale
+      ? normalizeScenarioScale(full.script.scenario_scale)
+      : null;
+    if (!scale) return meta;
+    changed = true;
+    return { ...meta, scenarioScale: scale };
+  });
+  if (changed) {
+    const next = { ...index, sessions };
+    saveCampaignIndex(next);
+    return next;
+  }
+  return index;
 }
 
 export function saveCampaignIndex(index: CampaignIndex) {
@@ -94,6 +119,9 @@ export function saveCampaign(data: CampaignPersist) {
     title: data.title,
     systemId: data.script.system_id,
     phase: data.phase === "PREFLIGHT" ? "SESSION_0" : data.phase,
+    scenarioScale: data.script.scenario_scale
+      ? normalizeScenarioScale(data.script.scenario_scale)
+      : null,
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
   };
@@ -139,6 +167,37 @@ export function campaignTitleFromState(script: ScriptState, messages: ChatMessag
   return "未命名劇本討論";
 }
 
+/** Session 0、尚未選定系統／劇本、也沒有任何玩家或 GM 討論內容 */
+export function isBlankCampaign(data: CampaignPersist): boolean {
+  const phase = data.phase === "PREFLIGHT" ? "SESSION_0" : data.phase;
+  if (phase !== "SESSION_0") return false;
+  if (data.script.system_id) return false;
+  if (data.script.public_summary) return false;
+  if (data.script.hidden_full_script) return false;
+  if (data.characterSchema) return false;
+  if (data.character) return false;
+  if (data.history.length > 0) return false;
+  if (data.turn > 0) return false;
+  if (data.clues.length > 0 || data.npcs.length > 0) return false;
+  if (data.ending) return false;
+  const hasDiscussion = data.messages.some(
+    (m) => m.role === "user" || m.role === "agent",
+  );
+  return !hasDiscussion;
+}
+
+/** 找出一個可重用的空白 Session（優先較新的） */
+export function findBlankCampaignId(): string | null {
+  const index = loadCampaignIndex();
+  for (const meta of index.sessions) {
+    if (meta.phase !== "SESSION_0" && meta.phase !== "PREFLIGHT") continue;
+    if (meta.systemId) continue;
+    const data = loadCampaign(meta.id);
+    if (data && isBlankCampaign(data)) return meta.id;
+  }
+  return null;
+}
+
 export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPersist {
   const now = Date.now();
   return {
@@ -155,6 +214,7 @@ export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPe
       hidden_full_script: null,
       recommended_creation_mode: null,
       revealed: false,
+      scenario_scale: "oneshot",
     },
     houseRules: { preset_rules: [], custom_rules_text: "" },
     character: null,
@@ -170,5 +230,6 @@ export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPe
     timelineIndex: null,
     lastPlayerAction: "",
     composerDraft: "",
+    suggestPlayerActions: true,
   };
 }

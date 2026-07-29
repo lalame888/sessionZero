@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import type { PedelecSessionStatus, ProviderCode } from "@kaoruisaac/pedelec";
 import {
-  assemblePlayerTurnPrompt,
   maybeCompressChapters,
 } from "@/engine/contextAssembler";
 import {
@@ -39,13 +38,20 @@ import type {
   NPCItem,
   PendingDice,
   PreflightState,
+  RetryAction,
   RuleLookupResult,
+  ScenarioScale,
   ScriptState,
+  SessionErrorInfo,
   ThemeId,
   UniversalCharacterSheet,
 } from "@/types/game";
 import { COC_HOUSE_PRESETS, DND_HOUSE_PRESETS } from "@/prompts/gmDirectives";
-import { getActiveSession } from "@/lib/pedelec/createGameSession";
+import {
+  getActiveSession,
+  sendOpeningNarration,
+} from "@/lib/pedelec/createGameSession";
+import { normalizeScenarioScale } from "@/engine/scenarioScale";
 
 function snapshotOf(state: {
   character: UniversalCharacterSheet | null;
@@ -69,6 +75,7 @@ const initialScript: ScriptState = {
   hidden_full_script: null,
   recommended_creation_mode: null,
   revealed: false,
+  scenario_scale: "oneshot",
 };
 
 interface GameStore {
@@ -79,10 +86,13 @@ interface GameStore {
   location: string;
   preflight: PreflightState;
   sessionStatus: PedelecSessionStatus | "disconnected";
+  sessionError: SessionErrorInfo | null;
+  retryAction: RetryAction | null;
   selectedProvider: ProviderCode | null;
   selectedModel: string;
   composerDraft: string;
   lastPlayerAction: string;
+  suggestPlayerActions: boolean;
   showInstallGuide: boolean;
   showSettings: boolean;
   isTyping: boolean;
@@ -113,9 +123,12 @@ interface GameStore {
 
   setPreflight: (p: PreflightState) => void;
   setSessionStatus: (s: GameStore["sessionStatus"]) => void;
+  setSessionError: (e: SessionErrorInfo | null) => void;
+  setRetryAction: (a: RetryAction | null) => void;
   setProvider: (p: ProviderCode | null) => void;
   setModel: (m: string) => void;
   setComposerDraft: (v: string) => void;
+  setSuggestPlayerActions: (v: boolean) => void;
   setShowInstallGuide: (v: boolean) => void;
   setShowSettings: (v: boolean) => void;
   setIsTyping: (v: boolean) => void;
@@ -131,14 +144,42 @@ interface GameStore {
     public_summary: ScriptState["public_summary"];
     hidden_full_script: ScriptState["hidden_full_script"];
     recommended_creation_mode: string;
+    scenario_scale?: string | null;
   }) => void;
   setHouseRules: (rules: HouseRuleConfig) => void;
+  setScenarioScale: (scale: ScenarioScale) => void;
   togglePresetRule: (rule: string) => void;
   setCharacterSchema: (schema: CharacterSchemaState) => void;
   setCharacter: (sheet: UniversalCharacterSheet) => void;
   updateCharacterField: (
     updater: (sheet: UniversalCharacterSheet) => UniversalCharacterSheet,
   ) => void;
+  /** AI 填入敘事欄位；不更動屬性／技能配點 */
+  applyCharacterNarrative: (payload: {
+    name?: string;
+    role_title?: string;
+    age?: string;
+    gender?: string;
+    appearance?: string;
+    residence?: string;
+    birthplace?: string;
+    languages?: string;
+    personal_bio?: string;
+    wealth?: string;
+    profile_coc?: { occupation?: string; cash_assets?: string };
+    profile_dnd?: {
+      race?: string;
+      class_name?: string;
+      background?: string;
+      alignment?: string;
+      speed?: number;
+      proficiencies?: string;
+      features?: string;
+    };
+    backstory_hooks?: { id: string; answer: string }[];
+    inventory?: string[];
+    player_note?: string;
+  }) => void;
   applyStatChanges: (
     changes: { key: string; change_amount: number; reason: string }[],
     inventory_add?: string[],
@@ -179,10 +220,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
   location: "未知之地",
   preflight: { ready: false, reason: "CHECKING" },
   sessionStatus: "disconnected",
+  sessionError: null,
+  retryAction: null,
   selectedProvider: null,
   selectedModel: "",
   composerDraft: "",
   lastPlayerAction: "",
+  suggestPlayerActions: true,
   showInstallGuide: false,
   showSettings: false,
   isTyping: false,
@@ -206,9 +250,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setPreflight: (p) => set({ preflight: p }),
   setSessionStatus: (s) => set({ sessionStatus: s }),
+  setSessionError: (e) => set({ sessionError: e }),
+  setRetryAction: (a) => set({ retryAction: a }),
   setProvider: (p) => set({ selectedProvider: p }),
   setModel: (m) => set({ selectedModel: m }),
   setComposerDraft: (v) => set({ composerDraft: v }),
+  setSuggestPlayerActions: (v) => set({ suggestPlayerActions: v }),
   setShowInstallGuide: (v) => set({ showInstallGuide: v }),
   setShowSettings: (v) => set({ showSettings: v }),
   setIsTyping: (v) => set({ isTyping: v }),
@@ -240,6 +287,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const system_id = args.system_id as GameSystemID;
     const presets =
       system_id === "DND_5E" ? DND_HOUSE_PRESETS : COC_HOUSE_PRESETS;
+    const scenario_scale = normalizeScenarioScale(
+      args.scenario_scale ?? get().script.scenario_scale ?? "oneshot",
+    );
+    const hidden = args.hidden_full_script;
+    const sceneCount = hidden?.scenes?.length ?? 0;
+    const npcCount = hidden?.npcs?.length ?? 0;
     set({
       script: {
         system_id,
@@ -247,6 +300,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         hidden_full_script: args.hidden_full_script,
         recommended_creation_mode: args.recommended_creation_mode,
         revealed: false,
+        scenario_scale,
       },
       theme: themeForSystem(system_id),
       houseRules: {
@@ -257,12 +311,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
         system_id === "DND_5E" ? "DND_5E" : "COC_7E",
       ),
     });
+    const depthNote =
+      scenario_scale === "seed"
+        ? "規模：種子大綱"
+        : `規模：${scenario_scale} · 場景 ${sceneCount} · NPC ${npcCount}`;
     get().appendSystem(
-      `劇本已建立／更新：${args.public_summary?.title ?? "未命名"}（${system_id}）。可繼續對話調整設定與房規；確認後再按「下一步」進入創角。可用預設房規：${presets.join("、")}`,
+      `劇本已建立／更新：${args.public_summary?.title ?? "未命名"}（${system_id}，${depthNote}）。可繼續對話調整設定與房規；確認後再按「下一步」進入創角。可用預設房規：${presets.join("、")}`,
     );
   },
 
   setHouseRules: (rules) => set({ houseRules: rules }),
+
+  setScenarioScale: (scale) =>
+    set((s) => ({
+      script: { ...s.script, scenario_scale: scale },
+    })),
 
   togglePresetRule: (rule) =>
     set((s) => {
@@ -379,6 +442,139 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const current = get().character;
     if (!current) return;
     set({ character: recomputeDerived(updater(current)) });
+  },
+
+  applyCharacterNarrative: (payload) => {
+    const current = get().character;
+    if (!current) return;
+
+    const pick = (v: string | undefined, fallback: string | undefined) => {
+      if (v == null) return fallback ?? "";
+      const t = v.trim();
+      return t || fallback || "";
+    };
+
+    const hooksFromAi = Object.fromEntries(
+      (payload.backstory_hooks ?? [])
+        .filter((h) => h.id?.trim() && h.answer?.trim())
+        .map((h) => [h.id.trim(), h.answer.trim()]),
+    );
+
+    const expectedHookIds =
+      get().characterSchema?.background_questions?.map((q) => q.id) ?? [];
+
+    const next = recomputeDerived({
+      ...current,
+      attributes: current.attributes,
+      skills: current.skills,
+      name: pick(payload.name, current.name),
+      role_title: pick(payload.role_title, current.role_title),
+      age: pick(payload.age, current.age),
+      gender: pick(payload.gender, current.gender),
+      appearance: pick(payload.appearance, current.appearance),
+      residence: pick(payload.residence, current.residence),
+      birthplace: pick(payload.birthplace, current.birthplace),
+      languages: pick(payload.languages, current.languages),
+      personal_bio: pick(payload.personal_bio, current.personal_bio),
+      wealth: pick(payload.wealth, current.wealth),
+      profile_coc:
+        current.system_id === "COC_7E"
+          ? {
+              occupation: pick(
+                payload.profile_coc?.occupation,
+                current.profile_coc?.occupation,
+              ),
+              cash_assets: pick(
+                payload.profile_coc?.cash_assets,
+                current.profile_coc?.cash_assets,
+              ),
+            }
+          : current.profile_coc,
+      profile_dnd:
+        current.system_id === "DND_5E"
+          ? {
+              race: pick(payload.profile_dnd?.race, current.profile_dnd?.race),
+              class_name: pick(
+                payload.profile_dnd?.class_name,
+                current.profile_dnd?.class_name,
+              ),
+              background: pick(
+                payload.profile_dnd?.background,
+                current.profile_dnd?.background,
+              ),
+              alignment: pick(
+                payload.profile_dnd?.alignment,
+                current.profile_dnd?.alignment,
+              ),
+              speed:
+                payload.profile_dnd?.speed ??
+                current.profile_dnd?.speed ??
+                30,
+              proficiencies: pick(
+                payload.profile_dnd?.proficiencies,
+                current.profile_dnd?.proficiencies,
+              ),
+              features: pick(
+                payload.profile_dnd?.features,
+                current.profile_dnd?.features,
+              ),
+            }
+          : current.profile_dnd,
+      backstory_hooks: {
+        ...current.backstory_hooks,
+        ...hooksFromAi,
+      },
+      inventory: payload.inventory?.length
+        ? payload.inventory.map((x) => x.trim()).filter(Boolean)
+        : current.inventory,
+    });
+
+    const missing: string[] = [];
+    const need = (label: string, v?: string) => {
+      if (!v?.trim()) missing.push(label);
+    };
+    need("姓名", next.name);
+    need("職稱／別名", next.role_title);
+    need("年齡", next.age);
+    need("性別／認同", next.gender);
+    need("外貌", next.appearance);
+    need("現居", next.residence);
+    need("出生地", next.birthplace);
+    need("語言", next.languages);
+    need("背景短述", next.personal_bio);
+    need("資產概況", next.wealth);
+    if (current.system_id === "COC_7E") {
+      need("職業", next.profile_coc?.occupation);
+      need("現金／資產", next.profile_coc?.cash_assets);
+    }
+    if (current.system_id === "DND_5E") {
+      need("種族", next.profile_dnd?.race);
+      need("職業", next.profile_dnd?.class_name);
+      need("背景", next.profile_dnd?.background);
+      need("陣營", next.profile_dnd?.alignment);
+      need("熟練", next.profile_dnd?.proficiencies);
+      need("特性", next.profile_dnd?.features);
+    }
+    for (const id of expectedHookIds) {
+      if (!(next.backstory_hooks[id] ?? "").trim()) {
+        missing.push(`鉤子「${id}」`);
+      }
+    }
+    if (!next.inventory.length) missing.push("起始背包");
+
+    set({ character: next });
+    const note = payload.player_note?.trim();
+    if (missing.length) {
+      get().appendSystem(
+        `AI 已寫入角色敘事，但仍缺：${missing.join("、")}。可再按「請 AI 設計角色敘事」補齊。`,
+      );
+    } else {
+      get().appendSystem(
+        note
+          ? `AI 已完整填入角色敘事欄位：${note}`
+          : `AI 已完整填入「${next.name}」的敘事／身分欄位（未改動屬性／技能配點）。可再手動修改。`,
+      );
+    }
   },
 
   applyStatChanges: (changes, inventory_add = [], inventory_remove = []) => {
@@ -543,6 +739,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const session = getActiveSession();
       if (!session || session.getStatus() !== "idle") {
         get().appendSystem("Session 未就緒，無法開始冒險。");
+        get().setSessionError({
+          code: "SESSION_NOT_READY",
+          message: "Session 未就緒，無法開始冒險。",
+        });
+        get().setRetryAction({ kind: "opening", label: "重試開場敘事" });
         return;
       }
 
@@ -556,28 +757,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
         turn: 0,
         timelineIndex: null,
         lastPlayerAction: "",
+        sessionError: null,
+        retryAction: { kind: "opening", label: "重試開場敘事" },
       });
 
       // 避免 StoryLog 在 AI 回覆前顯示歡迎提示
       get().appendSystem("冒險開始中…請稍候 GM 述說開場。");
 
-      const store = get();
-      const prompt = assemblePlayerTurnPrompt({
-        script: store.script,
-        houseRules: store.houseRules,
-        character: store.character,
-        clues: store.clues,
-        npcs: store.npcs,
-        madness: store.madness,
-        location: store.location,
-        chapterSummaries: store.chapterSummaries,
-        recentMessages: [],
-        playerAction:
-          "現在已確認角色卡。請立刻開始劇本並述說故事開場（請呼叫 narrate_story；如需檢定請使用工具，不要先等待玩家輸入）。",
-        turn: store.turn,
-      });
-
-      await session.sendText(prompt);
+      try {
+        await sendOpeningNarration();
+      } catch (err) {
+        const code =
+          err && typeof err === "object" && "code" in err
+            ? String((err as { code: unknown }).code)
+            : "SEND_FAILED";
+        const message =
+          err instanceof Error ? err.message : "開場敘事送出失敗";
+        // onError 多半已寫入 sessionError；此處補齊未觸發 onError 的情況
+        if (!get().sessionError) {
+          get().setSessionError({ code, message });
+          get().appendSystem(`錯誤：${code} — ${message}`);
+        }
+      }
     })();
   },
 
@@ -632,6 +833,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       timelineIndex: s.timelineIndex,
       lastPlayerAction: s.lastPlayerAction,
       composerDraft: s.composerDraft,
+      suggestPlayerActions: s.suggestPlayerActions,
     };
   },
 
@@ -657,16 +859,31 @@ export const useGameStore = create<GameStore>((set, get) => ({
       timelineIndex: data.timelineIndex,
       lastPlayerAction: data.lastPlayerAction,
       composerDraft: data.composerDraft,
+      suggestPlayerActions: data.suggestPlayerActions ?? true,
       pendingDice: null,
       pendingRuleLookup: null,
       diceResolver: null,
       isTyping: false,
       secretRollActive: false,
+      sessionError: null,
+      retryAction:
+        data.phase === "PLAYING" && data.messages.length <= 1
+          ? { kind: "opening", label: "重試開場敘事" }
+          : data.lastPlayerAction
+            ? {
+                kind: "player",
+                label: "重試上一步行動",
+                text: data.lastPlayerAction,
+              }
+            : null,
     });
   },
 
   startNewCampaign: () => {
     const empty = createEmptyCampaignPersist();
+    empty.suggestPlayerActions = get().suggestPlayerActions;
+    empty.script.scenario_scale =
+      get().script.scenario_scale ?? "oneshot";
     get().hydrateCampaign(empty);
     return empty;
   },

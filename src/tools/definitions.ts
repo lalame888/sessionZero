@@ -3,11 +3,15 @@ import { defineTool } from "@kaoruisaac/pedelec";
 export const setupScriptTool = defineTool({
   name: "setup_script",
   description:
-    "初始化或更新劇本設定，確定遊戲系統與隱藏真相。Call when Session 0 premise is clear, and again when the solo player revises settings. Always design for exactly one PC (NPCs allowed).",
+    "初始化或更新劇本設定與（依 scenario_scale）正規劇本備註。Call when Session 0 premise is clear, and again when the solo player revises settings. Always design for exactly one PC (NPCs allowed). Respect the player's chosen scenario_scale depth.",
   argsSchema: {
     type: "object",
     properties: {
       system_id: { type: "string", description: "COC_7E 或 DND_5E" },
+      scenario_scale: {
+        type: "string",
+        description: "seed | oneshot | arc — 必須符合玩家選擇的規模",
+      },
       public_summary: {
         type: "object",
         properties: {
@@ -15,6 +19,9 @@ export const setupScriptTool = defineTool({
           background: { type: "string" },
           protagonist_role: { type: "string" },
           genre: { type: "string" },
+          player_hook: { type: "string" },
+          known_facts: { type: "array", items: { type: "string" } },
+          geography: { type: "string" },
         },
         required: ["title", "background", "protagonist_role", "genre"],
       },
@@ -24,6 +31,81 @@ export const setupScriptTool = defineTool({
           truth_and_secrets: { type: "string" },
           key_clues: { type: "array", items: { type: "string" } },
           winning_condition: { type: "string" },
+          failure_consequences: { type: "string" },
+          timeline: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                when: { type: "string" },
+                what: { type: "string" },
+              },
+              required: ["when", "what"],
+            },
+          },
+          scenes: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string" },
+                name: { type: "string" },
+                summary: { type: "string" },
+                clues: { type: "array", items: { type: "string" } },
+                dangers: { type: "array", items: { type: "string" } },
+                linked_npc_ids: { type: "array", items: { type: "string" } },
+              },
+              required: ["id", "name", "summary"],
+            },
+          },
+          npcs: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string" },
+                name: { type: "string" },
+                role: { type: "string" },
+                appearance: { type: "string" },
+                motivation: { type: "string" },
+                knows: { type: "string" },
+                attitude_to_pc: { type: "string" },
+              },
+              required: [
+                "id",
+                "name",
+                "role",
+                "motivation",
+                "knows",
+                "attitude_to_pc",
+              ],
+            },
+          },
+          factions: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string" },
+                name: { type: "string" },
+                goal: { type: "string" },
+                methods: { type: "string" },
+              },
+              required: ["id", "name", "goal"],
+            },
+          },
+          san_and_threats: { type: "string" },
+          acts: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                summary: { type: "string" },
+              },
+              required: ["name", "summary"],
+            },
+          },
         },
         required: ["truth_and_secrets", "key_clues", "winning_condition"],
       },
@@ -120,7 +202,8 @@ export const generateCharacterSchemaTool = defineTool({
             base_value: { type: "number" },
             is_occupational: {
               type: "boolean",
-              description: "是否為職業技能（可花職業點）",
+              description:
+                "是否為職業技能（可花職業點）。CoC 職業包請標約 8 項為 true，否則 EDU×4 職業點會花不完",
             },
             description: {
               type: "string",
@@ -171,6 +254,124 @@ export const generateCharacterSchemaTool = defineTool({
   },
 });
 
+export const fillCharacterNarrativeTool = defineTool({
+  name: "fill_character_narrative",
+  description:
+    "依目前劇本與創角藍圖，一次填滿角色卡所有「敘事／身分」開放欄位（姓名、職稱、完整身分資料、系統專屬欄、每一題劇情鉤子、起始背包）。禁止填寫屬性點數或技能配點／技能％。必須填寫完整、不可省略身分欄；僅在玩家明確要求時呼叫。所有文字必須繁體中文。",
+  argsSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "角色姓名（必填）" },
+      role_title: {
+        type: "string",
+        description: "顯示職稱／別名（必填，繁中）",
+      },
+      age: { type: "string", description: "年齡（必填，可寫「約28歲」等）" },
+      gender: {
+        type: "string",
+        description: "性別／自我認同（必填，自由文字）",
+      },
+      appearance: { type: "string", description: "外貌描述（必填，具體可見特徵）" },
+      residence: {
+        type: "string",
+        description: "現居／活動地（必填）",
+      },
+      birthplace: { type: "string", description: "出生地（必填）" },
+      languages: {
+        type: "string",
+        description: "語言（必填，逗號分隔亦可）",
+      },
+      personal_bio: {
+        type: "string",
+        description: "背景短述（必填，一段完整人物背景）",
+      },
+      wealth: {
+        type: "string",
+        description: "資產概況（必填，生活水準／經濟狀況）",
+      },
+      profile_coc: {
+        type: "object",
+        description:
+          "COC_7E 必填完整物件；DND_5E 請省略。必須含 occupation 與 cash_assets。",
+        properties: {
+          occupation: { type: "string", description: "正式職業名（必填）" },
+          cash_assets: {
+            type: "string",
+            description: "現金／資產細節（必填）",
+          },
+        },
+        required: ["occupation", "cash_assets"],
+      },
+      profile_dnd: {
+        type: "object",
+        description:
+          "DND_5E 必填完整物件；COC_7E 請省略。必須含下列全部子欄。",
+        properties: {
+          race: { type: "string", description: "種族（必填）" },
+          class_name: { type: "string", description: "職業（必填）" },
+          background: { type: "string", description: "背景（必填）" },
+          alignment: { type: "string", description: "陣營（必填）" },
+          speed: { type: "number", description: "速度英尺，通常 30（必填）" },
+          proficiencies: {
+            type: "string",
+            description: "技能／工具／豁免／武器護甲熟練摘要（必填）",
+          },
+          features: {
+            type: "string",
+            description: "種族／職業／背景特性摘要（必填）",
+          },
+        },
+        required: [
+          "race",
+          "class_name",
+          "background",
+          "alignment",
+          "speed",
+          "proficiencies",
+          "features",
+        ],
+      },
+      backstory_hooks: {
+        type: "array",
+        description:
+          "若藍圖有 background_questions：必須涵蓋每一個 id，不可漏題；若無鉤子問題可回傳空陣列",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            answer: { type: "string", description: "繁中答案（不可空白）" },
+          },
+          required: ["id", "answer"],
+        },
+      },
+      inventory: {
+        type: "array",
+        items: { type: "string" },
+        description: "起始背包（必填，至少數件物品，繁中），會覆寫目前背包",
+        minItems: 1,
+      },
+      player_note: {
+        type: "string",
+        description: "給玩家看的一句設計說明（繁中，可選）",
+      },
+    },
+    required: [
+      "name",
+      "role_title",
+      "age",
+      "gender",
+      "appearance",
+      "residence",
+      "birthplace",
+      "languages",
+      "personal_bio",
+      "wealth",
+      "backstory_hooks",
+      "inventory",
+    ],
+  },
+});
+
 export const narrateStoryTool = defineTool({
   name: "narrate_story",
   description:
@@ -185,9 +386,25 @@ export const narrateStoryTool = defineTool({
         type: "object",
         properties: {
           request_id: { type: "string" },
-          check_target_name: { type: "string" },
-          dice_type: { type: "string" },
-          target_value: { type: "number" },
+          check_target_name: {
+            type: "string",
+            description:
+              "技能／屬性繁中名稱，必須與角色卡一致（如 神秘學）。前端會用角色卡數值當成功門檻。",
+          },
+          dice_type: {
+            type: "string",
+            description: "CoC 用 d100；D&D 用 d20 或 NdM。",
+          },
+          target_value: {
+            type: "number",
+            description:
+              "可省略。CoC 百分骰時前端會以角色卡技能％覆寫；D&D 為 AC／DC。",
+          },
+          difficulty: {
+            type: "string",
+            description:
+              "CoC only: regular | hard | extreme（一般／困難／極限）。預設 regular。",
+          },
           dnd_advantage_mode: { type: "string" },
           reason: { type: "string" },
         },
@@ -341,6 +558,7 @@ export const lookupRuleTool = defineTool({
 export const allSessionTools = [
   setupScriptTool,
   generateCharacterSchemaTool,
+  fillCharacterNarrativeTool,
   narrateStoryTool,
   secretCheckRequestTool,
   updateGameStatsTool,

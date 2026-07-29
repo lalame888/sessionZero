@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Redo2, Send, Undo2 } from "lucide-react";
+import { DiceCheckPanel } from "@/components/game/DiceModal";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { sendPlayerAction } from "@/lib/pedelec/createGameSession";
@@ -23,26 +24,50 @@ export function Composer({
   const setDraft = useGameStore((s) => s.setComposerDraft);
   const undoLastTurn = useGameStore((s) => s.undoLastTurn);
   const phase = useGameStore((s) => s.phase);
+  const pendingDice = useGameStore((s) => s.pendingDice);
   const [sending, setSending] = useState(false);
+
+  const awaitingPublicDice = Boolean(pendingDice && !pendingDice.isSecret);
 
   const submit = async (text: string) => {
     const value = text.trim();
-    if (!value || disabled || sending) return;
+    if (!value || disabled || sending || awaitingPublicDice) return;
     setSending(true);
     try {
       setDraft("");
       await sendPlayerAction(value);
     } catch (err) {
-      setDraft(value);
-      useGameStore
-        .getState()
-        .appendSystem(
-          `送出失敗：${err instanceof Error ? err.message : "未知錯誤"}（草稿已保留）`,
+      const message =
+        err instanceof Error ? err.message : "未知錯誤";
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? String((err as { code: unknown }).code)
+          : message;
+      const preSend = message === "NO_SESSION" || message === "SESSION_BUSY";
+      if (preSend) setDraft(value);
+
+      const store = useGameStore.getState();
+      store.setRetryAction({
+        kind: "player",
+        label: "重試上一步行動",
+        text: value,
+      });
+      if (!store.sessionError) {
+        store.setSessionError({ code, message });
+        store.appendSystem(
+          preSend
+            ? `送出失敗：${code} — ${message}（草稿已保留）`
+            : `送出失敗：${code} — ${message}（可按重試）`,
         );
+      }
     } finally {
       setSending(false);
     }
   };
+
+  if (awaitingPublicDice) {
+    return <DiceCheckPanel />;
+  }
 
   return (
     <div className="space-y-2 border-t border-border pt-3">

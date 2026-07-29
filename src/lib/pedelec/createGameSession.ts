@@ -10,6 +10,13 @@ import {
   rollDice,
   type AdvantageMode,
 } from "@/engine/dice";
+import {
+  cocSuccessThreshold,
+  difficultyLabel,
+  lookupCharacterSkill,
+  parseCheckDifficulty,
+  type CheckDifficulty,
+} from "@/engine/skillCheck";
 import { findSrdByTopic } from "@/engine/srdLorebook";
 import { pedelec } from "@/lib/pedelec/client";
 import { persistPedelecSessionId } from "@/lib/storage";
@@ -34,11 +41,46 @@ let activeAgentMessageId: string | null = null;
 
 const DICE_TIMEOUT_MS = 170_000;
 
+function resolveCheckAgainstSheet(args: {
+  check_target_name: string;
+  dice_type: string;
+  target_value?: number;
+  difficulty?: string;
+}): {
+  target_value?: number;
+  skill_value?: number;
+  difficulty: CheckDifficulty;
+  sheetSkillName?: string;
+} {
+  const difficulty = parseCheckDifficulty(args.difficulty);
+  const isD100 = args.dice_type.toLowerCase().includes("100");
+  const sheet = useGameStore.getState().character;
+  const hit = lookupCharacterSkill(sheet, args.check_target_name);
+
+  if (isD100 && hit) {
+    const threshold = cocSuccessThreshold(hit.value, difficulty);
+    return {
+      target_value: threshold,
+      skill_value: hit.value,
+      difficulty,
+      sheetSkillName: hit.name,
+    };
+  }
+
+  return {
+    target_value: args.target_value,
+    skill_value: hit?.value,
+    difficulty,
+    sheetSkillName: hit?.name,
+  };
+}
+
 function waitForPlayerDice(args: {
   request_id: string;
   check_target_name: string;
   dice_type: string;
   target_value?: number;
+  difficulty?: string;
   dnd_advantage_mode?: string;
   reason: string;
 }): Promise<{
@@ -48,6 +90,9 @@ function waitForPlayerDice(args: {
   detail: string;
   cancelled?: boolean;
 }> {
+  const resolved = resolveCheckAgainstSheet(args);
+  const displayName = resolved.sheetSkillName ?? args.check_target_name;
+
   return new Promise((resolve) => {
     const store = useGameStore.getState();
     const timeoutId = window.setTimeout(() => {
@@ -64,9 +109,11 @@ function waitForPlayerDice(args: {
     store.setPendingDice(
       {
         request_id: args.request_id,
-        check_target_name: args.check_target_name,
+        check_target_name: displayName,
         dice_type: args.dice_type,
-        target_value: args.target_value,
+        target_value: resolved.target_value,
+        skill_value: resolved.skill_value,
+        difficulty: resolved.difficulty,
         dnd_advantage_mode: args.dnd_advantage_mode,
         reason: args.reason,
         isSecret: false,
@@ -103,21 +150,58 @@ function registerHandlers(
     session.onTool("setup_script", (args) => {
       const a = args as {
         system_id: string;
+        scenario_scale?: string;
         public_summary: {
           title: string;
           background: string;
           protagonist_role: string;
           genre: string;
+          player_hook?: string;
+          known_facts?: string[];
+          geography?: string;
         };
         hidden_full_script: {
           truth_and_secrets: string;
           key_clues: string[];
           winning_condition: string;
+          failure_consequences?: string;
+          timeline?: { when: string; what: string }[];
+          scenes?: {
+            id: string;
+            name: string;
+            summary: string;
+            clues?: string[];
+            dangers?: string[];
+            linked_npc_ids?: string[];
+          }[];
+          npcs?: {
+            id: string;
+            name: string;
+            role: string;
+            appearance?: string;
+            motivation: string;
+            knows: string;
+            attitude_to_pc: string;
+          }[];
+          factions?: {
+            id: string;
+            name: string;
+            goal: string;
+            methods?: string;
+          }[];
+          san_and_threats?: string;
+          acts?: { name: string; summary: string }[];
         };
         recommended_creation_mode: string;
       };
       useGameStore.getState().setupScript(a);
-      return { ok: true, system_id: a.system_id };
+      return {
+        ok: true,
+        system_id: a.system_id,
+        scenario_scale: a.scenario_scale ?? null,
+        scenes: a.hidden_full_script.scenes?.length ?? 0,
+        npcs: a.hidden_full_script.npcs?.length ?? 0,
+      };
     }),
   );
 
@@ -176,6 +260,49 @@ function registerHandlers(
   );
 
   disposers.push(
+    session.onTool("fill_character_narrative", (args) => {
+      const a = args as {
+        name?: string;
+        role_title?: string;
+        age?: string;
+        gender?: string;
+        appearance?: string;
+        residence?: string;
+        birthplace?: string;
+        languages?: string;
+        personal_bio?: string;
+        wealth?: string;
+        profile_coc?: { occupation?: string; cash_assets?: string };
+        profile_dnd?: {
+          race?: string;
+          class_name?: string;
+          background?: string;
+          alignment?: string;
+          speed?: number;
+          proficiencies?: string;
+          features?: string;
+        };
+        backstory_hooks?: { id: string; answer: string }[];
+        inventory?: string[];
+        player_note?: string;
+      };
+      const store = useGameStore.getState();
+      if (!store.character) {
+        return { ok: false, error: "NO_CHARACTER_SHEET" };
+      }
+      store.applyCharacterNarrative(a);
+      const applied = useGameStore.getState().character;
+      return {
+        ok: true,
+        name: applied?.name ?? a.name ?? null,
+        hooks_filled: a.backstory_hooks?.length ?? 0,
+        inventory_items: a.inventory?.length ?? 0,
+        note: "Narrative fields applied; attributes and skill points unchanged.",
+      };
+    }),
+  );
+
+  disposers.push(
     session.onTool("narrate_story", async (args) => {
       const a = args as {
         system_notice?: string;
@@ -185,6 +312,7 @@ function registerHandlers(
           check_target_name: string;
           dice_type: string;
           target_value?: number;
+          difficulty?: string;
           dnd_advantage_mode?: string;
           reason: string;
         };
@@ -200,19 +328,31 @@ function registerHandlers(
         return { ok: true, narrative_recorded: true };
       }
 
+      const resolved = resolveCheckAgainstSheet(a.check_request);
+      const skillLabel = resolved.sheetSkillName ?? a.check_request.check_target_name;
+      const thresholdText =
+        resolved.skill_value != null && resolved.target_value != null
+          ? `角色卡「${skillLabel}」${resolved.skill_value}% · ${difficultyLabel(resolved.difficulty)}難度，成功需 ≤ ${resolved.target_value}`
+          : resolved.target_value != null
+            ? `目標值 ${resolved.target_value}`
+            : "未找到對應角色卡技能（將無法依技能％判定）";
+
       store.appendSystem(
-        `需要檢定：${a.check_request.check_target_name}（${a.check_request.dice_type}）— ${a.check_request.reason}`,
+        `需要檢定：${skillLabel}（${a.check_request.dice_type}）— ${a.check_request.reason}\n${thresholdText}`,
       );
 
-      const roll = await waitForPlayerDice(a.check_request);
+      const roll = await waitForPlayerDice({
+        ...a.check_request,
+        difficulty: a.check_request.difficulty ?? resolved.difficulty,
+      });
       if (!roll.cancelled) {
         useGameStore.getState().recordHistoryTurn({
-          aiNarrative: `（檢定結果已回傳）${a.check_request.check_target_name}`,
+          aiNarrative: `（檢定結果已回傳）${skillLabel}`,
           diceRecord: {
-            skillName: a.check_request.check_target_name,
+            skillName: skillLabel,
             isSecret: false,
             diceType: a.check_request.dice_type,
-            targetValue: a.check_request.target_value,
+            targetValue: resolved.target_value,
             diceResult: roll.diceResult,
             outcome: roll.outcome,
           },
@@ -229,24 +369,35 @@ function registerHandlers(
         check_target_name: string;
         dice_type: string;
         target_value?: number;
+        difficulty?: string;
         reason_for_gm: string;
       };
       const store = useGameStore.getState();
       store.setSecretRollActive(true);
       store.appendSystem("GM 暗骰進行中…（點數將於結局時間軸揭曉）");
 
+      const resolved = resolveCheckAgainstSheet(a);
       const rolled = rollDice(a.dice_type, "normal");
       const outcome = a.dice_type.toLowerCase().includes("20")
-        ? resolveD20Outcome(rolled.rolls[0] ?? rolled.total, rolled.total, a.target_value)
-        : resolveCheckOutcome(a.dice_type, rolled.total, a.target_value);
+        ? resolveD20Outcome(
+            rolled.rolls[0] ?? rolled.total,
+            rolled.total,
+            resolved.target_value,
+          )
+        : resolveCheckOutcome(
+            a.dice_type,
+            rolled.total,
+            resolved.target_value,
+            resolved.skill_value,
+          );
 
       store.recordHistoryTurn({
         aiNarrative: `（暗骰）${a.reason_for_gm}`,
         diceRecord: {
-          skillName: a.check_target_name,
+          skillName: resolved.sheetSkillName ?? a.check_target_name,
           isSecret: true,
           diceType: a.dice_type,
-          targetValue: a.target_value,
+          targetValue: resolved.target_value,
           diceResult: rolled.total,
           outcome,
         },
@@ -259,6 +410,8 @@ function registerHandlers(
         outcome,
         detail: rolled.detail,
         isSecret: true,
+        target_value: resolved.target_value,
+        skill_value: resolved.skill_value,
       };
     }),
   );
@@ -410,9 +563,14 @@ export async function createGameSession(options: {
     s.setSessionStatus(status);
     if (status === "running") {
       s.setIsTyping(true);
+      s.setSessionError(null);
       activeAgentMessageId = null;
     }
-    if (status === "idle" || status === "error" || status === "ended") {
+    if (status === "idle") {
+      s.setIsTyping(false);
+      s.setSessionError(null);
+    }
+    if (status === "error" || status === "ended") {
       s.setIsTyping(false);
     }
     if (status === "waiting_tool_result") {
@@ -421,17 +579,22 @@ export async function createGameSession(options: {
   });
 
   const offError = session.onError((error: PedelecError) => {
-    useGameStore
-      .getState()
-      .appendSystem(`錯誤：${error.code} — ${error.message}`);
-    useGameStore.getState().setIsTyping(false);
+    const s = useGameStore.getState();
+    s.setSessionError({ code: error.code, message: error.message });
+    s.appendSystem(`錯誤：${error.code} — ${error.message}`);
+    s.setIsTyping(false);
   });
 
   const offEnded = session.onEnded(() => {
     settlePendingDiceOnTeardown();
-    useGameStore.getState().setSessionStatus("ended");
-    useGameStore.getState().setIsTyping(false);
-    useGameStore.getState().appendSystem("Pedelec Session 已結束。");
+    const s = useGameStore.getState();
+    s.setSessionStatus("ended");
+    s.setIsTyping(false);
+    s.setSessionError({
+      code: "SESSION_ENDED",
+      message: "Pedelec Session 已結束。",
+    });
+    s.appendSystem("Pedelec Session 已結束。");
   });
 
   const offTools = registerHandlers(session);
@@ -468,14 +631,25 @@ export async function disposeGameSession() {
   }
 }
 
-export async function sendPlayerAction(text: string) {
+export async function sendPlayerAction(
+  text: string,
+  opts?: { skipUserMessage?: boolean },
+) {
   const session = getActiveSession();
   if (!session) throw new Error("NO_SESSION");
   if (session.getStatus() !== "idle") throw new Error("SESSION_BUSY");
 
   const store = useGameStore.getState();
   store.setLastPlayerAction(text);
-  store.appendMessage({ role: "user", content: text });
+  store.setRetryAction({
+    kind: "player",
+    label: "重試上一步行動",
+    text,
+  });
+  store.setSessionError(null);
+  if (!opts?.skipUserMessage) {
+    store.appendMessage({ role: "user", content: text });
+  }
 
   const prompt = assemblePlayerTurnPrompt({
     script: store.script,
@@ -489,9 +663,49 @@ export async function sendPlayerAction(text: string) {
     recentMessages: store.messages,
     playerAction: text,
     turn: store.turn,
+    suggestPlayerActions: store.suggestPlayerActions,
   });
 
   await session.sendText(prompt);
+}
+
+export const OPENING_NARRATION_ACTION =
+  "現在已確認角色卡。請立刻開始劇本並述說故事開場（請呼叫 narrate_story；如需檢定請使用工具，不要先等待玩家輸入）。";
+
+/** 送出開場敘事（不寫入玩家訊息）；失敗時由呼叫端／onError 記錄 sessionError */
+export async function sendOpeningNarration() {
+  const session = getActiveSession();
+  if (!session) throw new Error("NO_SESSION");
+  if (session.getStatus() !== "idle") throw new Error("SESSION_BUSY");
+
+  const store = useGameStore.getState();
+  store.setRetryAction({ kind: "opening", label: "重試開場敘事" });
+  store.setSessionError(null);
+
+  const prompt = assemblePlayerTurnPrompt({
+    script: store.script,
+    houseRules: store.houseRules,
+    character: store.character,
+    clues: store.clues,
+    npcs: store.npcs,
+    madness: store.madness,
+    location: store.location,
+    chapterSummaries: store.chapterSummaries,
+    recentMessages: [],
+    playerAction: OPENING_NARRATION_ACTION,
+    turn: store.turn,
+    suggestPlayerActions: store.suggestPlayerActions,
+  });
+
+  await session.sendText(prompt);
+}
+
+/** Session 損壞（error/ended）時是否需要重建 */
+export function sessionNeedsRebuild() {
+  const session = getActiveSession();
+  if (!session) return true;
+  const status = session.getStatus();
+  return status === "error" || status === "ended";
 }
 
 export function resolvePlayerDice(opts: {
@@ -511,12 +725,20 @@ export function resolvePlayerDice(opts: {
         pendingDice.dice_type,
         rolled.total,
         pendingDice.target_value,
+        pendingDice.skill_value,
       );
+
+  const thresholdNote =
+    pendingDice.skill_value != null && pendingDice.target_value != null
+      ? `，門檻 ≤${pendingDice.target_value}（技能 ${pendingDice.skill_value}%／${difficultyLabel(pendingDice.difficulty ?? "regular")}）`
+      : pendingDice.target_value != null
+        ? `，門檻 ≤${pendingDice.target_value}`
+        : "";
 
   useGameStore
     .getState()
     .appendSystem(
-      `擲骰結果：${pendingDice.check_target_name} → ${rolled.detail}（${outcome}）`,
+      `擲骰結果：${pendingDice.check_target_name} → ${rolled.detail}（${outcome}${thresholdNote}）`,
     );
 
   diceResolver({

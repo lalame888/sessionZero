@@ -4,6 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import type { CampaignMeta } from "@/lib/campaignStorage";
 import { cn } from "@/lib/utils";
+import {
+  SCENARIO_SCALE_LABELS,
+  normalizeScenarioScale,
+} from "@/engine/scenarioScale";
 import type { GamePhase } from "@/types/game";
 
 const PHASE_LABEL: Record<GamePhase, string> = {
@@ -13,6 +17,11 @@ const PHASE_LABEL: Record<GamePhase, string> = {
   PLAYING: "冒險中",
   ENDING: "已結算",
 };
+
+function scaleLabel(meta: CampaignMeta): string {
+  if (!meta.scenarioScale) return "規模未定";
+  return SCENARIO_SCALE_LABELS[normalizeScenarioScale(meta.scenarioScale)];
+}
 
 export function SessionManager({
   sessions,
@@ -95,7 +104,8 @@ export function SessionManager({
                           {isActive ? "（目前）" : ""}
                         </div>
                         <div className="mt-1 text-xs text-muted">
-                          {s.systemId ?? "系統未定"} · {PHASE_LABEL[s.phase]} ·{" "}
+                          {s.systemId ?? "系統未定"} · {scaleLabel(s)} ·{" "}
+                          {PHASE_LABEL[s.phase]} ·{" "}
                           {new Date(s.updatedAt).toLocaleString()}
                         </div>
                       </button>

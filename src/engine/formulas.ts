@@ -27,6 +27,37 @@ export function evaluateFormula(
   return Number.isFinite(num) ? Math.floor(num) : 0;
 }
 
+/** CoC 7e：依 STR / DEX / SIZ 簡表推算移動力 */
+export function cocMoveRate(str: number, dex: number, siz: number): number {
+  if (str <= 0 || dex <= 0 || siz <= 0) return 0;
+  if (str < siz && dex < siz) return 7;
+  if (str > siz && dex > siz) return 9;
+  return 8;
+}
+
+/** CoC 7e：依 STR+SIZ 簡表推算體格與傷害加值 */
+export function cocBuildAndDamageBonus(
+  str: number,
+  siz: number,
+): { build: number; damage_bonus: string } {
+  const sum = str + siz;
+  if (str <= 0 || siz <= 0) return { build: 0, damage_bonus: "0" };
+  if (sum <= 64) return { build: -2, damage_bonus: "-2" };
+  if (sum <= 84) return { build: -1, damage_bonus: "-1" };
+  if (sum <= 124) return { build: 0, damage_bonus: "0" };
+  if (sum <= 164) return { build: 1, damage_bonus: "+1D4" };
+  if (sum <= 204) return { build: 2, damage_bonus: "+1D6" };
+  if (sum <= 284) return { build: 3, damage_bonus: "+2D6" };
+  if (sum <= 364) return { build: 4, damage_bonus: "+3D6" };
+  if (sum <= 444) return { build: 5, damage_bonus: "+4D6" };
+  // 每再多 80 點（或不足）再 +1 build、+1D6（445–524 → +5D6 / build 6）
+  const steps = Math.ceil((sum - 444) / 80);
+  return {
+    build: 5 + steps,
+    damage_bonus: `+${4 + steps}D6`,
+  };
+}
+
 export function recomputeDerived(
   sheet: UniversalCharacterSheet,
 ): UniversalCharacterSheet {
@@ -73,12 +104,15 @@ export function recomputeDerived(
     const siz = attrs.SIZ ?? 0;
     const pow = attrs.POW ?? 0;
     const dex = attrs.DEX ?? 0;
+    const str = attrs.STR ?? 0;
     const ready = con > 0 && siz > 0 && pow > 0;
     // 專業 CoC 7e：HP = floor((CON+SIZ)/10)
     const maxHp = ready ? evaluateFormula(`floor((${con}+${siz})/10)`) : 0;
     const maxMp = ready ? evaluateFormula(`floor(${pow}/5)`) : 0;
     const maxSan = ready ? pow : 0;
     const dodge = dex > 0 ? evaluateFormula(`floor(${dex}/2)`) : 0;
+    const mov = cocMoveRate(str, dex, siz);
+    const { build, damage_bonus } = cocBuildAndDamageBonus(str, siz);
 
     /** 資源池同步：首次初始化或原本已滿 → 補滿；已消耗則保留並 clamp */
     const syncResource = (
@@ -131,6 +165,9 @@ export function recomputeDerived(
           max: maxSan,
         },
         dodge,
+        mov,
+        build,
+        damage_bonus,
       },
     };
   }
@@ -146,7 +183,7 @@ export function createBlankCharacter(
   return recomputeDerived({ ...sheet, name });
 }
 
-/** 相容舊存檔 backgroundAnswers → backstory_hooks */
+/** 相容舊存檔 backgroundAnswers → backstory_hooks；補齊身分／系統專屬空殼 */
 export function migrateCharacterSheet(
   raw: unknown,
 ): UniversalCharacterSheet {
@@ -159,8 +196,44 @@ export function migrateCharacterSheet(
       : (sheet.backgroundAnswers ?? {});
   const { backgroundAnswers: _drop, ...rest } = sheet;
   void _drop;
+
+  const identityDefaults = {
+    age: sheet.age ?? "",
+    gender: sheet.gender ?? "",
+    appearance: sheet.appearance ?? "",
+    residence: sheet.residence ?? "",
+    birthplace: sheet.birthplace ?? "",
+    languages: sheet.languages ?? "",
+    personal_bio: sheet.personal_bio ?? "",
+    wealth: sheet.wealth ?? "",
+  };
+
+  const profilePatch =
+    sheet.system_id === "COC_7E"
+      ? {
+          profile_coc: {
+            occupation: sheet.profile_coc?.occupation ?? "",
+            cash_assets: sheet.profile_coc?.cash_assets ?? "",
+          },
+        }
+      : sheet.system_id === "DND_5E"
+        ? {
+            profile_dnd: {
+              race: sheet.profile_dnd?.race ?? "",
+              class_name: sheet.profile_dnd?.class_name ?? "",
+              background: sheet.profile_dnd?.background ?? "",
+              alignment: sheet.profile_dnd?.alignment ?? "",
+              speed: sheet.profile_dnd?.speed ?? 30,
+              proficiencies: sheet.profile_dnd?.proficiencies ?? "",
+              features: sheet.profile_dnd?.features ?? "",
+            },
+          }
+        : {};
+
   return recomputeDerived({
     ...rest,
+    ...identityDefaults,
+    ...profilePatch,
     backstory_hooks: hooks,
     inventory: sheet.inventory ?? [],
     skills: sheet.skills ?? {},

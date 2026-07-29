@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProviderCode } from "@kaoruisaac/pedelec";
 import { Home, Settings } from "lucide-react";
-import { DiceModal } from "@/components/game/DiceModal";
 import { CharacterPage } from "@/components/pages/CharacterPage";
 import { EndingPage } from "@/components/pages/EndingPage";
 import { HomePage } from "@/components/pages/HomePage";
@@ -10,9 +9,11 @@ import { ScriptPage } from "@/components/pages/ScriptPage";
 import { PedelecInstallationGuideline } from "@/components/pedelec/PedelecInstallationGuideline";
 import { PedelecSettingsPanel } from "@/components/pedelec/PedelecSettings";
 import { PedelecStatusBadge } from "@/components/pedelec/PedelecStatusBadge";
+import { DevStorageInspector } from "@/components/dev/DevStorageInspector";
 import { Button } from "@/components/ui/button";
 import {
   deleteCampaign,
+  findBlankCampaignId,
   loadAgentPrefs,
   loadCampaign,
   loadCampaignIndex,
@@ -24,13 +25,17 @@ import {
   createGameSession,
   disposeGameSession,
   getActiveSession,
+  sendOpeningNarration,
   sendPlayerAction,
+  sessionNeedsRebuild,
 } from "@/lib/pedelec/createGameSession";
 import {
   checkPedelecPrerequisites,
   listProviderOptions,
   loadPedelecSettings,
+  requestPedelecOriginApproval,
 } from "@/lib/pedelec/preflight";
+import { normalizeScenarioScale } from "@/engine/scenarioScale";
 import { useGameStore } from "@/store/useGameStore";
 
 type Screen = "home" | "campaign";
@@ -106,6 +111,14 @@ export default function App() {
         .setProvider(prefs.selectedProvider as ProviderCode);
     }
     useGameStore.getState().setModel(prefs.selectedModel);
+    if (typeof prefs.suggestPlayerActions === "boolean") {
+      useGameStore
+        .getState()
+        .setSuggestPlayerActions(prefs.suggestPlayerActions);
+    }
+    if (prefs.scenarioScale) {
+      useGameStore.getState().setScenarioScale(prefs.scenarioScale);
+    }
     refreshCampaignList();
     setReady(true);
   }, [refreshCampaignList]);
@@ -133,24 +146,65 @@ export default function App() {
     const unsub = useGameStore.subscribe((s, prev) => {
       if (
         s.selectedProvider !== prev.selectedProvider ||
-        s.selectedModel !== prev.selectedModel
+        s.selectedModel !== prev.selectedModel ||
+        s.suggestPlayerActions !== prev.suggestPlayerActions ||
+        s.script.scenario_scale !== prev.script.scenario_scale
       ) {
         saveAgentPrefs({
           selectedProvider: s.selectedProvider,
           selectedModel: s.selectedModel,
+          suggestPlayerActions: s.suggestPlayerActions,
+          scenarioScale: normalizeScenarioScale(s.script.scenario_scale),
         });
       }
     });
     return unsub;
   }, [ready]);
 
+  const promptOriginApproval = useCallback(async () => {
+    setPreflight({
+      ready: false,
+      reason: "NEEDS_APPROVAL",
+      message:
+        "正在開啟 Pedelec 核准彈窗…請在擴充元件視窗中按「允許此網站」。",
+    });
+    setShowInstallGuide(true);
+
+    const approval = await requestPedelecOriginApproval();
+    if (approval.approved) {
+      const next = await checkPedelecPrerequisites();
+      setPreflight(next);
+      if (next.ready) setShowInstallGuide(false);
+      return next;
+    }
+
+    setPreflight({
+      ready: false,
+      reason: "NEEDS_APPROVAL",
+      message:
+        approval.message ??
+        "此網站尚未獲得 Pedelec 來源核准。請在擴充元件彈窗中按「允許此網站」。",
+    });
+    setShowInstallGuide(true);
+    return useGameStore.getState().preflight;
+  }, [setPreflight, setShowInstallGuide]);
+
   const runPreflight = useCallback(async () => {
     setPreflight({ ready: false, reason: "CHECKING" });
-    const result = await checkPedelecPrerequisites();
+    let result = await checkPedelecPrerequisites();
+
+    // getApprovalStatus 不會開彈窗；偵測到需核准時主動觸發 createSession 以開啟擴充元件
+    if (result.reason === "NEEDS_APPROVAL") {
+      setPreflight(result);
+      setShowInstallGuide(true);
+      result = await promptOriginApproval();
+      return result;
+    }
+
     setPreflight(result);
     if (!result.ready) setShowInstallGuide(true);
     return result;
-  }, [setPreflight, setShowInstallGuide]);
+  }, [promptOriginApproval, setPreflight, setShowInstallGuide]);
 
   useEffect(() => {
     if (!ready) return;
@@ -194,14 +248,34 @@ export default function App() {
 
       if (opts.mode === "new") {
         if (screen === "campaign") persistActiveCampaign();
-        const fresh = startNewCampaign();
-        saveCampaign(fresh);
-        await ensureSession();
-        if (attempt !== connectAttemptRef.current) return;
-        useGameStore
-          .getState()
-          .appendSystem("新劇本 Session 已開始。描述你想玩的故事吧。");
-        persistActiveCampaign();
+
+        // 已有完全空白、尚未討論的 Session → 直接進入，不另開新檔
+        const blankId = findBlankCampaignId();
+        if (blankId) {
+          const data = loadCampaign(blankId);
+          if (!data) return;
+          hydrateCampaign(data);
+          await ensureSession();
+          if (attempt !== connectAttemptRef.current) return;
+          const hasWelcome = useGameStore
+            .getState()
+            .messages.some((m) => m.role === "system");
+          if (!hasWelcome) {
+            useGameStore
+              .getState()
+              .appendSystem("新劇本 Session 已開始。描述你想玩的故事吧。");
+          }
+          persistActiveCampaign();
+        } else {
+          const fresh = startNewCampaign();
+          saveCampaign(fresh);
+          await ensureSession();
+          if (attempt !== connectAttemptRef.current) return;
+          useGameStore
+            .getState()
+            .appendSystem("新劇本 Session 已開始。描述你想玩的故事吧。");
+          persistActiveCampaign();
+        }
       } else {
         if (!opts.id) return;
         if (screen === "campaign") persistActiveCampaign();
@@ -264,6 +338,57 @@ export default function App() {
     await sendPlayerAction(lastPlayerAction);
   };
 
+  const onRetrySessionAction = useCallback(async () => {
+    const store = useGameStore.getState();
+    const action = store.retryAction;
+    if (!action) return;
+
+    setBootstrapping(true);
+    store.appendSystem(
+      action.kind === "opening"
+        ? "正在重建連線並重試開場敘事…"
+        : "正在重建連線並重試上一步…",
+    );
+
+    try {
+      const pf = await runPreflight();
+      if (!pf.ready) {
+        store.appendSystem("Pedelec 尚未就緒，請先完成連線後再重試。");
+        return;
+      }
+
+      if (sessionNeedsRebuild()) {
+        await ensureSession();
+      } else {
+        const session = getActiveSession();
+        if (!session || session.getStatus() !== "idle") {
+          await ensureSession();
+        }
+      }
+
+      store.setSessionError(null);
+
+      if (action.kind === "opening") {
+        await sendOpeningNarration();
+      } else {
+        await sendPlayerAction(action.text, { skipUserMessage: true });
+      }
+    } catch (err) {
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? String((err as { code: unknown }).code)
+          : "RETRY_FAILED";
+      const message = err instanceof Error ? err.message : "重試失敗";
+      const latest = useGameStore.getState();
+      if (!latest.sessionError) {
+        latest.setSessionError({ code, message });
+        latest.appendSystem(`重試失敗：${code} — ${message}`);
+      }
+    } finally {
+      setBootstrapping(false);
+    }
+  }, [ensureSession, runPreflight]);
+
   return (
     <div className="mx-auto flex h-dvh max-h-dvh max-w-7xl flex-col overflow-hidden px-3 py-4 md:px-6">
       <header className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
@@ -295,6 +420,7 @@ export default function App() {
           >
             <Settings className="h-4 w-4" />
           </Button>
+          <DevStorageInspector />
           <PedelecStatusBadge onRecheck={() => void runPreflight()} />
         </div>
       </header>
@@ -318,16 +444,18 @@ export default function App() {
         <PlayPage
           composerDisabled={composerDisabled}
           onRegenerate={() => void onRegenerate()}
+          onRetry={() => void onRetrySessionAction()}
         />
       ) : (
         <ScriptPage
           composerDisabled={composerDisabled}
           onRegenerate={() => void onRegenerate()}
+          onRetry={() => void onRetrySessionAction()}
         />
       )}
 
-      <DiceModal />
       <PedelecInstallationGuideline
+        onRequestApproval={promptOriginApproval}
         onRecheck={async () => {
           const result = await runPreflight();
           if (result.ready) {
