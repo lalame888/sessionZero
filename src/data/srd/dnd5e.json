@@ -1,0 +1,32 @@
+[
+  {
+    "keyword": "火球術",
+    "aliases": ["Fireball", "火球"],
+    "text": "D&D 5e SRD：火球術為 3 環塑能法術。20 呎半徑球體火焰傷害；成功豁免則傷害減半。需法術位。"
+  },
+  {
+    "keyword": "借機攻擊",
+    "aliases": ["Opportunity Attack", "借機"],
+    "text": "生物以自身移動離開你的觸及範圍時，你可使用反應進行一次近戰攻擊。"
+  },
+  {
+    "keyword": "優勢",
+    "aliases": ["Advantage"],
+    "text": "具優勢時擲兩次 d20 取較高。劣勢取較低。優勢與劣勢同時存在時互相抵銷。"
+  },
+  {
+    "keyword": "附贈動作",
+    "aliases": ["Bonus Action", "額外動作"],
+    "text": "每回合通常只能採取一次附贈動作。喝藥水是否算附贈動作依房規；官方 SRD 通常為動作。"
+  },
+  {
+    "keyword": "夾擊",
+    "aliases": ["Flanking"],
+    "text": "官方 5e SRD 無夾擊規則。若房規啟用夾擊，通常給予攻擊檢定 +2 或優勢。"
+  },
+  {
+    "keyword": "死亡豁免",
+    "aliases": ["Death Saving Throw"],
+    "text": "生命值歸零且瀕死時，每回合進行死亡豁免。三次成功穩定；三次失敗死亡。自然 20 恢復 1 HP。"
+  }
+]
