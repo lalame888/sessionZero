@@ -2,6 +2,7 @@ import { evaluate } from "mathjs";
 import { rollDice } from "@/engine/dice";
 import type {
   AttributeDef,
+  CharacterSchemaState,
   CreationMode,
   CreationModeConfig,
   GameSystemID,
@@ -41,6 +42,34 @@ export function defaultAttributeDefs(systemId: GameSystemID): AttributeDef[] {
     { key: "POW", label: "意志", dice_formula: "3d6x5" },
     { key: "EDU", label: "教育", dice_formula: "2d6+6x5" },
   ];
+}
+
+/** 依 key 取得繁中屬性名（藍圖優先，否則系統預設） */
+export function resolveAttributeLabel(
+  systemId: GameSystemID,
+  key: string,
+  defs?: AttributeDef[] | null,
+): string {
+  const fromDefs = defs?.find((d) => d.key === key)?.label?.trim();
+  if (fromDefs) return fromDefs;
+  const fallback = defaultAttributeDefs(systemId).find((d) => d.key === key);
+  return fallback?.label ?? key;
+}
+
+/** 解析屬性定義（含 dice_formula），供 tooltip 使用 */
+export function resolveAttributeDef(
+  systemId: GameSystemID,
+  key: string,
+  defs?: AttributeDef[] | null,
+): AttributeDef {
+  const fromDefs = defs?.find((d) => d.key === key);
+  if (fromDefs) return fromDefs;
+  return (
+    defaultAttributeDefs(systemId).find((d) => d.key === key) ?? {
+      key,
+      label: key,
+    }
+  );
 }
 
 export function defaultStandardArray(systemId: GameSystemID): number[] {
@@ -396,4 +425,96 @@ export function listCocSkillCatalog(): { name: string; base_value: number }[] {
   return Object.entries(COC_SKILL_BASE_DEFAULTS)
     .map(([name, base_value]) => ({ name, base_value }))
     .sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
+}
+
+/**
+ * CoC 系統常駐技能說明（不依賴 AI 藍圖）。
+ * - 閃避：幾乎每張卡都有，基礎＝floor(DEX/2)
+ * - 信用評級：社會地位／金錢信用技能，基礎 0，用職業／興趣點配置
+ */
+export const COC_SYSTEM_SKILL_DESCRIPTIONS: Record<string, string> = {
+  閃避: [
+    "閃避：迴避近戰攻擊等危險的技能。",
+    "系統常駐：創角時基礎值自動設為 floor(DEX/2)；可用職業／興趣點再提升。",
+    "檢定用途：被打時選擇閃避、某些需要靈活躲閃的場面。",
+  ].join("\n\n"),
+  信用評級: [
+    "信用評級：社會地位與可動用金錢／信用的技能（％），不是自由描述欄。",
+    "系統常駐：基礎通常為 0，依職業包建議範圍用職業／興趣點配置。",
+    "檢定用途：借錢、打通關係、被當成「有頭有臉」時。",
+    "請與「現金／資產」「資產概況」敘事大致對齊。",
+    "常見區間：落魄 0–5、溫飽 6–15、一般 16–39、小康 40–59、富裕 60–79、名流 80–99。",
+  ].join("\n\n"),
+};
+
+/** 解析技能說明：角色卡 → 藍圖 → 系統常駐 */
+export function resolveSkillDescription(
+  skillName: string,
+  opts?: {
+    systemId?: GameSystemID;
+    sheetDescriptions?: Record<string, string> | null;
+    schemaSkills?: { name: string; description?: string }[] | null;
+  },
+): string {
+  const fromSheet = opts?.sheetDescriptions?.[skillName]?.trim();
+  if (fromSheet) return fromSheet;
+
+  const fromSchema = opts?.schemaSkills?.find((s) => s.name === skillName)
+    ?.description?.trim();
+  if (fromSchema) return fromSchema;
+
+  if (opts?.systemId === "COC_7E" || opts?.systemId == null) {
+    const system = COC_SYSTEM_SKILL_DESCRIPTIONS[skillName];
+    if (system) return system;
+  }
+  return "";
+}
+
+/**
+ * 把藍圖上的技能敘述、鉤子問題全文寫入角色卡，
+ * 供檔案庫／匯出／冒險中完整角色卡顯示（不依賴當下藍圖仍在）。
+ */
+export function enrichCharacterSheetMeta(
+  sheet: UniversalCharacterSheet,
+  schema: CharacterSchemaState | null | undefined,
+): UniversalCharacterSheet {
+  const skill_descriptions: Record<string, string> = {
+    ...(sheet.skill_descriptions ?? {}),
+  };
+  for (const sk of schema?.recommended_skills ?? []) {
+    const desc = sk.description?.trim();
+    if (!desc) continue;
+    skill_descriptions[sk.name] = desc;
+  }
+
+  // 補上系統常駐技能說明（藍圖未提供時）
+  if (sheet.system_id === "COC_7E") {
+    for (const name of Object.keys(sheet.skills ?? {})) {
+      if (skill_descriptions[name]?.trim()) continue;
+      const systemDesc = COC_SYSTEM_SKILL_DESCRIPTIONS[name];
+      if (systemDesc) skill_descriptions[name] = systemDesc;
+    }
+    // 即使尚未出現在 skills 也預寫（信用評級／閃避常為系統固定）
+    for (const [name, desc] of Object.entries(COC_SYSTEM_SKILL_DESCRIPTIONS)) {
+      if (!skill_descriptions[name]?.trim()) skill_descriptions[name] = desc;
+    }
+  }
+
+  const backstory_hook_questions: Record<string, string> = {
+    ...(sheet.backstory_hook_questions ?? {}),
+  };
+  for (const q of schema?.background_questions ?? []) {
+    const question = q.question?.trim();
+    if (!question) continue;
+    const category = q.category?.trim();
+    backstory_hook_questions[q.id] = category
+      ? `${category}：${question}`
+      : question;
+  }
+
+  return {
+    ...sheet,
+    skill_descriptions,
+    backstory_hook_questions,
+  };
 }

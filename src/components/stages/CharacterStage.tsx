@@ -3,6 +3,7 @@ import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { HoverTooltip } from "@/components/ui/hover-tooltip";
 import { Input, Label, Textarea } from "@/components/ui/input";
+import { useRepeatPress } from "@/hooks/useRepeatPress";
 import {
   evalAttrFormula,
   normalizeCreationMode,
@@ -12,6 +13,8 @@ import {
   totalPointBuySpent,
   COC_CREATION_SKILL_CAP,
   listCocSkillCatalog,
+  enrichCharacterSheetMeta,
+  resolveSkillDescription,
 } from "@/engine/creation";
 import type { RecommendedSkill } from "@/types/game";
 import { migrateCharacterSheet } from "@/engine/formulas";
@@ -114,6 +117,8 @@ export function CharacterStage() {
     {},
   );
   const [skillSpend, setSkillSpend] = useState<SkillSpend>({});
+  const skillSpendRef = useRef<SkillSpend>({});
+  skillSpendRef.current = skillSpend;
   const [highSkillWarned, setHighSkillWarned] = useState<Set<string>>(
     () => new Set(),
   );
@@ -474,13 +479,23 @@ export function CharacterStage() {
     if (newScore < pointBuy.min_score || newScore > pointBuy.max_score) {
       return false;
     }
-    const trial = { ...character.attributes, [key]: newScore };
+    const sheet = useGameStore.getState().character;
+    if (!sheet) return false;
+    const trial = { ...sheet.attributes, [key]: newScore };
     return totalPointBuySpent(trial, attrKeys, pointBuy) <= pointBuy.budget;
   };
 
   const adjustPointBuy = (key: string, score: number) => {
     if (!canPointBuyAdjust(key, score)) return;
     applyAttributes({ [key]: score });
+  };
+
+  const adjustPointBuyBy = (key: string, delta: number) => {
+    if (!pointBuy) return;
+    const sheet = useGameStore.getState().character;
+    if (!sheet) return;
+    const current = sheet.attributes[key] || pointBuy.min_score;
+    adjustPointBuy(key, current + delta);
   };
 
   const syncSkillsFromSpend = (spend: SkillSpend) => {
@@ -546,9 +561,10 @@ export function CharacterStage() {
   const maxAffordableFor = (
     name: string,
     pool: "occ" | "interest",
+    spend: SkillSpend = skillSpendRef.current,
   ): number => {
     const sk = allocSkills.find((s) => s.name === name);
-    const cur = skillSpend[name] ?? { occ: 0, interest: 0 };
+    const cur = spend[name] ?? { occ: 0, interest: 0 };
     const otherPool = pool === "occ" ? cur.interest : cur.occ;
     const base = sk?.base_value ?? 0;
     // 創角單技總值不可超過 99%：此池最多還能再加多少
@@ -556,10 +572,15 @@ export function CharacterStage() {
       0,
       COC_CREATION_SKILL_CAP - base - otherPool,
     );
+    const usedOcc = Object.values(spend).reduce((a, x) => a + (x?.occ ?? 0), 0);
+    const usedInterest = Object.values(spend).reduce(
+      (a, x) => a + (x?.interest ?? 0),
+      0,
+    );
     const byBudget =
       pool === "occ"
-        ? Math.max(0, occBudget - (occUsed - cur.occ))
-        : Math.max(0, interestBudget - (interestUsed - cur.interest));
+        ? Math.max(0, occBudget - (usedOcc - cur.occ))
+        : Math.max(0, interestBudget - (usedInterest - cur.interest));
     return Math.min(byBudget, roomUnderCap);
   };
 
@@ -575,6 +596,7 @@ export function CharacterStage() {
       appendSystem("職業點只能花在職業技能上。");
       return;
     }
+    const skillSpend = skillSpendRef.current;
     const cur = skillSpend[name] ?? { occ: 0, interest: 0 };
     const maxAffordable = maxAffordableFor(name, pool);
     const raw = Number.isFinite(requested) ? Math.floor(requested) : 0;
@@ -603,6 +625,7 @@ export function CharacterStage() {
       );
       setHighSkillWarned((s) => new Set(s).add(name));
     }
+    skillSpendRef.current = trial;
     setSkillSpend(trial);
     syncSkillsFromSpend(trial);
   };
@@ -612,7 +635,7 @@ export function CharacterStage() {
     pool: "occ" | "interest",
     delta: number,
   ) => {
-    const cur = skillSpend[name] ?? { occ: 0, interest: 0 };
+    const cur = skillSpendRef.current[name] ?? { occ: 0, interest: 0 };
     setSkillPool(name, pool, cur[pool] + delta);
   };
 
@@ -699,7 +722,9 @@ export function CharacterStage() {
         <Button
           size="sm"
           variant="secondary"
-          onClick={() => exportCharacterJson(character)}
+          onClick={() =>
+            exportCharacterJson(enrichCharacterSheetMeta(character, schema))
+          }
           disabled={!attrsReady}
         >
           匯出 JSON
@@ -729,7 +754,7 @@ export function CharacterStage() {
           variant="secondary"
           disabled={!attrsReady || !character.name}
           onClick={() => {
-            saveCharacterToLibrary(character);
+            saveCharacterToLibrary(enrichCharacterSheetMeta(character, schema));
             setLibrary(loadCharacterLibrary());
             appendSystem("已存入本機角色檔案庫。");
           }}
@@ -1230,36 +1255,17 @@ export function CharacterStage() {
                   const canMinus = canPointBuyAdjust(d.key, score - 1);
                   const canPlus = canPointBuyAdjust(d.key, score + 1);
                   return (
-                    <div
+                    <PointBuyRow
                       key={d.key}
-                      className="flex items-center gap-2 text-xs"
-                    >
-                      <HoverTooltip header={d.label} content={attrTip(d)}>
-                        <span className="w-14 underline decoration-dotted decoration-muted underline-offset-2">
-                          {d.label}
-                        </span>
-                      </HoverTooltip>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        disabled={!canMinus}
-                        onClick={() => adjustPointBuy(d.key, score - 1)}
-                      >
-                        −
-                      </Button>
-                      <span className="w-8 text-center text-ink">{score}</span>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        disabled={!canPlus}
-                        onClick={() => adjustPointBuy(d.key, score + 1)}
-                      >
-                        +
-                      </Button>
-                      <span className="text-muted">
-                        花費 {pointBuyCost(score, pointBuy)}
-                      </span>
-                    </div>
+                      label={d.label}
+                      tip={attrTip(d)}
+                      score={score}
+                      cost={pointBuyCost(score, pointBuy)}
+                      canMinus={canMinus}
+                      canPlus={canPlus}
+                      onMinus={() => adjustPointBuyBy(d.key, -1)}
+                      onPlus={() => adjustPointBuyBy(d.key, 1)}
+                    />
                   );
                 })}
               </div>
@@ -1350,7 +1356,14 @@ export function CharacterStage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <HoverTooltip
                             header={sk.name}
-                            content={sk.description ?? ""}
+                            content={
+                              sk.description?.trim() ||
+                              resolveSkillDescription(sk.name, {
+                                systemId: character.system_id,
+                                sheetDescriptions: character.skill_descriptions,
+                                schemaSkills: schema?.recommended_skills,
+                              })
+                            }
                           >
                             <div className="text-xs text-ink underline decoration-dotted decoration-muted underline-offset-2">
                               {sk.name}
@@ -1431,34 +1444,38 @@ export function CharacterStage() {
                   （游標移上可看公式）
                 </span>
               </div>
-              <div className="space-y-1">
+              <div className="flex flex-col gap-1.5">
                 {derivedRows.map((r) => (
-                  <HoverTooltip
+                  <div
                     key={r.id}
-                    header={r.label}
-                    content={r.content}
+                    className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"
                   >
-                    <div className="underline decoration-dotted decoration-muted underline-offset-2">
-                      {r.label} {r.display}
-                    </div>
-                  </HoverTooltip>
+                    <HoverTooltip header={r.label} content={r.content}>
+                      <span className="underline decoration-dotted decoration-muted underline-offset-2">
+                        {r.label}
+                      </span>
+                    </HoverTooltip>
+                    <span className="tabular-nums text-ink">{r.display}</span>
+                  </div>
                 ))}
               </div>
               {fixedAttrRows.length ? (
-                <div className="space-y-1 border-t border-border/50 pt-2">
+                <div className="flex flex-col gap-1.5 border-t border-border/50 pt-2">
                   <div className="text-[10px] text-muted">
                     系統固定參數（影響 HP／AC／熟練）
                   </div>
                   {fixedAttrRows.map((r) => (
-                    <HoverTooltip
+                    <div
                       key={r.id}
-                      header={r.label}
-                      content={r.content}
+                      className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"
                     >
-                      <div className="underline decoration-dotted decoration-muted underline-offset-2">
-                        {r.label} {r.display}
-                      </div>
-                    </HoverTooltip>
+                      <HoverTooltip header={r.label} content={r.content}>
+                        <span className="underline decoration-dotted decoration-muted underline-offset-2">
+                          {r.label}
+                        </span>
+                      </HoverTooltip>
+                      <span className="tabular-nums text-ink">{r.display}</span>
+                    </div>
                   ))}
                 </div>
               ) : null}
@@ -1633,6 +1650,59 @@ function SkillPoolMeter({
 
 const QUICK_STEPS = [5, 10, 20] as const;
 
+function PointBuyRow({
+  label,
+  tip,
+  score,
+  cost,
+  canMinus,
+  canPlus,
+  onMinus,
+  onPlus,
+}: {
+  label: string;
+  tip: string;
+  score: number;
+  cost: number;
+  canMinus: boolean;
+  canPlus: boolean;
+  onMinus: () => void;
+  onPlus: () => void;
+}) {
+  const minusPress = useRepeatPress(onMinus, { disabled: !canMinus });
+  const plusPress = useRepeatPress(onPlus, { disabled: !canPlus });
+
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <HoverTooltip header={label} content={tip}>
+        <span className="w-14 underline decoration-dotted decoration-muted underline-offset-2">
+          {label}
+        </span>
+      </HoverTooltip>
+      <Button
+        size="sm"
+        variant="secondary"
+        disabled={!canMinus}
+        {...minusPress}
+        aria-label={`${label}減 1`}
+      >
+        −
+      </Button>
+      <span className="w-8 text-center text-ink">{score}</span>
+      <Button
+        size="sm"
+        variant="secondary"
+        disabled={!canPlus}
+        {...plusPress}
+        aria-label={`${label}加 1`}
+      >
+        +
+      </Button>
+      <span className="text-muted">花費 {cost}</span>
+    </div>
+  );
+}
+
 function SkillPoolControls({
   label,
   value,
@@ -1649,11 +1719,16 @@ function SkillPoolControls({
   onAdjust: (delta: number) => void;
 }) {
   const [draft, setDraft] = useState(String(value));
-  const [focused, setFocused] = useState(false);
+  const canMinus = value > 0;
+  const canPlus = remainingBudget > 0 && value < max;
+  const minusPress = useRepeatPress(() => onAdjust(-1), {
+    disabled: !canMinus,
+  });
+  const plusPress = useRepeatPress(() => onAdjust(1), { disabled: !canPlus });
 
   useEffect(() => {
-    if (!focused) setDraft(String(value));
-  }, [value, focused]);
+    setDraft(String(value));
+  }, [value]);
 
   const commitDraft = () => {
     const n = Number(draft);
@@ -1672,8 +1747,8 @@ function SkillPoolControls({
         size="sm"
         variant="ghost"
         className="h-8 w-8 px-0"
-        disabled={value <= 0}
-        onClick={() => onAdjust(-1)}
+        disabled={!canMinus}
+        {...minusPress}
         aria-label={`${label}減 1`}
       >
         −
@@ -1684,15 +1759,21 @@ function SkillPoolControls({
         min={0}
         max={max}
         value={draft}
-        onFocus={() => setFocused(true)}
-        onBlur={() => {
-          setFocused(false);
-          commitDraft();
-        }}
+        onBlur={commitDraft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.currentTarget.blur();
+            return;
+          }
+          if (e.key === "ArrowUp") {
+            e.preventDefault();
+            if (canPlus) onAdjust(1);
+            return;
+          }
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            if (canMinus) onAdjust(-1);
           }
         }}
         className="h-8 w-16 px-2 text-center tabular-nums"
@@ -1703,8 +1784,8 @@ function SkillPoolControls({
         size="sm"
         variant="ghost"
         className="h-8 w-8 px-0"
-        disabled={remainingBudget <= 0 || value >= max}
-        onClick={() => onAdjust(1)}
+        disabled={!canPlus}
+        {...plusPress}
         aria-label={`${label}加 1`}
       >
         +

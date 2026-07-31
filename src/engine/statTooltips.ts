@@ -67,12 +67,16 @@ export function attributeTooltipContent(
     mode?: string;
     score?: number;
     modifier?: number;
+    /** 預設 true；冒險進行中可關，不顯示創角擲骰公式 */
+    includeDiceFormula?: boolean;
   },
 ): string {
   const lines: string[] = [attributeMeaning(systemId, def.key)];
 
-  const dice = describeDiceFormula(def.dice_formula);
-  if (dice) lines.push(dice);
+  if (opts?.includeDiceFormula !== false) {
+    const dice = describeDiceFormula(def.dice_formula);
+    if (dice) lines.push(dice);
+  }
 
   if (opts?.mode === "ARRAY") {
     lines.push("標準陣列：從此模式提供的互斥分數中擇一指派，不可重複使用同一格。");
@@ -191,15 +195,27 @@ export function buildDerivedTooltipRows(
       ].join("\n"),
     });
     rows.push({
-      id: "build_db",
-      label: "體格／傷害加值",
-      display: `體格 ${build} · DB ${db}`,
+      id: "build",
+      label: "體格",
+      display: String(build),
       content: [
-        "體格用於摔角等；傷害加值加在近戰成功傷害上。",
+        "體格：用於摔角、擒抱等體型對抗。",
         "依 STR＋SIZ 查表（節錄）：",
-        "≤64 → −2／−2　≤84 → −1／−1　≤124 → 0／0",
-        "≤164 → +1／+1D4　≤204 → +2／+1D6　≤284 → +3／+2D6 …",
-        `代入：STR＋SIZ＝${str}+${siz}＝${str + siz} → 體格 ${build}、傷害加值 ${db}`,
+        "≤64 → −2　≤84 → −1　≤124 → 0",
+        "≤164 → +1　≤204 → +2　≤284 → +3 …",
+        `代入：STR＋SIZ＝${str}+${siz}＝${str + siz} → 體格 ${build}`,
+      ].join("\n"),
+    });
+    rows.push({
+      id: "db",
+      label: "DB",
+      display: String(db),
+      content: [
+        "傷害加值（Damage Bonus）：近戰成功時加在傷害骰上。",
+        "依 STR＋SIZ 查表（節錄）：",
+        "≤64 → −2　≤84 → −1　≤124 → 0",
+        "≤164 → +1D4　≤204 → +1D6　≤284 → +2D6 …",
+        `代入：STR＋SIZ＝${str}+${siz}＝${str + siz} → DB ${db}`,
       ].join("\n"),
     });
     return rows;

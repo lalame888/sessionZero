@@ -568,7 +568,7 @@ export async function createGameSession(options: {
     }
     if (status === "idle") {
       s.setIsTyping(false);
-      s.setSessionError(null);
+      // 不在 idle 清除 sessionError：錯誤後 Session 常回到 idle，仍需顯示重試按鈕
     }
     if (status === "error" || status === "ended") {
       s.setIsTyping(false);
@@ -694,7 +694,8 @@ export async function sendOpeningNarration() {
     recentMessages: [],
     playerAction: OPENING_NARRATION_ACTION,
     turn: store.turn,
-    suggestPlayerActions: store.suggestPlayerActions,
+    // 開場第一則一律不附推薦行動（與開關無關）
+    suggestPlayerActions: false,
   });
 
   await session.sendText(prompt);

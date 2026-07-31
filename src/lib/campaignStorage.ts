@@ -10,6 +10,7 @@ import type {
   HouseRuleConfig,
   MadnessStatus,
   NPCItem,
+  PlayerNote,
   ScenarioScale,
   ScriptState,
   ThemeId,
@@ -41,6 +42,8 @@ export interface CampaignPersist {
   character: UniversalCharacterSheet | null;
   characterSchema: CharacterSchemaState | null;
   clues: ClueItem[];
+  /** 玩家自行新增的關鍵資訊筆記；舊存檔可能缺此欄 */
+  playerNotes?: PlayerNote[];
   npcs: NPCItem[];
   madness: MadnessStatus;
   history: HistoryLog[];
@@ -220,6 +223,7 @@ export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPe
     character: null,
     characterSchema: null,
     clues: [],
+    playerNotes: [],
     npcs: [],
     madness: { active: false },
     history: [],

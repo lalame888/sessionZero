@@ -15,6 +15,7 @@ import {
   defaultModeConfig,
   defaultPointBuy,
   defaultStandardArray,
+  enrichCharacterSheetMeta,
   normalizeBackgroundQuestions,
   normalizeCreationMode,
   resolveSkillBaseValue,
@@ -37,6 +38,7 @@ import type {
   MadnessStatus,
   NPCItem,
   PendingDice,
+  PlayerNote,
   PreflightState,
   RetryAction,
   RuleLookupResult,
@@ -56,6 +58,7 @@ import { normalizeScenarioScale } from "@/engine/scenarioScale";
 function snapshotOf(state: {
   character: UniversalCharacterSheet | null;
   clues: ClueItem[];
+  playerNotes: PlayerNote[];
   npcs: NPCItem[];
   madness: MadnessStatus;
 }): HistoryLog["snapshot"] {
@@ -64,6 +67,7 @@ function snapshotOf(state: {
       ? structuredClone(state.character)
       : createBlankCharacter("COC_7E"),
     clues: structuredClone(state.clues),
+    playerNotes: structuredClone(state.playerNotes),
     npcs: structuredClone(state.npcs),
     madness: structuredClone(state.madness),
   };
@@ -103,6 +107,7 @@ interface GameStore {
   character: UniversalCharacterSheet | null;
   characterSchema: CharacterSchemaState | null;
   clues: ClueItem[];
+  playerNotes: PlayerNote[];
   npcs: NPCItem[];
   madness: MadnessStatus;
   history: HistoryLog[];
@@ -187,6 +192,12 @@ interface GameStore {
   ) => void;
   markSkillSuccess: (skill_name: string) => void;
   recordClue: (clue: ClueItem) => void;
+  addPlayerNote: (note: { title: string; content: string }) => string;
+  updatePlayerNote: (
+    note_id: string,
+    patch: { title: string; content: string },
+  ) => void;
+  removePlayerNote: (note_id: string) => void;
   triggerMadness: (madness: MadnessStatus) => void;
   registerNpc: (npc: NPCItem) => void;
   setPendingDice: (dice: PendingDice | null, resolver?: GameStore["diceResolver"]) => void;
@@ -236,6 +247,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   character: null,
   characterSchema: null,
   clues: [],
+  playerNotes: [],
   npcs: [],
   madness: { active: false },
   history: [],
@@ -639,6 +651,41 @@ export const useGameStore = create<GameStore>((set, get) => ({
     get().appendSystem(`發現線索：${clue.title}`);
   },
 
+  addPlayerNote: ({ title, content }) => {
+    const note_id = crypto.randomUUID();
+    const now = Date.now();
+    const note: PlayerNote = {
+      note_id,
+      title,
+      content,
+      createdAt: now,
+      updatedAt: now,
+    };
+    set((s) => ({ playerNotes: [note, ...s.playerNotes] }));
+    return note_id;
+  },
+
+  updatePlayerNote: (note_id, patch) => {
+    set((s) => ({
+      playerNotes: s.playerNotes.map((n) =>
+        n.note_id === note_id
+          ? {
+              ...n,
+              title: patch.title,
+              content: patch.content,
+              updatedAt: Date.now(),
+            }
+          : n,
+      ),
+    }));
+  },
+
+  removePlayerNote: (note_id) => {
+    set((s) => ({
+      playerNotes: s.playerNotes.filter((n) => n.note_id !== note_id),
+    }));
+  },
+
   triggerMadness: (madness) => {
     set({ madness });
     get().appendSystem(
@@ -724,6 +771,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       turn: Math.max(0, get().turn - 1),
       character: snap.character,
       clues: snap.clues,
+      playerNotes: snap.playerNotes ?? [],
       npcs: snap.npcs,
       madness: snap.madness ?? { active: false },
     });
@@ -749,11 +797,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
       set({
         phase: "PLAYING",
-        character: recomputeDerived(sheet),
+        character: recomputeDerived(
+          enrichCharacterSheetMeta(sheet, get().characterSchema),
+        ),
         // 清掉前面 Session/創角階段的訊息，避免在冒險階段顯示舊內容
         history: [],
         messages: [],
         chapterSummaries: [],
+        playerNotes: [],
         turn: 0,
         timelineIndex: null,
         lastPlayerAction: "",
@@ -823,6 +874,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       character: s.character,
       characterSchema: s.characterSchema,
       clues: s.clues,
+      playerNotes: s.playerNotes,
       npcs: s.npcs,
       madness: s.madness,
       history: s.history,
@@ -838,6 +890,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   hydrateCampaign: (data) => {
+    const LOAD_NOTICE_RE = /^已載入「.+」，可繼續進度。$/;
+    const messages = (data.messages ?? []).filter(
+      (m) => !(m.role === "system" && LOAD_NOTICE_RE.test(m.content)),
+    );
+    const needsOpening =
+      data.phase === "PLAYING" &&
+      (data.history?.length ?? 0) === 0 &&
+      !messages.some((m) => m.role === "agent");
+
     set({
       campaignId: data.id,
       campaignCreatedAt: data.createdAt,
@@ -849,12 +910,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
       character: data.character,
       characterSchema: data.characterSchema,
       clues: data.clues,
+      playerNotes: data.playerNotes ?? [],
       npcs: data.npcs,
       madness: data.madness,
       history: data.history,
       chapterSummaries: data.chapterSummaries,
       turn: data.turn,
-      messages: data.messages,
+      messages,
       ending: data.ending,
       timelineIndex: data.timelineIndex,
       lastPlayerAction: data.lastPlayerAction,
@@ -866,16 +928,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
       isTyping: false,
       secretRollActive: false,
       sessionError: null,
-      retryAction:
-        data.phase === "PLAYING" && data.messages.length <= 1
-          ? { kind: "opening", label: "重試開場敘事" }
-          : data.lastPlayerAction
-            ? {
-                kind: "player",
-                label: "重試上一步行動",
-                text: data.lastPlayerAction,
-              }
-            : null,
+      retryAction: needsOpening
+        ? { kind: "opening", label: "重試開場敘事" }
+        : data.lastPlayerAction
+          ? {
+              kind: "player",
+              label: "重試上一步行動",
+              text: data.lastPlayerAction,
+            }
+          : null,
     });
   },
 

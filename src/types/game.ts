@@ -31,10 +31,14 @@ export interface UniversalCharacterSheet {
     damage_bonus?: string;
   };
   skills: Record<string, number>;
+  /** 技能說明（存入檔案庫／匯出時一併保存，供完整角色卡顯示） */
+  skill_descriptions?: Record<string, string>;
   markedSkillsForGrowth?: string[];
   inventory: string[];
-  /** 劇情鉤子：信念、重要之人、羈絆、缺點等 */
+  /** 劇情鉤子：信念、重要之人、羈絆、缺點等（id → 回答） */
   backstory_hooks: Record<string, string>;
+  /** 鉤子問題全文（id → question），避免完整角色卡只顯示 BO1 等 id */
+  backstory_hook_questions?: Record<string, string>;
 
   /** 共通身分 */
   age?: string;
@@ -77,6 +81,15 @@ export interface ClueItem {
   is_key_clue: boolean;
 }
 
+/** 冒險中玩家自行新增的關鍵資訊筆記 */
+export interface PlayerNote {
+  note_id: string;
+  title: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface MadnessStatus {
   active: boolean;
   type?: "TEMPORARY" | "INDEFINITE" | "PERMANENT";
@@ -109,6 +122,7 @@ export interface HistoryLog {
   snapshot: {
     character: UniversalCharacterSheet;
     clues: ClueItem[];
+    playerNotes: PlayerNote[];
     npcs: NPCItem[];
     madness?: MadnessStatus;
   };

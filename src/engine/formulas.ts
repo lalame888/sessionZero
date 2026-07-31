@@ -235,8 +235,10 @@ export function migrateCharacterSheet(
     ...identityDefaults,
     ...profilePatch,
     backstory_hooks: hooks,
+    backstory_hook_questions: sheet.backstory_hook_questions,
     inventory: sheet.inventory ?? [],
     skills: sheet.skills ?? {},
+    skill_descriptions: sheet.skill_descriptions,
   });
 }
 

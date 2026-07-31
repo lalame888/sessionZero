@@ -284,9 +284,7 @@ export default function App() {
         hydrateCampaign(data);
         await ensureSession();
         if (attempt !== connectAttemptRef.current) return;
-        useGameStore
-          .getState()
-          .appendSystem(`已載入「${data.title}」，可繼續進度。`);
+        // 不寫入「已載入…可繼續進度」避免每次進檔都堆系統訊息
         persistActiveCampaign();
       }
 
