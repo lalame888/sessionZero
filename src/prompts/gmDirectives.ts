@@ -1,4 +1,5 @@
 import type { ScenarioScale } from "@/types/game";
+import type { PriorScriptDesign } from "@/lib/campaignStorage";
 import { scenarioScaleRequirements } from "@/engine/scenarioScale";
 
 export const GM_DIRECTIVES = `You are the GM for SessionZero, a strict multi-system TRPG engine (CoC 7e / D&D 5e).
@@ -61,6 +62,7 @@ TOOL USAGE:
 - Session 0 (劇本討論 / 確認設定): When the premise is clear enough, call setup_script. After setup_script, STAY in discussion — the player may revise tone, system, role, house rules, etc. over multiple turns. Call setup_script again whenever settings change. Whenever you call setup_script (meaning the creation recommendation may have changed), immediately follow up by calling generate_character_schema with creation_mode = setup_script.recommended_creation_mode to produce the "creation blueprint" (do not rely on free-text for final numeric attributes).
 - Character creation (Phase CHARACTER only): call generate_character_schema when the player asks for schema / creation fields, or when entering創角 with no schema yet. Call fill_character_narrative only when the player explicitly requests AI-designed narrative sheet fields (no stats).
 - Play: narrate_story for visible narrative; include check_request when a player-visible roll is needed.
+- AFTER CHECK RESULTS (CRITICAL): When narrate_story returns a dice outcome, your NEXT narrate_story.narrative_text must continue ONLY from that outcome — describe the check result and immediate consequences, then pause for player input. Do NOT repeat, paraphrase, or rewrite any text already narrated in the previous narrate_story call (especially during opening).
 - Use secret_check_request for GM-only rolls (perception of lies, hidden threats).
 - Use update_game_stats / record_clue / register_npc / trigger_madness / mark_skill_success as needed.
 - Use end_game_session only when a definitive ending is reached.
@@ -91,6 +93,91 @@ export const AUTO_GENERATE_COC_SCRIPT_PROMPT = `請你自行構思並建立一�
 5. 建立完成後，用繁體中文簡短說明劇本公開資訊（勿劇透 hidden），並邀請我調整或確認房規；同時呼叫 generate_character_schema 產生創角藍圖（不要在文字中給出最終屬性數字）。
 
 請現在就生成並呼叫 setup_script。`;
+
+const PRIOR_FIELD_MAX = 420;
+
+function clipText(text: string | undefined | null, max = PRIOR_FIELD_MAX): string {
+  const t = (text ?? "").trim();
+  if (!t) return "（無）";
+  if (t.length <= max) return t;
+  return `${t.slice(0, max)}…`;
+}
+
+/** 將既有劇本設計壓成精簡摘要（設定／背景／謎底），不含遊玩紀錄 */
+export function formatPriorScriptDesignsForPrompt(
+  designs: PriorScriptDesign[],
+): string {
+  if (!designs.length) return "";
+
+  const blocks = designs.map((d, i) => {
+    const pub = d.public_summary;
+    const hid = d.hidden_full_script;
+    const scale = d.scenario_scale ?? "unknown";
+    const system = d.system_id ?? "UNSET";
+    const lines: string[] = [
+      `### ${i + 1}. 《${d.title}》（${system} / ${scale}）`,
+    ];
+    if (pub) {
+      lines.push(`- 類型：${clipText(pub.genre, 80)}`);
+      lines.push(`- 背景：${clipText(pub.background)}`);
+      lines.push(`- 主角定位：${clipText(pub.protagonist_role, 160)}`);
+      if (pub.player_hook) {
+        lines.push(`- 開場鉤子：${clipText(pub.player_hook, 200)}`);
+      }
+      if (pub.geography) {
+        lines.push(`- 舞台／地理：${clipText(pub.geography, 160)}`);
+      }
+      if (pub.known_facts?.length) {
+        lines.push(
+          `- 已知事實：${pub.known_facts
+            .slice(0, 6)
+            .map((f) => clipText(f, 80))
+            .join("；")}`,
+        );
+      }
+    }
+    if (hid) {
+      lines.push(`- 謎底／真相：${clipText(hid.truth_and_secrets)}`);
+      if (hid.key_clues?.length) {
+        lines.push(
+          `- 關鍵線索：${hid.key_clues
+            .slice(0, 8)
+            .map((c) => clipText(c, 100))
+            .join("；")}`,
+        );
+      }
+      lines.push(`- 勝利條件：${clipText(hid.winning_condition, 200)}`);
+      if (hid.scenes?.length) {
+        lines.push(
+          `- 場景：${hid.scenes
+            .slice(0, 12)
+            .map((s) => s.name)
+            .join("、")}`,
+        );
+      }
+      if (hid.npcs?.length) {
+        lines.push(
+          `- 重要 NPC：${hid.npcs
+            .slice(0, 10)
+            .map((n) => `${n.name}（${n.role}）`)
+            .join("、")}`,
+        );
+      }
+      if (hid.acts?.length) {
+        lines.push(
+          `- 幕結構：${hid.acts.map((a) => a.name).join(" → ")}`,
+        );
+      }
+    }
+    return lines.join("\n");
+  });
+
+  return `[PRIOR SCRIPT DESIGNS — AVOID REPEATING]
+以下是玩家近 ${designs.length} 個既有劇本的「設計摘要」（僅設定／背景／謎底等，不含遊玩紀錄）。
+請務必構思與這些不同的新劇本：避免重複相同的標題核心、舞台設定、核心謎底／真相、主要反派或神明、調查結構與結局走向。可保留同系統／同類型氛圍，但情節與設定必須明顯區隔。
+
+${blocks.join("\n\n")}`;
+}
 
 export function buildAutoGenerateCocScriptPrompt(scale: ScenarioScale): string {
   return `${scenarioScaleRequirements(scale)}

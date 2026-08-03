@@ -82,7 +82,6 @@ export default function App() {
   const setShowInstallGuide = useGameStore((s) => s.setShowInstallGuide);
   const setShowSettings = useGameStore((s) => s.setShowSettings);
   const selectedProvider = useGameStore((s) => s.selectedProvider);
-  const lastPlayerAction = useGameStore((s) => s.lastPlayerAction);
   const pendingDice = useGameStore((s) => s.pendingDice);
   const script = useGameStore((s) => s.script);
   const hydrateCampaign = useGameStore((s) => s.hydrateCampaign);
@@ -330,10 +329,19 @@ export default function App() {
     Boolean(pendingDice);
 
   const onRegenerate = async () => {
-    if (!lastPlayerAction) return;
+    const store = useGameStore.getState();
     const session = getActiveSession();
     if (!session || session.getStatus() !== "idle") return;
-    await sendPlayerAction(lastPlayerAction);
+
+    const action = store.retryAction;
+    if (action?.kind === "player") {
+      await sendPlayerAction(action.text, {
+        extraLayers: action.extraLayers,
+      });
+      return;
+    }
+    if (!store.lastPlayerAction) return;
+    await sendPlayerAction(store.lastPlayerAction);
   };
 
   const onRetrySessionAction = useCallback(async () => {
@@ -352,6 +360,13 @@ export default function App() {
       const pf = await runPreflight();
       if (!pf.ready) {
         store.appendSystem("Pedelec 尚未就緒，請先完成連線後再重試。");
+        // 保持／寫入錯誤狀態，讓開場重試按鈕繼續顯示
+        if (!store.sessionError) {
+          store.setSessionError({
+            code: "PEDELEC_NOT_READY",
+            message: "Pedelec 尚未就緒，請先完成連線後再重試。",
+          });
+        }
         return;
       }
 
@@ -369,7 +384,10 @@ export default function App() {
       if (action.kind === "opening") {
         await sendOpeningNarration();
       } else {
-        await sendPlayerAction(action.text, { skipUserMessage: true });
+        await sendPlayerAction(action.text, {
+          skipUserMessage: true,
+          extraLayers: action.extraLayers,
+        });
       }
     } catch (err) {
       const code =

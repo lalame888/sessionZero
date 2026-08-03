@@ -25,6 +25,7 @@ import {
   createEmptyCampaignPersist,
   type CampaignPersist,
 } from "@/lib/campaignStorage";
+import { isNarrativeRewrite } from "@/lib/narrativeDedupe";
 import type {
   ChapterSummary,
   CharacterSchemaState,
@@ -210,6 +211,10 @@ interface GameStore {
     diceRecord?: HistoryLog["diceRecord"];
   }) => void;
   narrateFromTool: (narrative: string, systemNotice?: string) => void;
+  /** 合併同輪檢定後重寫的重複 GM 訊息 */
+  collapseNarrativeRewrites: () => void;
+  /** 玩家尚未行動時，清掉不完整開場敘事（供首次／重試開場） */
+  clearIncompleteOpening: (mode?: "first" | "retry") => void;
   endGame: (ending: EndingState) => void;
   undoLastTurn: () => void;
   setTimelineIndex: (idx: number | null) => void;
@@ -720,7 +725,85 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   narrateFromTool: (narrative, systemNotice) => {
     if (systemNotice) get().appendSystem(systemNotice);
+    const msgs = get().messages;
+    // 同輪檢定後若整段重寫前一則敘事：更新最早那則，並丟掉其後重複的 GM 訊息
+    const trailingAgents: { id: string; content: string; index: number }[] =
+      [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m) continue;
+      if (m.role === "user") break;
+      if (m.role === "agent") {
+        trailingAgents.push({ id: m.id, content: m.content, index: i });
+      }
+    }
+    const oldestFirst = [...trailingAgents].reverse();
+    const target = oldestFirst.find((a) =>
+      isNarrativeRewrite(a.content, narrative),
+    );
+    if (target) {
+      get().updateMessage(target.id, narrative);
+      const removeIds = new Set(
+        trailingAgents
+          .filter((a) => a.index > target.index)
+          .map((a) => a.id),
+      );
+      if (removeIds.size > 0) {
+        set({
+          messages: get().messages.filter((m) => !removeIds.has(m.id)),
+        });
+      }
+      return;
+    }
     get().appendMessage({ role: "agent", content: narrative });
+  },
+
+  collapseNarrativeRewrites: () => {
+    const msgs = get().messages;
+    const trailing: { id: string; content: string; index: number }[] = [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m) continue;
+      if (m.role === "user") break;
+      if (m.role === "agent") {
+        trailing.push({ id: m.id, content: m.content, index: i });
+      }
+    }
+    if (trailing.length < 2) return;
+    const oldestFirst = [...trailing].reverse();
+    const base = oldestFirst[0];
+    if (!base) return;
+    const dupIds: string[] = [];
+    for (const a of oldestFirst.slice(1)) {
+      if (isNarrativeRewrite(base.content, a.content)) {
+        dupIds.push(a.id);
+      }
+    }
+    if (!dupIds.length) return;
+    // 保留最新一則內容寫回最早那則，刪除中間／末尾重複
+    const newestDup = oldestFirst.filter((a) => dupIds.includes(a.id)).at(-1);
+    const finalContent = newestDup?.content ?? base.content;
+    get().updateMessage(base.id, finalContent);
+    const remove = new Set(dupIds);
+    set({ messages: get().messages.filter((m) => !remove.has(m.id)) });
+  },
+
+  clearIncompleteOpening: (mode = "retry") => {
+    const { lastPlayerAction } = get();
+    if (lastPlayerAction.trim()) return;
+    set({
+      history: [],
+      turn: 0,
+      chapterSummaries: [],
+      timelineIndex: null,
+      // 連同舊的錯誤／開場提示一併清掉，避免重試後又從訊息還原 sessionError
+      messages: [],
+    });
+    get().appendSystem(
+      mode === "first"
+        ? "冒險開始中…請稍候 GM 述說開場。"
+        : "正在重新述說開場…",
+    );
   },
 
   recordHistoryTurn: (partial) => {
@@ -809,11 +892,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
         timelineIndex: null,
         lastPlayerAction: "",
         sessionError: null,
-        retryAction: { kind: "opening", label: "重試開場敘事" },
+        retryAction: { kind: "opening", label: "述說開場敘事" },
       });
-
-      // 避免 StoryLog 在 AI 回覆前顯示歡迎提示
-      get().appendSystem("冒險開始中…請稍候 GM 述說開場。");
 
       try {
         await sendOpeningNarration();
@@ -894,10 +974,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const messages = (data.messages ?? []).filter(
       (m) => !(m.role === "system" && LOAD_NOTICE_RE.test(m.content)),
     );
+    // 玩家尚未行動時一律保留開場重試（含開場寫到一半就斷線的存檔）
     const needsOpening =
-      data.phase === "PLAYING" &&
-      (data.history?.length ?? 0) === 0 &&
-      !messages.some((m) => m.role === "agent");
+      data.phase === "PLAYING" && !(data.lastPlayerAction ?? "").trim();
 
     set({
       campaignId: data.id,

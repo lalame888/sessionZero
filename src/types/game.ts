@@ -334,7 +334,13 @@ export interface PreflightState {
 /** 連線／Session 失敗後可重試的動作 */
 export type RetryAction =
   | { kind: "opening"; label: string }
-  | { kind: "player"; label: string; text: string };
+  | {
+      kind: "player";
+      label: string;
+      text: string;
+      /** 僅本回合送給 LLM 的額外上下文（不寫入對話） */
+      extraLayers?: string[];
+    };
 
 export interface SessionErrorInfo {
   code: string;

@@ -10,6 +10,7 @@ import { TaskFeedback } from "@/components/pedelec/TaskFeedback";
 import { GameSidebar } from "@/components/sheet/GameSidebar";
 import { NoteEditorModal } from "@/components/sheet/NoteEditorModal";
 import { Button } from "@/components/ui/button";
+import { shouldOfferOpeningRetry, findLatestOpeningFailure, hadPriorOpeningAttempt } from "@/lib/openingRetry";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
 
@@ -29,21 +30,55 @@ export function PlayPage({
   const addPlayerNote = useGameStore((s) => s.addPlayerNote);
   const messages = useGameStore((s) => s.messages);
   const history = useGameStore((s) => s.history);
+  const phase = useGameStore((s) => s.phase);
+  const lastPlayerAction = useGameStore((s) => s.lastPlayerAction);
+  const sessionError = useGameStore((s) => s.sessionError);
+  const setSessionError = useGameStore((s) => s.setSessionError);
   const retryAction = useGameStore((s) => s.retryAction);
   const setRetryAction = useGameStore((s) => s.setRetryAction);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
   const [createNote, setCreateNote] = useState<CreateNoteSeed | null>(null);
   const [starting, setStarting] = useState(false);
 
-  const openingPending =
-    history.length === 0 && !messages.some((m) => m.role === "agent");
+  const offerOpeningRetry = shouldOfferOpeningRetry({
+    phase,
+    lastPlayerAction,
+    sessionError,
+    sessionStatus,
+    historyLength: history.length,
+    messages,
+  });
 
-  // 開場未完成時確保有 retryAction，方便載入舊檔或錯誤後重試
+  const openingFailure =
+    sessionError ?? findLatestOpeningFailure(messages);
+
+  const isOpeningRetry =
+    Boolean(openingFailure) ||
+    hadPriorOpeningAttempt({
+      historyLength: history.length,
+      messages,
+      sessionError,
+    });
+
+  // 玩家尚未行動時確保有 opening retryAction（含開場寫到一半後失敗）
   useEffect(() => {
-    if (!openingPending) return;
+    if (phase !== "PLAYING") return;
+    if (lastPlayerAction.trim()) return;
     if (retryAction?.kind === "opening") return;
-    setRetryAction({ kind: "opening", label: "重試開場敘事" });
-  }, [openingPending, retryAction?.kind, setRetryAction]);
+    setRetryAction({
+      kind: "opening",
+      label: isOpeningRetry ? "重試開場敘事" : "述說開場敘事",
+    });
+  }, [phase, lastPlayerAction, retryAction?.kind, setRetryAction, isOpeningRetry]);
+
+  // sessionError 被清掉時，從系統訊息還原，讓開場失敗橫幅能顯示錯誤碼
+  useEffect(() => {
+    if (phase !== "PLAYING") return;
+    if (lastPlayerAction.trim()) return;
+    if (sessionError) return;
+    const recovered = findLatestOpeningFailure(messages);
+    if (recovered) setSessionError(recovered);
+  }, [phase, lastPlayerAction, sessionError, messages, setSessionError]);
 
   const openCreateNote = (seed?: { title?: string; content?: string }) => {
     setCreateNote({
@@ -63,6 +98,9 @@ export function PlayPage({
       }
     })();
   };
+
+  const openingBusy =
+    starting || sessionStatus === "running" || sessionStatus === "waiting_tool_result";
 
   return (
     <div className="grid min-h-0 flex-1 gap-4 overflow-hidden lg:grid-cols-[280px_1fr]">
@@ -102,24 +140,43 @@ export function PlayPage({
                 : "GM 只敘事，不給「你可以：」選項"}
             </p>
           </div>
-          {openingPending ? (
+          {offerOpeningRetry ? (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-ink">
               <span className="min-w-0 flex-1">
-                冒險尚未開場（可能先前連線失敗）。請按下方按鈕請 GM 述說開場。
+                {openingBusy && !openingFailure
+                  ? isOpeningRetry
+                    ? "正在重新述說開場…請稍候。"
+                    : "冒險開始中…請稍候 GM 述說開場。"
+                  : openingFailure
+                    ? `開場中斷（${openingFailure.code}）。可請 GM 重新述說開場。`
+                    : isOpeningRetry
+                      ? "先前開場未完成。可請 GM 重新述說開場。"
+                      : "角色已就緒。請按下方按鈕請 GM 述說開場。"}
               </span>
               <Button
                 type="button"
                 size="sm"
                 className="h-7 shrink-0 gap-1"
-                disabled={starting || !onRetry || sessionStatus === "running"}
+                disabled={
+                  starting ||
+                  !onRetry ||
+                  (sessionStatus === "running" && !openingFailure)
+                }
                 onClick={startOpening}
               >
                 <Sparkles className="h-3.5 w-3.5" />
-                {starting ? "開場中…" : "請 AI 述說開場"}
+                {starting
+                  ? isOpeningRetry
+                    ? "重新開場中…"
+                    : "開場中…"
+                  : isOpeningRetry
+                    ? "重新述說開場"
+                    : "請 AI 述說開場"}
               </Button>
             </div>
-          ) : null}
-          <TaskFeedback onRetry={onRetry} />
+          ) : (
+            <TaskFeedback onRetry={onRetry} />
+          )}
           <SecretRollNotice />
           <RuleLookupToast />
         </div>

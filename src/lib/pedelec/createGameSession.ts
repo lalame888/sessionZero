@@ -18,6 +18,8 @@ import {
   type CheckDifficulty,
 } from "@/engine/skillCheck";
 import { findSrdByTopic } from "@/engine/srdLorebook";
+import { isNarrativeRewrite } from "@/lib/narrativeDedupe";
+import { hadPriorOpeningAttempt } from "@/lib/openingRetry";
 import { pedelec } from "@/lib/pedelec/client";
 import { persistPedelecSessionId } from "@/lib/storage";
 import { GM_DIRECTIVES } from "@/prompts/gmDirectives";
@@ -318,11 +320,48 @@ function registerHandlers(
         };
       };
       const store = useGameStore.getState();
+      const trailingAgents: { content: string }[] = [];
+      for (let i = store.messages.length - 1; i >= 0; i--) {
+        const m = store.messages[i];
+        if (!m) continue;
+        if (m.role === "user") break;
+        if (m.role === "agent") trailingAgents.push(m);
+      }
+      const rewriting = trailingAgents.some((m) =>
+        isNarrativeRewrite(m.content, a.narrative_text),
+      );
+
       store.narrateFromTool(a.narrative_text, a.system_notice);
-      store.recordHistoryTurn({
-        playerInput: store.lastPlayerAction || undefined,
-        aiNarrative: a.narrative_text,
-      });
+
+      if (rewriting) {
+        // 更新最近一則「真正敘事」歷史，避免開場被完整記兩次
+        const history = useGameStore.getState().history;
+        let patched = false;
+        for (let i = history.length - 1; i >= 0; i--) {
+          const h = history[i];
+          if (!h) continue;
+          if (h.aiNarrative.startsWith("（檢定結果已回傳）")) continue;
+          if (isNarrativeRewrite(h.aiNarrative, a.narrative_text)) {
+            const next = history.slice();
+            next[i] = { ...h, aiNarrative: a.narrative_text };
+            useGameStore.setState({ history: next });
+            patched = true;
+            break;
+          }
+          break;
+        }
+        if (!patched) {
+          store.recordHistoryTurn({
+            playerInput: store.lastPlayerAction || undefined,
+            aiNarrative: a.narrative_text,
+          });
+        }
+      } else {
+        store.recordHistoryTurn({
+          playerInput: store.lastPlayerAction || undefined,
+          aiNarrative: a.narrative_text,
+        });
+      }
 
       if (!a.check_request) {
         return { ok: true, narrative_recorded: true };
@@ -358,7 +397,11 @@ function registerHandlers(
           },
         });
       }
-      return roll;
+      return {
+        ...roll,
+        gm_instruction:
+          "CRITICAL: Your next narrate_story.narrative_text must ONLY describe this check outcome and immediate consequences. Do NOT repeat, paraphrase, or rewrite any previously narrated scene text.",
+      };
     }),
   );
 
@@ -563,11 +606,13 @@ export async function createGameSession(options: {
     s.setSessionStatus(status);
     if (status === "running") {
       s.setIsTyping(true);
-      s.setSessionError(null);
+      // 不在 running 清除 sessionError：擴充元件斷線／失敗後偶發仍會噴 running，
+      // 若此處清空會讓重試按鈕消失（開場寫到一半尤甚）
       activeAgentMessageId = null;
     }
     if (status === "idle") {
       s.setIsTyping(false);
+      s.collapseNarrativeRewrites();
       // 不在 idle 清除 sessionError：錯誤後 Session 常回到 idle，仍需顯示重試按鈕
     }
     if (status === "error" || status === "ended") {
@@ -633,7 +678,7 @@ export async function disposeGameSession() {
 
 export async function sendPlayerAction(
   text: string,
-  opts?: { skipUserMessage?: boolean },
+  opts?: { skipUserMessage?: boolean; extraLayers?: string[] },
 ) {
   const session = getActiveSession();
   if (!session) throw new Error("NO_SESSION");
@@ -645,6 +690,7 @@ export async function sendPlayerAction(
     kind: "player",
     label: "重試上一步行動",
     text,
+    extraLayers: opts?.extraLayers,
   });
   store.setSessionError(null);
   if (!opts?.skipUserMessage) {
@@ -664,13 +710,14 @@ export async function sendPlayerAction(
     playerAction: text,
     turn: store.turn,
     suggestPlayerActions: store.suggestPlayerActions,
+    extraLayers: opts?.extraLayers,
   });
 
   await session.sendText(prompt);
 }
 
 export const OPENING_NARRATION_ACTION =
-  "現在已確認角色卡。請立刻開始劇本並述說故事開場（請呼叫 narrate_story；如需檢定請使用工具，不要先等待玩家輸入）。";
+  "現在已確認角色卡。請立刻開始劇本並述說故事開場（請呼叫 narrate_story；如需檢定請在同一則 narrate_story 附上 check_request，不要先等待玩家輸入）。若開場含檢定：收到擲骰結果後，下一次 narrate_story 只寫檢定結果與當下後續，禁止重寫已述說過的開場文字。";
 
 /** 送出開場敘事（不寫入玩家訊息）；失敗時由呼叫端／onError 記錄 sessionError */
 export async function sendOpeningNarration() {
@@ -679,21 +726,32 @@ export async function sendOpeningNarration() {
   if (session.getStatus() !== "idle") throw new Error("SESSION_BUSY");
 
   const store = useGameStore.getState();
-  store.setRetryAction({ kind: "opening", label: "重試開場敘事" });
+  const isRetry = hadPriorOpeningAttempt({
+    historyLength: store.history.length,
+    messages: store.messages,
+    sessionError: store.sessionError,
+  });
+  store.setRetryAction({
+    kind: "opening",
+    label: isRetry ? "重試開場敘事" : "述說開場敘事",
+  });
   store.setSessionError(null);
+  // 清掉寫到一半的 GM 敘事；首次／重試用不同系統提示
+  store.clearIncompleteOpening(isRetry ? "retry" : "first");
 
+  const latest = useGameStore.getState();
   const prompt = assemblePlayerTurnPrompt({
-    script: store.script,
-    houseRules: store.houseRules,
-    character: store.character,
-    clues: store.clues,
-    npcs: store.npcs,
-    madness: store.madness,
-    location: store.location,
-    chapterSummaries: store.chapterSummaries,
+    script: latest.script,
+    houseRules: latest.houseRules,
+    character: latest.character,
+    clues: latest.clues,
+    npcs: latest.npcs,
+    madness: latest.madness,
+    location: latest.location,
+    chapterSummaries: latest.chapterSummaries,
     recentMessages: [],
     playerAction: OPENING_NARRATION_ACTION,
-    turn: store.turn,
+    turn: latest.turn,
     // 開場第一則一律不附推薦行動（與開關無關）
     suggestPlayerActions: false,
   });

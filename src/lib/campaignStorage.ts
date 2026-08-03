@@ -201,6 +201,53 @@ export function findBlankCampaignId(): string | null {
   return null;
 }
 
+/** 僅劇本設計摘要（不含遊玩紀錄），供 AI 避免重複劇情 */
+export interface PriorScriptDesign {
+  id: string;
+  title: string;
+  updatedAt: number;
+  system_id: ScriptState["system_id"];
+  scenario_scale: ScenarioScale | null;
+  public_summary: ScriptState["public_summary"];
+  hidden_full_script: ScriptState["hidden_full_script"];
+}
+
+/**
+ * 依更新時間取最近 N 個「已有劇本設計」的 Session。
+ * 只回傳 script 公開摘要／隱藏真相等設計欄位，不含對話與遊玩紀錄。
+ */
+export function loadRecentScriptDesigns(
+  limit = 10,
+  opts?: { excludeId?: string | null },
+): PriorScriptDesign[] {
+  const index = loadCampaignIndex();
+  const out: PriorScriptDesign[] = [];
+  for (const meta of index.sessions) {
+    if (opts?.excludeId && meta.id === opts.excludeId) continue;
+    const data = loadCampaign(meta.id);
+    if (!data) continue;
+    const { script } = data;
+    // 至少要有公開摘要或隱藏劇本，才算「既有劇本設計」
+    if (!script.public_summary && !script.hidden_full_script) continue;
+    out.push({
+      id: data.id,
+      title:
+        script.public_summary?.title?.trim() ||
+        data.title ||
+        "未命名劇本",
+      updatedAt: data.updatedAt,
+      system_id: script.system_id,
+      scenario_scale: script.scenario_scale
+        ? normalizeScenarioScale(script.scenario_scale)
+        : null,
+      public_summary: script.public_summary,
+      hidden_full_script: script.hidden_full_script,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPersist {
   const now = Date.now();
   return {

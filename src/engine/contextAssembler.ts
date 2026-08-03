@@ -32,6 +32,8 @@ export interface ContextAssemblyInput {
   turn: number;
   /** 是否請 GM 在敘事後提供行動建議；預設 true */
   suggestPlayerActions?: boolean;
+  /** 額外上下文層（不會寫入對話紀錄，僅本回合送給 LLM） */
+  extraLayers?: string[];
 }
 
 export function houseRulesSummary(houseRules: HouseRuleConfig): string {
@@ -200,6 +202,10 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
         normalizeScenarioScale(input.script.scenario_scale),
       ),
     );
+  }
+
+  if (input.extraLayers?.length) {
+    layers.push(...input.extraLayers.filter((l) => l.trim().length > 0));
   }
 
   if (input.script.public_summary?.player_hook) {

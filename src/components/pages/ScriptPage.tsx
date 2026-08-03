@@ -10,7 +10,11 @@ import { HoverTooltip } from "@/components/ui/hover-tooltip";
 import { Modal } from "@/components/ui/modal";
 import { sendPlayerAction } from "@/lib/pedelec/createGameSession";
 import { getActiveSession } from "@/lib/pedelec/createGameSession";
-import { buildAutoGenerateCocScriptPrompt } from "@/prompts/gmDirectives";
+import { loadRecentScriptDesigns } from "@/lib/campaignStorage";
+import {
+  buildAutoGenerateCocScriptPrompt,
+  formatPriorScriptDesignsForPrompt,
+} from "@/prompts/gmDirectives";
 import { useGameStore } from "@/store/useGameStore";
 import {
   CREATION_MODE_HINTS,
@@ -119,7 +123,13 @@ export function ScriptPage({
     if (composerDisabled || generating) return;
     setGenerating(true);
     try {
-      await sendPlayerAction(buildAutoGenerateCocScriptPrompt(scenarioScale));
+      const priorDesigns = loadRecentScriptDesigns(10, {
+        excludeId: useGameStore.getState().campaignId,
+      });
+      const priorLayer = formatPriorScriptDesignsForPrompt(priorDesigns);
+      await sendPlayerAction(buildAutoGenerateCocScriptPrompt(scenarioScale), {
+        extraLayers: priorLayer ? [priorLayer] : undefined,
+      });
     } catch (err) {
       appendSystem(
         `自動生成失敗：${err instanceof Error ? err.message : "未知錯誤"}`,

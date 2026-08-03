@@ -13,6 +13,42 @@ const QUICK = [
   "我檢查背包物品。",
 ];
 
+function composerPlaceholder(opts: {
+  disabled: boolean;
+  sending: boolean;
+  phase: string;
+  preflightReady: boolean;
+  sessionStatus: string;
+}): string {
+  const { disabled, sending, phase, preflightReady, sessionStatus } = opts;
+
+  if (!preflightReady) {
+    return "Pedelec 未就緒，請先完成連線設定…";
+  }
+
+  if (
+    sending ||
+    sessionStatus === "running" ||
+    sessionStatus === "waiting_tool_result"
+  ) {
+    return "Agent 忙碌中，請稍候…";
+  }
+
+  if (sessionStatus === "error" || sessionStatus === "ended") {
+    return "Session 異常，請重試連線後再輸入…";
+  }
+
+  if (disabled || sessionStatus === "disconnected") {
+    return "正在連線 Session，請稍候…";
+  }
+
+  if (phase === "SESSION_0") {
+    return "描述故事想法、氛圍或想玩的系統（預設單人一位主角）…";
+  }
+
+  return "描述你的行動…";
+}
+
 export function Composer({
   disabled,
   onRegenerate,
@@ -25,9 +61,18 @@ export function Composer({
   const undoLastTurn = useGameStore((s) => s.undoLastTurn);
   const phase = useGameStore((s) => s.phase);
   const pendingDice = useGameStore((s) => s.pendingDice);
+  const preflightReady = useGameStore((s) => s.preflight.ready);
+  const sessionStatus = useGameStore((s) => s.sessionStatus);
   const [sending, setSending] = useState(false);
 
   const awaitingPublicDice = Boolean(pendingDice && !pendingDice.isSecret);
+  const placeholder = composerPlaceholder({
+    disabled,
+    sending,
+    phase,
+    preflightReady,
+    sessionStatus,
+  });
 
   const submit = async (text: string) => {
     const value = text.trim();
@@ -89,13 +134,7 @@ export function Composer({
       <Textarea
         value={draft}
         disabled={disabled || sending}
-        placeholder={
-          disabled
-            ? "Pedelec 未就緒或 Agent 忙碌中…"
-            : phase === "SESSION_0"
-              ? "描述故事想法、氛圍或想玩的系統（預設單人一位主角）…"
-              : "描述你的行動…"
-        }
+        placeholder={placeholder}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (

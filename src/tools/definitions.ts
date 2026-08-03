@@ -375,7 +375,7 @@ export const fillCharacterNarrativeTool = defineTool({
 export const narrateStoryTool = defineTool({
   name: "narrate_story",
   description:
-    "輸出主線劇情（可用 Markdown），並可選擇發起玩家可見的擲骰檢定請求。When check_request is present, wait for the tool result containing the dice outcome before continuing. narrative_text 必須為繁體中文。",
+    "輸出主線劇情（可用 Markdown），並可選擇發起玩家可見的擲骰檢定請求。When check_request is present, wait for the tool result containing the dice outcome before continuing. After a dice outcome is returned, the NEXT narrate_story must ONLY narrate the check result and immediate consequences — never repeat or rewrite previously narrated scene text. narrative_text 必須為繁體中文。",
   timeoutMs: 180_000,
   argsSchema: {
     type: "object",
