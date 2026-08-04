@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Lightbulb, Sparkles } from "lucide-react";
 import { StoryLog } from "@/components/chat/StoryLog";
 import { Composer } from "@/components/chat/Composer";
+import { AiPlayerToggle } from "@/components/dev/AiPlayerToggle";
 import {
   RuleLookupToast,
   SecretRollNotice,
@@ -185,6 +186,7 @@ export function PlayPage({
         </div>
         <div className="shrink-0">
           <Composer disabled={composerDisabled} onRegenerate={onRegenerate} />
+          <AiPlayerToggle />
         </div>
       </main>
 

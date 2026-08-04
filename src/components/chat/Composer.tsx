@@ -3,6 +3,7 @@ import { Redo2, Send, Undo2 } from "lucide-react";
 import { DiceCheckPanel } from "@/components/game/DiceModal";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
+import { useAiPlayerStore } from "@/lib/aiPlayer";
 import { sendPlayerAction } from "@/lib/pedelec/createGameSession";
 import { useGameStore } from "@/store/useGameStore";
 
@@ -19,8 +20,20 @@ function composerPlaceholder(opts: {
   phase: string;
   preflightReady: boolean;
   sessionStatus: string;
+  aiPlayerEnabled: boolean;
 }): string {
-  const { disabled, sending, phase, preflightReady, sessionStatus } = opts;
+  const {
+    disabled,
+    sending,
+    phase,
+    preflightReady,
+    sessionStatus,
+    aiPlayerEnabled,
+  } = opts;
+
+  if (aiPlayerEnabled) {
+    return "AI Player 代打中…關閉開關後可手動輸入";
+  }
 
   if (!preflightReady) {
     return "Pedelec 未就緒，請先完成連線設定…";
@@ -63,20 +76,25 @@ export function Composer({
   const pendingDice = useGameStore((s) => s.pendingDice);
   const preflightReady = useGameStore((s) => s.preflight.ready);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
+  const aiPlayerEnabled = useAiPlayerStore((s) => s.enabled);
   const [sending, setSending] = useState(false);
 
   const awaitingPublicDice = Boolean(pendingDice && !pendingDice.isSecret);
+  const inputLocked = disabled || sending || aiPlayerEnabled;
   const placeholder = composerPlaceholder({
     disabled,
     sending,
     phase,
     preflightReady,
     sessionStatus,
+    aiPlayerEnabled,
   });
 
   const submit = async (text: string) => {
     const value = text.trim();
-    if (!value || disabled || sending || awaitingPublicDice) return;
+    if (!value || disabled || sending || awaitingPublicDice || aiPlayerEnabled) {
+      return;
+    }
     setSending(true);
     try {
       setDraft("");
@@ -123,7 +141,7 @@ export function Composer({
               key={q}
               size="sm"
               variant="secondary"
-              disabled={disabled || sending}
+              disabled={inputLocked}
               onClick={() => void submit(q)}
             >
               {q}
@@ -133,7 +151,7 @@ export function Composer({
       ) : null}
       <Textarea
         value={draft}
-        disabled={disabled || sending}
+        disabled={inputLocked}
         placeholder={placeholder}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
@@ -150,7 +168,7 @@ export function Composer({
       />
       <div className="flex flex-wrap items-center gap-2">
         <Button
-          disabled={disabled || sending || !draft.trim()}
+          disabled={inputLocked || !draft.trim()}
           onClick={() => void submit(draft)}
         >
           <Send className="h-4 w-4" />
@@ -159,7 +177,7 @@ export function Composer({
         <Button
           variant="secondary"
           size="sm"
-          disabled={disabled || sending}
+          disabled={inputLocked}
           onClick={() => undoLastTurn()}
         >
           <Undo2 className="h-4 w-4" />
@@ -168,7 +186,7 @@ export function Composer({
         <Button
           variant="secondary"
           size="sm"
-          disabled={disabled || sending || !onRegenerate}
+          disabled={inputLocked || !onRegenerate}
           onClick={() => onRegenerate?.()}
         >
           <Redo2 className="h-4 w-4" />

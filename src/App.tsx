@@ -21,6 +21,7 @@ import {
   saveCampaign,
   type CampaignMeta,
 } from "@/lib/campaignStorage";
+import { useAiPlayerStore } from "@/lib/aiPlayer";
 import {
   createGameSession,
   disposeGameSession,
@@ -304,6 +305,7 @@ export default function App() {
   const goHome = () => {
     if (screen === "campaign") persistActiveCampaign();
     connectAttemptRef.current += 1;
+    useAiPlayerStore.getState().resetRuntime();
     void disposeGameSession();
     useGameStore.getState().setSessionStatus("disconnected");
     refreshCampaignList();
@@ -318,6 +320,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       connectAttemptRef.current += 1;
+      useAiPlayerStore.getState().resetRuntime();
       void disposeGameSession();
     };
   }, []);
