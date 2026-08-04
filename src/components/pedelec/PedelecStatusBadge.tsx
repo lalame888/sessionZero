@@ -58,33 +58,34 @@ export function PedelecStatusBadge({ onRecheck }: { onRecheck?: () => void }) {
   );
 
   return (
-    <button
-      type="button"
-      onClick={() => {
-        if (!preflight.ready) setShowInstallGuide(true);
-        else setShowSettings(true);
-      }}
+    <div
       className={cn(
-        "inline-flex items-center gap-2 rounded-md border border-border bg-surface-2 px-3 py-1.5 text-xs text-ink",
+        "inline-flex items-center gap-1 rounded-md border border-border bg-surface-2 px-1.5 py-1 text-xs text-ink",
         pulse && "ring-1 ring-accent/50",
       )}
-      aria-label={`Pedelec 狀態：${text}`}
     >
-      {icon}
-      <span>{text}</span>
+      <button
+        type="button"
+        onClick={() => {
+          if (!preflight.ready) setShowInstallGuide(true);
+          else setShowSettings(true);
+        }}
+        className="inline-flex items-center gap-2 rounded-sm px-1.5 py-0.5"
+        aria-label={`Pedelec 狀態：${text}`}
+      >
+        {icon}
+        <span>{text}</span>
+      </button>
       {onRecheck && !preflight.ready ? (
         <Button
           size="sm"
           variant="ghost"
           className="h-6 px-2"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRecheck();
-          }}
+          onClick={() => onRecheck()}
         >
           重檢
         </Button>
       ) : null}
-    </button>
+    </div>
   );
 }
