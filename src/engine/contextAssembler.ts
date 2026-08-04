@@ -172,10 +172,23 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
   }
   const identity = identityBits.length ? identityBits.join(" | ") : "無";
 
+  const attributes = c?.attributes
+    ? Object.entries(c.attributes)
+        .map(([k, v]) => `${k} ${v}`)
+        .join(", ") || "無"
+    : "無";
+  const skills = c?.skills
+    ? Object.entries(c.skills)
+        .map(([k, v]) => `${k} ${v}%`)
+        .join(", ") || "無"
+    : "無";
+
   return `[CURRENT SSOT GAME STATE - DO NOT OVERRIDE]
 - Game System: ${input.script.system_id ?? "UNSET"} | Location: ${input.location}
 - Player: ${c ? `${c.name} (${c.role_title})` : "尚未創角"} | HP: ${hp} | SAN: ${san} | AC: ${ac} | MP/Slots: ${slots}
 - Identity (narrate with these; do NOT invent contradicting sheet facts): [${identity}]
+- Attributes: [${attributes}]
+- Skills (prefer these exact names for check_target_name; if none fit, MUST supply target_value): [${skills}]
 - Backstory Hooks (use for madness / inspiration / NPC bonds): [${hooks}]
 - Active House Rules: [${houseRulesSummary(input.houseRules)}]
 - Active Inventory: [${inventory}]

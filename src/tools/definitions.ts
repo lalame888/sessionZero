@@ -389,7 +389,7 @@ export const narrateStoryTool = defineTool({
           check_target_name: {
             type: "string",
             description:
-              "技能／屬性繁中名稱，必須與角色卡一致（如 神秘學）。前端會用角色卡數值當成功門檻。",
+              "技能／屬性繁中名稱。盡量選角色卡既有技能（與 SSOT Skills 完全同名，如 神秘學）。若角色卡有該技能，前端會用其數值當成功門檻。",
           },
           dice_type: {
             type: "string",
@@ -398,7 +398,7 @@ export const narrateStoryTool = defineTool({
           target_value: {
             type: "number",
             description:
-              "可省略。CoC 百分骰時前端會以角色卡技能％覆寫；D&D 為 AC／DC。",
+              "成功門檻。角色卡有對應技能且為 CoC d100 時可省略（前端覆寫為技能％）。若角色卡沒有對應技能，則必須提供（CoC 為成功需 ≤ 的％；D&D 為 AC／DC）。禁止兩者皆缺。",
           },
           difficulty: {
             type: "string",
@@ -417,14 +417,23 @@ export const narrateStoryTool = defineTool({
 
 export const secretCheckRequestTool = defineTool({
   name: "secret_check_request",
-  description: "發起不向玩家展示骰子點數的 GM 隱密暗骰。",
+  description:
+    "發起不向玩家展示骰子點數的 GM 隱密暗骰。盡量選角色卡既有技能；若無對應技能必須提供 target_value。",
   argsSchema: {
     type: "object",
     properties: {
       request_id: { type: "string" },
-      check_target_name: { type: "string" },
+      check_target_name: {
+        type: "string",
+        description:
+          "技能／屬性繁中名稱；盡量與 SSOT Skills 完全同名。",
+      },
       dice_type: { type: "string" },
-      target_value: { type: "number" },
+      target_value: {
+        type: "number",
+        description:
+          "成功門檻。角色卡無對應技能時必填；有對應技能的 CoC d100 可省略。",
+      },
       reason_for_gm: { type: "string" },
     },
     required: [

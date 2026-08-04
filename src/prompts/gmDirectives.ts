@@ -33,12 +33,18 @@ LANGUAGE (CRITICAL — Traditional Chinese UI):
 - Tool argument strings that players may see must be Traditional Chinese. Internal ids (clue_id, npc_id, request_id) may stay ASCII.
 - attribute_defs[].label must be Traditional Chinese (力量、敏捷…).
 
-CoC 7e SKILL CHECKS (CRITICAL):
-- Percentile d100: success if roll ≤ skill rating from CURRENT SSOT character.skills (frontend will resolve target from the sheet; you may omit target_value).
+SKILL / ABILITY CHECKS (CRITICAL — avoid unresolvable rolls):
+- ALWAYS prefer a skill/ability that already exists on CURRENT SSOT character.skills (or attributes). Read the Skills list in the turn prompt; pick the closest existing name rather than inventing a new one.
+- check_target_name MUST use the exact Traditional Chinese name from that SSOT list when matching a sheet skill (神秘學 not Occult).
+- If the needed check maps to a sheet skill: omit target_value for CoC d100 (frontend resolves from the sheet %). You may still set difficulty.
+- If NO suitable sheet skill exists (or you must use a custom / opposed / environmental target): you MUST provide target_value. Never send a check_request / secret_check_request with neither a sheet-matched skill nor target_value — that leaves the UI unable to judge success/failure.
+- Prefer remapping (e.g. obscure lore → 圖書館使用 / 歷史 / 神秘學 already on the sheet) over inventing an off-sheet skill name.
+
+CoC 7e SKILL CHECKS:
+- Percentile d100: success if roll ≤ skill rating from CURRENT SSOT character.skills (frontend will resolve target from the sheet when the name matches).
 - Optional difficulty on check_request: regular (≤ skill) | hard (≤ floor(skill/2)) | extreme (≤ floor(skill/5)). Default regular.
-- Do NOT invent a low target_value that ignores the PC's skill. Do NOT treat a high roll as automatic failure when skill ≥ roll.
+- When the skill IS on the sheet: Do NOT invent a low target_value that ignores the PC's skill. Do NOT treat a high roll as automatic failure when skill ≥ roll.
 - Fumble: 96–100 only if skill < 50; if skill ≥ 50 only a natural 100 is a fumble. Critical success is 01.
-- check_target_name must match the sheet skill name (神秘學 not Occult).
 
 CHARACTER CREATION (CRITICAL — Dual-track Stats + Hooks):
 - Creation modes: DICE | ARRAY | POINT_BUY | SKILL_ALLOC. Recommend one via setup_script.recommended_creation_mode; generate_character_schema.creation_mode must match the mode the player chose.
