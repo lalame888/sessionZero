@@ -79,6 +79,56 @@ export function defaultStandardArray(systemId: GameSystemID): number[] {
     : [80, 70, 60, 60, 50, 50, 40, 40];
 }
 
+/**
+ * ARRAY 模式：陣列長度必須等於屬性數（D&D 6／CoC 8）。
+ * AI 常誤給 D&D [15,14,…] 給 CoC；長度不符時改用系統預設。
+ */
+export function resolveStandardArray(opts: {
+  systemId: GameSystemID;
+  attributeCount: number;
+  candidate?: number[] | null;
+}): {
+  array: number[];
+  source: "ai" | "default" | "corrected";
+} {
+  const { systemId, attributeCount, candidate } = opts;
+  const fallback = defaultStandardArray(systemId);
+  const cleaned = (candidate ?? []).filter(
+    (n) => typeof n === "number" && Number.isFinite(n),
+  );
+
+  if (attributeCount > 0 && cleaned.length === attributeCount) {
+    return { array: cleaned.slice(), source: "ai" };
+  }
+
+  if (attributeCount > 0 && fallback.length === attributeCount) {
+    return {
+      array: fallback.slice(),
+      source: cleaned.length > 0 ? "corrected" : "default",
+    };
+  }
+
+  // 自訂屬性數：有候選且長度對得上已在上方處理；否則裁切／補齊預設
+  const base = cleaned.length > 0 ? cleaned : fallback;
+  if (attributeCount <= 0) {
+    return {
+      array: base.slice(),
+      source: cleaned.length > 0 ? "ai" : "default",
+    };
+  }
+  if (base.length >= attributeCount) {
+    return {
+      array: base.slice(0, attributeCount),
+      source: cleaned.length === attributeCount ? "ai" : "corrected",
+    };
+  }
+  const padded = base.slice();
+  const padValue =
+    systemId === "DND_5E" ? 10 : Math.round((fallback[4] ?? 50) / 10) * 10;
+  while (padded.length < attributeCount) padded.push(padValue);
+  return { array: padded, source: "corrected" };
+}
+
 export function defaultPointBuy(systemId: GameSystemID): PointBuyConfig {
   if (systemId === "DND_5E") {
     return { budget: 27, min_score: 8, max_score: 15 };

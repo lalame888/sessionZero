@@ -14,11 +14,11 @@ import {
   defaultAttributeDefs,
   defaultModeConfig,
   defaultPointBuy,
-  defaultStandardArray,
   enrichCharacterSheetMeta,
   normalizeBackgroundQuestions,
   normalizeCreationMode,
   resolveSkillBaseValue,
+  resolveStandardArray,
 } from "@/engine/creation";
 import {
   campaignTitleFromState,
@@ -366,18 +366,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
         ? schema.attribute_defs
         : defaultAttributeDefs(systemId);
     const baseMode = defaultModeConfig(systemId);
-    const standardArrayFromAI =
-      Boolean(schema.mode_config?.standard_array?.length) ||
-      Boolean(schema.standard_array?.length);
+    const aiArrayCandidate =
+      schema.mode_config?.standard_array?.length
+        ? schema.mode_config.standard_array
+        : schema.standard_array?.length
+          ? schema.standard_array
+          : null;
+    const resolvedArray = resolveStandardArray({
+      systemId,
+      attributeCount: defs.length,
+      candidate: aiArrayCandidate,
+    });
     const mode_config = {
       ...baseMode,
       ...schema.mode_config,
-      standard_array:
-        schema.mode_config?.standard_array?.length
-          ? schema.mode_config.standard_array
-          : schema.standard_array?.length
-            ? schema.standard_array
-            : baseMode.standard_array,
+      standard_array: resolvedArray.array,
     };
     const pointBuyFallback = defaultPointBuy(systemId);
     const point_buy =
@@ -394,9 +397,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       creation_mode: mode,
       attribute_defs: defs,
       mode_config,
-      standard_array_source: standardArrayFromAI ? "ai" : "default",
-      standard_array:
-        mode_config.standard_array ?? defaultStandardArray(systemId),
+      standard_array_source: resolvedArray.source,
+      standard_array: resolvedArray.array,
       point_buy,
       skill_points: schema.skill_points,
       recommended_skills: (schema.recommended_skills ?? []).map((sk) => ({

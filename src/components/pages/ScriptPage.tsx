@@ -89,7 +89,7 @@ export function ScriptPage({
         `此步驟是 Session 0「創角藍圖預覽」：請呼叫 generate_character_schema。` +
           `creation_mode 必須是 ${chosenMode}。` +
           `請提供 attribute_defs（含繁中 label 與 dice_formula）、` +
-          `mode_config（ARRAY 給 standard_array；POINT_BUY 給 point_buy_pool/min/max；` +
+          `mode_config（ARRAY 給 standard_array，長度必須等於屬性數：D&D 六項 [15,14,13,12,10,8]、CoC 八項 [80,70,60,60,50,50,40,40]，勿混用；POINT_BUY 給 point_buy_pool/min/max；` +
           `SKILL_ALLOC 給 occupational_point_formula 與 interest_point_formula）、` +
           `recommended_skills（name/description 繁中；CoC 請標約 8 項 is_occupational=true 的職業技能，否則職業點花不完）。` +
           `background_questions 請回傳為物件陣列 {id, category, question}。` +
@@ -412,6 +412,11 @@ export function ScriptPage({
                           "default" ? (
                             <span className="text-xs text-accent-2">
                               （AI 未提供，使用系統預設）
+                            </span>
+                          ) : characterSchema.standard_array_source ===
+                            "corrected" ? (
+                            <span className="text-xs text-accent-2">
+                              （AI 陣列長度不符屬性數，已改用系統預設）
                             </span>
                           ) : null}
                         </div>

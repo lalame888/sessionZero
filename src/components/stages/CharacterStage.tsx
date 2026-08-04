@@ -9,6 +9,7 @@ import {
   normalizeCreationMode,
   pointBuyCost,
   resolveSkillBaseValue,
+  resolveStandardArray,
   rollCreationFormula,
   totalPointBuySpent,
   COC_CREATION_SKILL_CAP,
@@ -143,8 +144,29 @@ export function CharacterStage() {
 
   const modeConfig = schema?.mode_config;
   const pointBuy = schema?.point_buy;
-  const arrayValues =
-    schema?.standard_array ?? modeConfig?.standard_array ?? [];
+  const resolvedArray = useMemo(() => {
+    if (!character) {
+      return { array: [] as number[], source: "default" as const };
+    }
+    return resolveStandardArray({
+      systemId: character.system_id,
+      attributeCount: defs.length,
+      candidate:
+        schema?.standard_array ?? modeConfig?.standard_array ?? null,
+    });
+  }, [
+    character,
+    defs.length,
+    schema?.standard_array,
+    modeConfig?.standard_array,
+  ]);
+  const arrayValues = resolvedArray.array;
+
+  // AI 給錯長度的陣列被校正後，清掉舊的互斥指派以免索引對到錯誤分數
+  useEffect(() => {
+    if (resolvedArray.source !== "corrected") return;
+    setAssignments({});
+  }, [resolvedArray.source, arrayValues.join(",")]);
 
   const spentPoints = useMemo(() => {
     if (!pointBuy || !character) return 0;
@@ -1199,6 +1221,16 @@ export function CharacterStage() {
               <Label className="text-xs">
                 標準陣列（互斥）[{arrayValues.join(", ")}]
               </Label>
+              {(resolvedArray.source === "corrected" ||
+                schema.standard_array_source === "corrected") && (
+                <p className="text-xs text-accent-2">
+                  AI 提供的陣列長度與屬性數不符，已改用系統預設（
+                  {character.system_id === "COC_7E"
+                    ? "CoC 八項百分位陣列"
+                    : "D&D 六項陣列"}
+                  ）。
+                </p>
+              )}
               <div className="grid gap-2">
                 {defs.map((d) => (
                   <div key={d.key} className="flex items-center gap-2">

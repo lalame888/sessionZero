@@ -261,8 +261,8 @@ export interface CharacterSchemaState {
   attribute_defs: AttributeDef[];
   mode_config?: CreationModeConfig;
   standard_array?: number[];
-  /** 標準陣列來源：AI 未提供時，前端會用系統預設補齊 */
-  standard_array_source?: "ai" | "default";
+  /** 標準陣列來源：ai＝AI 提供且長度正確；default＝未提供用系統預設；corrected＝AI 長度不符已改預設 */
+  standard_array_source?: "ai" | "default" | "corrected";
   point_buy?: PointBuyConfig;
   skill_points?: number;
   recommended_skills: RecommendedSkill[];

@@ -158,7 +158,8 @@ export const generateCharacterSchemaTool = defineTool({
           standard_array: {
             type: "array",
             items: { type: "number" },
-            description: "標準陣列，如 D&D [15,14,13,12,10,8]",
+            description:
+              "標準陣列，長度必須等於 attribute_defs。D&D 六項：[15,14,13,12,10,8]；CoC 八項：[80,70,60,60,50,50,40,40]。禁止把 D&D 陣列用在 CoC。",
           },
           occupational_point_formula: {
             type: "string",
@@ -175,7 +176,8 @@ export const generateCharacterSchemaTool = defineTool({
       standard_array: {
         type: "array",
         items: { type: "number" },
-        description: "ARRAY 模式可分配數值（可與 mode_config.standard_array 擇一）",
+        description:
+          "ARRAY 模式可分配數值（可與 mode_config.standard_array 擇一）。長度必須＝屬性數；CoC 用 [80,70,60,60,50,50,40,40]，勿用 D&D 的 [15,14,13,12,10,8]。",
       },
       point_buy: {
         type: "object",
