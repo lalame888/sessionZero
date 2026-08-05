@@ -255,6 +255,87 @@ export function parseImportedCharacter(raw: unknown): LibraryCharacter | null {
   return normalizeLibraryEntry(raw);
 }
 
+export type ImportLibraryResult =
+  | { ok: true; entry: LibraryCharacter; overwritten: boolean }
+  | { ok: false; reason: "invalid"; message: string }
+  | {
+      ok: false;
+      reason: "duplicate";
+      existingName: string;
+      entry: LibraryCharacter;
+    };
+
+/**
+ * 將解析後的角色寫入檔案庫。
+ * 同 ID 且未指定 overwrite 時回傳 duplicate，不寫入。
+ * 匯入時清除 activeCampaignId，避免他機／舊 Session 綁定殘留。
+ */
+export function commitImportedLibraryCharacter(
+  entry: LibraryCharacter,
+  options?: { overwrite?: boolean },
+): ImportLibraryResult {
+  const id = entry.sheet?.id?.trim();
+  if (!id) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: "檔案缺少角色 ID，無法匯入。",
+    };
+  }
+  if (!entry.sheet.name?.trim() && !entry.sheet.system_id) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: "檔案格式不正確，無法辨識為角色卡。",
+    };
+  }
+
+  const existing = getLibraryCharacter(id);
+  if (existing && !options?.overwrite) {
+    return {
+      ok: false,
+      reason: "duplicate",
+      existingName: existing.sheet.name?.trim() || "（未命名）",
+      entry,
+    };
+  }
+
+  const next: LibraryCharacter = {
+    sheet: migrateCharacterSheet({ ...entry.sheet, id }),
+    career: Array.isArray(entry.career) ? entry.career : [],
+    activeCampaignId: null,
+    createdAt: existing?.createdAt ?? entry.createdAt ?? Date.now(),
+    updatedAt: Date.now(),
+  };
+  upsertLibraryCharacter(next);
+  return { ok: true, entry: next, overwritten: Boolean(existing) };
+}
+
+/** 從 JSON 字串解析並準備匯入（尚未寫入；遇 duplicate 需再呼叫 commit） */
+export function prepareLibraryImportFromJsonText(
+  text: string,
+): ImportLibraryResult {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: "無法解析 JSON，請確認檔案內容。",
+    };
+  }
+  const entry = parseImportedCharacter(raw);
+  if (!entry) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: "檔案格式不符（需為履歷 JSON 或角色卡）。",
+    };
+  }
+  return commitImportedLibraryCharacter(entry, { overwrite: false });
+}
+
 export function persistPedelecSessionId(id: string | null) {
   if (!id) localStorage.removeItem(SESSION_ID_KEY);
   else localStorage.setItem(SESSION_ID_KEY, id);

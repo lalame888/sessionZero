@@ -8,7 +8,7 @@ export function EndingPage({ onHome }: { onHome: () => void }) {
         <div>
           <h2 className="brand-title text-xl text-ink">結算與回放</h2>
           <p className="mt-1 text-sm text-muted">
-            先完成角色成長結算並儲存角色卡，再揭曉幕後真相與時間軸回放。
+            完成成長檢定或儲存角色結果後會自動存檔；已結算過的場次再進來會直接進入回放。
           </p>
         </div>
         <Button variant="secondary" onClick={onHome}>

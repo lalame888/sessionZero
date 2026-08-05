@@ -311,6 +311,13 @@ export const CAMPAIGN_FIELD_GROUPS: FieldGuideGroup[] = [
         meaning: "是否請 GM 在敘事後提供可採取行動建議。",
         getValue: (c) => (c.suggestPlayerActions ? "開啟" : "關閉"),
       },
+      {
+        path: "endingCharacterSettled",
+        label: "結局已結算",
+        meaning:
+          "結局頁已完成成長／儲存。為真時再進入結算頁會略過結算步驟。",
+        getValue: (c) => (c.endingCharacterSettled ? "是" : "否"),
+      },
     ],
   },
 ];

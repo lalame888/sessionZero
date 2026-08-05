@@ -57,7 +57,7 @@ import type { CharacterStatSnapshot } from "@/types/characterLibrary";
 import { captureStatSnapshot } from "@/engine/adventureDossier";
 import {
   bindCharacterToCampaign,
-  syncLibraryCharacterSheet,
+  getLibraryCharacter,
 } from "@/lib/storage";
 import { COC_HOUSE_PRESETS, DND_HOUSE_PRESETS } from "@/prompts/gmDirectives";
 import {
@@ -141,6 +141,8 @@ interface GameStore {
     title: string;
     narrative: string;
   } | null;
+  /** 結局頁已完成成長／儲存（再進入略過結算） */
+  endingCharacterSettled: boolean;
   timelineIndex: number | null;
 
   diceResolver: ((result: {
@@ -252,6 +254,8 @@ interface GameStore {
     narrative?: string;
     ending_type?: string;
   }) => void;
+  /** 標記結局角色結算＋存檔已完成 */
+  markEndingCharacterSettled: () => void;
   undoLastTurn: () => void;
   setTimelineIndex: (idx: number | null) => void;
   confirmCharacterAndPlay: () => void;
@@ -307,6 +311,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   pendingRuleLookup: null,
   ending: null,
   pendingManualEnding: null,
+  endingCharacterSettled: false,
   timelineIndex: null,
   diceResolver: null,
 
@@ -1021,6 +1026,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
   },
 
+  markEndingCharacterSettled: () => {
+    set({ endingCharacterSettled: true });
+  },
+
   undoLastTurn: () => {
     const { history } = get();
     if (history.length < 1) return;
@@ -1177,6 +1186,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       lastPlayerAction: s.lastPlayerAction,
       composerDraft: s.composerDraft,
       suggestPlayerActions: s.suggestPlayerActions,
+      endingCharacterSettled: s.endingCharacterSettled,
     };
   },
 
@@ -1188,6 +1198,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
     // 玩家尚未行動時一律保留開場重試（含開場寫到一半就斷線的存檔）
     const needsOpening =
       data.phase === "PLAYING" && !(data.lastPlayerAction ?? "").trim();
+
+    const charId = data.boundCharacterId ?? data.character?.id ?? null;
+    const settledFromCareer = Boolean(
+      charId &&
+        getLibraryCharacter(charId)?.career.some(
+          (r) => r.campaignId === data.id,
+        ),
+    );
 
     set({
       campaignId: data.id,
@@ -1218,6 +1236,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       messages,
       ending: data.ending,
       pendingManualEnding: null,
+      endingCharacterSettled:
+        Boolean(data.endingCharacterSettled) || settledFromCareer,
       timelineIndex: data.timelineIndex,
       lastPlayerAction: data.lastPlayerAction,
       composerDraft: data.composerDraft,

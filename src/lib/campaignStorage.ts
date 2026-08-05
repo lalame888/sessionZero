@@ -72,6 +72,12 @@ export interface CampaignPersist {
   composerDraft: string;
   /** 冒險進行時是否請 GM 在敘事後提供可採取行動建議 */
   suggestPlayerActions: boolean;
+  /**
+   * 結局頁已完成角色成長／儲存。
+   * 為 true 時再進入結算頁會略過結算步驟，直接上帝視角與回放。
+   * 舊存檔可能缺此欄；亦可由檔案庫履歷（同 campaignId）推得。
+   */
+  endingCharacterSettled?: boolean;
 }
 
 export interface CampaignIndex {
@@ -330,5 +336,6 @@ export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPe
     lastPlayerAction: "",
     composerDraft: "",
     suggestPlayerActions: true,
+    endingCharacterSettled: false,
   };
 }

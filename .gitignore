@@ -24,3 +24,4 @@ dist-ssr
 *.sw?
 pedelec-integration-guide
 pedelec-integration-guide.zip
+temp.json

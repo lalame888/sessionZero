@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ChevronDown,
@@ -6,16 +6,21 @@ import {
   Download,
   Play,
   Trash2,
+  Upload,
   Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/modal";
 import { changedStatDeltas } from "@/engine/adventureDossier";
 import type { CampaignMeta } from "@/lib/campaignStorage";
 import {
   clearCharacterActiveCampaign,
+  commitImportedLibraryCharacter,
   exportLibraryCharacterJson,
   loadLibraryCharacters,
+  prepareLibraryImportFromJsonText,
   removeCharacterFromLibrary,
+  type ImportLibraryResult,
 } from "@/lib/storage";
 import type { AdventureRecord, LibraryCharacter } from "@/types/characterLibrary";
 import { cn } from "@/lib/utils";
@@ -298,8 +303,57 @@ export function CharacterLibraryPanel({
 }) {
   const [list, setList] = useState(() => loadLibraryCharacters());
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
+  const [pendingOverwrite, setPendingOverwrite] = useState<{
+    existingName: string;
+    entry: LibraryCharacter;
+  } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = () => setList(loadLibraryCharacters());
+
+  const applyImportResult = (result: ImportLibraryResult) => {
+    if (result.ok) {
+      setPendingOverwrite(null);
+      setImportNotice(
+        result.overwritten
+          ? `已覆蓋並匯入「${result.entry.sheet.name || "（未命名）"}」。`
+          : `已匯入「${result.entry.sheet.name || "（未命名）"}」。`,
+      );
+      refresh();
+      return;
+    }
+    if (result.reason === "duplicate") {
+      setPendingOverwrite({
+        existingName: result.existingName,
+        entry: result.entry,
+      });
+      return;
+    }
+    setImportNotice(result.message);
+  };
+
+  const handleImportFile = async (file: File | null) => {
+    if (!file) return;
+    setImportNotice(null);
+    try {
+      const text = await file.text();
+      applyImportResult(prepareLibraryImportFromJsonText(text));
+    } catch {
+      setImportNotice("讀取檔案失敗。");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const confirmOverwrite = () => {
+    if (!pendingOverwrite) return;
+    applyImportResult(
+      commitImportedLibraryCharacter(pendingOverwrite.entry, {
+        overwrite: true,
+      }),
+    );
+  };
 
   const selected = selectedId
     ? list.find((c) => c.sheet.id === selectedId) ?? null
@@ -325,16 +379,41 @@ export function CharacterLibraryPanel({
 
   return (
     <div>
-      <div className="mb-3 flex items-center gap-2 text-ink">
-        <Users className="h-4 w-4" />
-        <h2 className="brand-title text-lg">角色檔案庫</h2>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-ink">
+          <Users className="h-4 w-4" />
+          <h2 className="brand-title text-lg">角色檔案庫</h2>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => {
+              void handleImportFile(e.target.files?.[0] ?? null);
+            }}
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Upload className="h-3.5 w-3.5" />
+            匯入
+          </Button>
+        </div>
       </div>
       <p className="mb-3 text-xs text-muted">
-        跨劇本重用的調查員。開始冒險時自動綁定 Session；一角同時只能進行一場。
+        跨劇本重用的調查員。可匯出／匯入履歷 JSON；開始冒險時自動綁定
+        Session，一角同時只能進行一場。
       </p>
+      {importNotice ? (
+        <p className="mb-3 text-xs text-accent-2">{importNotice}</p>
+      ) : null}
       {list.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted">
-          尚無角色卡。創建角色並開始冒險後會自動存入。
+          尚無角色卡。可匯入履歷 JSON，或創建角色並開始冒險後自動存入。
         </p>
       ) : (
         <ul className="max-h-[42vh] space-y-2 overflow-y-auto">
@@ -378,6 +457,33 @@ export function CharacterLibraryPanel({
           })}
         </ul>
       )}
+
+      <Modal
+        open={pendingOverwrite != null}
+        onOpenChange={(open) => {
+          if (!open) setPendingOverwrite(null);
+        }}
+        title="覆蓋既有角色卡？"
+      >
+        <p className="text-sm text-ink">
+          已有「{pendingOverwrite?.existingName ?? ""}」的角色卡資料，是否覆蓋存檔？
+        </p>
+        <p className="mt-2 text-xs text-muted">
+          覆蓋後會以匯入檔取代同 ID 的角色數值與履歷；進行中綁定會清除。
+        </p>
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setPendingOverwrite(null)}
+          >
+            取消
+          </Button>
+          <Button size="sm" onClick={confirmOverwrite}>
+            覆蓋存檔
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -116,18 +116,9 @@ export function changedStatDeltas(
   return computeStatDeltas(before, after).filter((r) => r.changed);
 }
 
-function formatPair(
-  label: string,
-  before: number | undefined,
-  after: number | undefined,
-): string | null {
-  if (before == null && after == null) return null;
-  if (before === after) return null;
-  return `${label} ${before ?? "—"}→${after ?? "—"}`;
-}
-
 /**
- * 依結局與數值快照組出壓縮履歷文字（不呼叫 AI）。
+ * 履歷摘要 stub：只點出劇本／結局走向，不含成長與數值增減。
+ * 正式故事來龍去脈請用「AI 生成故事經歷總結」。
  */
 export function buildAdventureSynopsis(input: {
   scenarioTitle: string;
@@ -140,51 +131,14 @@ export function buildAdventureSynopsis(input: {
   const title = input.scenarioTitle.trim() || "未命名劇本";
   const endingType = input.ending?.ending_type ?? "結束";
   const endingTitle = input.ending?.ending_title?.trim();
+  const narrative = input.ending?.ending_narrative?.replace(/\s+/g, " ").trim();
 
-  const parts: string[] = [
-    `《${title}》· ${endingType}${endingTitle ? `「${endingTitle}」` : ""}`,
-  ];
-
-  const growthGains = input.growthLog.filter((l) => /→\s*\+/.test(l));
-  if (growthGains.length) {
-    parts.push(
-      `本場成長：${growthGains
-        .map((l) => {
-          const m = l.match(/^(.+?)：.+→\s*\+(\d+)/);
-          return m ? `${m[1]} +${m[2]}` : l;
-        })
-        .join("；")}`,
-    );
-  } else if (input.growthLog.some((l) => l.includes("無成長"))) {
-    parts.push("本場無技能成長");
+  if (narrative) {
+    const stub = narrative.slice(0, 220);
+    return `《${title}》· ${endingType}${endingTitle ? `「${endingTitle}」` : ""}。${stub}${narrative.length > 220 ? "…" : ""}`;
   }
 
-  const sanLine = formatPair(
-    "SAN",
-    input.statsBefore.san?.current,
-    input.statsAfter.san?.current,
-  );
-  const hpLine = formatPair(
-    "HP",
-    input.statsBefore.hp.current,
-    input.statsAfter.hp.current,
-  );
-  const vital = [sanLine, hpLine].filter(Boolean);
-  if (vital.length) parts.push(vital.join("；"));
-
-  if (input.keyClueTitles.length) {
-    parts.push(
-      `關鍵線索：${input.keyClueTitles.slice(0, 6).join("、")}${
-        input.keyClueTitles.length > 6 ? "…" : ""
-      }`,
-    );
-  }
-
-  if (input.ending?.achievements?.length) {
-    parts.push(`成就：${input.ending.achievements.slice(0, 4).join("、")}`);
-  }
-
-  return parts.join("。") + "。";
+  return `《${title}》· ${endingType}${endingTitle ? `「${endingTitle}」` : ""}。請使用「AI 生成故事經歷總結」補上本場來龍去脈。`;
 }
 
 export function buildAdventureRecord(input: {
