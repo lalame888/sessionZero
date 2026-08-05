@@ -22,6 +22,11 @@ import {
   areDuplicateNarratives,
   isCorruptedNarrativeFragment,
 } from "@/lib/narrativeDedupe";
+import { normalizeNarrativeText } from "@/lib/normalizeNarrativeText";
+import {
+  extractEndingTitleFromNarrative,
+  looksLikeEndingNarrative,
+} from "@/lib/endingDetect";
 import { hadPriorOpeningAttempt } from "@/lib/openingRetry";
 import { pedelec } from "@/lib/pedelec/client";
 import {
@@ -192,6 +197,7 @@ export function settlePendingDiceOnTeardown() {
 
 async function runNarrateStory(args: NarrateStoryArgs) {
   const a = args;
+  const narrativeText = normalizeNarrativeText(a.narrative_text);
   const store = useGameStore.getState();
   const trailingAgents: { content: string }[] = [];
   for (let i = store.messages.length - 1; i >= 0; i--) {
@@ -201,7 +207,7 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     if (m.role === "agent") trailingAgents.push(m);
   }
   const rewriting = trailingAgents.some((m) =>
-    areDuplicateNarratives(m.content, a.narrative_text),
+    areDuplicateNarratives(m.content, narrativeText),
   );
 
   if (a.location?.trim()) {
@@ -236,7 +242,20 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     }
   }
 
-  store.narrateFromTool(a.narrative_text, a.system_notice);
+  store.narrateFromTool(narrativeText, a.system_notice);
+
+  // GM 常寫出「全劇終」卻忘記呼叫 end_game_session → 提示玩家可手動結算
+  if (
+    useGameStore.getState().phase === "PLAYING" &&
+    looksLikeEndingNarrative(narrativeText)
+  ) {
+    const titleFallback =
+      useGameStore.getState().script.public_summary?.title ?? "結局";
+    useGameStore.getState().offerManualEnding({
+      title: extractEndingTitleFromNarrative(narrativeText, titleFallback),
+      narrative: narrativeText,
+    });
+  }
 
   const diceAttach = pendingPublicDiceRecord;
   pendingPublicDiceRecord = null;
@@ -253,12 +272,12 @@ async function runNarrateStory(args: NarrateStoryArgs) {
       if (h.aiNarrative.startsWith("（暗骰）")) continue;
       if (
         shouldReplace ||
-        areDuplicateNarratives(h.aiNarrative, a.narrative_text)
+        areDuplicateNarratives(h.aiNarrative, narrativeText)
       ) {
         const next = history.slice();
         next[i] = {
           ...h,
-          aiNarrative: a.narrative_text,
+          aiNarrative: narrativeText,
           timestamp: Date.now(),
           diceRecord: diceAttach ?? h.diceRecord,
         };
@@ -271,14 +290,14 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     if (!patched) {
       store.recordHistoryTurn({
         playerInput: store.lastPlayerAction || undefined,
-        aiNarrative: a.narrative_text,
+        aiNarrative: narrativeText,
         diceRecord: diceAttach ?? undefined,
       });
     }
   } else {
     store.recordHistoryTurn({
       playerInput: store.lastPlayerAction || undefined,
-      aiNarrative: a.narrative_text,
+      aiNarrative: narrativeText,
       diceRecord: diceAttach ?? undefined,
     });
   }

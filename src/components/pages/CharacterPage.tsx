@@ -41,8 +41,13 @@ export function CharacterPage() {
 
   const isBusyElsewhere = (c: LibraryCharacter) => {
     const active = c.activeCampaignId;
-    return Boolean(active && active !== campaignId);
+    if (!active || active === campaignId) return false;
+    // 該場已寫入履歷＝已結算，不算占用（載入時也會 heal）
+    if (c.career.some((r) => r.campaignId === active)) return false;
+    return true;
   };
+
+  const availableCount = compatible.filter((c) => !isBusyElsewhere(c)).length;
 
   if (path === "new") {
     return (
@@ -104,96 +109,114 @@ export function CharacterPage() {
       </div>
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => setPath("new")}
-            className={cn(
-              "rounded-xl border border-border bg-surface p-5 text-left transition-colors",
-              "hover:border-accent/50 hover:bg-accent/5",
-            )}
-          >
-            <UserPlus className="h-6 w-6 text-accent" />
-            <div className="brand-title mt-3 text-lg text-ink">創建新角色</div>
-            <p className="mt-1 text-xs text-muted">
-              依劇本創角藍圖擲骰／配點，從頭建立調查員。
-            </p>
-          </button>
-
-          <div
-            className={cn(
-              "rounded-xl border border-border bg-surface p-5",
-              !compatible.length && "opacity-70",
-            )}
-          >
-            <Library className="h-6 w-6 text-accent" />
-            <div className="brand-title mt-3 text-lg text-ink">帶入已存角色卡</div>
-            <p className="mt-1 text-xs text-muted">
-              使用檔案庫角色（含履歷與成長後數值）繼續冒險。
-            </p>
-            {!systemId ? (
-              <p className="mt-3 text-xs text-accent-2">劇本尚未設定系統。</p>
-            ) : !compatible.length ? (
-              <p className="mt-3 text-xs text-muted">
-                檔案庫沒有 {systemId} 角色。請先創建新角色，或於首頁匯入。
+        <button
+          type="button"
+          onClick={() => setPath("new")}
+          className={cn(
+            "group w-full cursor-pointer rounded-xl border border-border bg-surface px-5 py-6 text-left",
+            "transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out",
+            "hover:border-accent/55 hover:bg-accent/[0.07] hover:shadow-[0_0_0_1px_color-mix(in_oklab,var(--accent)_22%,transparent),0_8px_24px_-12px_color-mix(in_oklab,var(--accent)_35%,transparent)]",
+            "active:translate-y-px",
+          )}
+        >
+          <div className="flex items-center gap-3">
+            <span
+              className={cn(
+                "flex h-11 w-11 shrink-0 items-center justify-center rounded-lg",
+                "bg-accent/10 text-accent transition-colors duration-200",
+                "group-hover:bg-accent/18",
+              )}
+            >
+              <UserPlus className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <div className="brand-title text-lg text-ink">創建新角色</div>
+              <p className="mt-1 text-xs text-muted">
+                依劇本創角藍圖擲骰／配點，從頭建立調查員。
               </p>
-            ) : null}
-          </div>
-        </div>
-
-        {compatible.length ? (
-          <section>
-            <div className="mb-2 flex items-center gap-2 text-sm text-ink">
-              <Sparkles className="h-4 w-4 text-accent" />
-              可帶入的 {systemId} 角色（{compatible.length}）
             </div>
-            <ul className="space-y-2">
-              {compatible.map((c) => {
-                const busy = isBusyElsewhere(c);
-                const busyTitle = c.activeCampaignId
-                  ? sessionTitles[c.activeCampaignId]
-                  : null;
-                return (
-                  <li key={c.sheet.id}>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      className={cn(
-                        "flex w-full items-start justify-between gap-3 rounded-lg border border-border bg-surface-2/50 p-3 text-left",
-                        busy
-                          ? "cursor-not-allowed opacity-60"
-                          : "hover:border-accent/40",
-                      )}
-                      onClick={() => {
-                        if (busy) return;
-                        setSelected(c);
-                        setPath("returning");
-                      }}
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate font-medium text-ink">
-                          {c.sheet.name || "（未命名）"}
+          </div>
+        </button>
+
+        <section>
+          <div className="mb-1 flex items-center gap-2">
+            <Library className="h-4 w-4 text-accent" />
+            <h3 className="brand-title text-base text-ink">帶入已存角色卡</h3>
+          </div>
+          <p className="mb-3 text-xs text-muted">
+            使用檔案庫角色（含履歷與成長後數值）繼續冒險。一角同時只能進行一場。
+          </p>
+
+          {!systemId ? (
+            <p className="text-xs text-accent-2">劇本尚未設定系統。</p>
+          ) : !compatible.length ? (
+            <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-sm text-muted">
+              檔案庫沒有 {systemId} 角色。請先創建新角色，或於首頁匯入。
+            </p>
+          ) : (
+            <>
+              <div className="mb-2 flex items-center gap-2 text-sm text-ink">
+                <Sparkles className="h-4 w-4 text-accent" />
+                可帶入的 {systemId} 角色（{availableCount}/{compatible.length}）
+              </div>
+              <ul className="space-y-2">
+                {compatible.map((c) => {
+                  const busy = isBusyElsewhere(c);
+                  const busyTitle = c.activeCampaignId
+                    ? sessionTitles[c.activeCampaignId]
+                    : null;
+                  return (
+                    <li key={c.sheet.id}>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        className={cn(
+                          "group flex w-full items-start justify-between gap-3 rounded-lg border border-border bg-surface-2/50 p-3 text-left",
+                          "transition-[border-color,background-color,box-shadow] duration-200 ease-out",
+                          busy
+                            ? "cursor-not-allowed opacity-60"
+                            : [
+                                "cursor-pointer",
+                                "hover:border-accent/50 hover:bg-accent/[0.06]",
+                                "hover:shadow-[0_0_0_1px_color-mix(in_oklab,var(--accent)_18%,transparent),0_6px_18px_-10px_color-mix(in_oklab,var(--accent)_28%,transparent)]",
+                              ],
+                        )}
+                        onClick={() => {
+                          if (busy) return;
+                          setSelected(c);
+                          setPath("returning");
+                        }}
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-ink">
+                            {c.sheet.name || "（未命名）"}
+                          </div>
+                          <div className="mt-1 text-xs text-muted">
+                            {c.sheet.role_title || "—"} · 履歷{" "}
+                            {c.career.length} 場
+                            {busy
+                              ? ` · 進行中：${busyTitle ?? "其他 Session"}（一角僅能一場）`
+                              : c.career[0]
+                                ? ` · 最近：《${c.career[0].scenarioTitle}》`
+                                : ""}
+                          </div>
                         </div>
-                        <div className="mt-1 text-xs text-muted">
-                          {c.sheet.role_title || "—"} · 履歷 {c.career.length}{" "}
-                          場
-                          {busy
-                            ? ` · 進行中：${busyTitle ?? "其他 Session"}（一角僅能一場）`
-                            : c.career[0]
-                              ? ` · 最近：《${c.career[0].scenarioTitle}》`
-                              : ""}
-                        </div>
-                      </div>
-                      <span className="shrink-0 text-xs text-accent">
-                        {busy ? "占用中" : "選擇"}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        ) : null}
+                        <span
+                          className={cn(
+                            "shrink-0 text-xs text-accent transition-opacity duration-200",
+                            !busy && "opacity-80 group-hover:opacity-100",
+                          )}
+                        >
+                          {busy ? "占用中" : "選擇"}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+        </section>
       </div>
     </div>
   );

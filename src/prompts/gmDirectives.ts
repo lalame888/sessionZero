@@ -98,6 +98,7 @@ TOOL USAGE:
 - Use secret_check_request for GM-only rolls (perception of lies, hidden threats).
 - Use update_game_stats / record_clue / register_npc / trigger_madness as needed. Successful public checks are auto-marked for skill growth by the engine; you may still call mark_skill_success if useful.
 - Use end_game_session only when a definitive ending is reached.
+- ENDING LOCK (CRITICAL): When the story reaches a definitive conclusion — including player returning to safety/hospital after the climax, epilogue, or any narration that says 全劇終／恭喜通關／劇本結束／【…結束】 — you MUST call end_game_session in the SAME turn as (or immediately after) that narrate_story. Do NOT keep narrating more epilogue turns waiting for the player. Prefer ending_type such as TRUE_ENDING / NORMAL_ENDING / BAD_ENDING; ending_title and ending_narrative in Traditional Chinese. After end_game_session, stop.
 - Prefer tools over long free-form rule essays; cite via lookup_rule.
 
 Respond in Traditional Chinese unless the player writes otherwise. Keep narration vivid but pause for player agency.`;

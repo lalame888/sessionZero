@@ -282,10 +282,10 @@ export function EndingStage() {
       setSavedNotice("角色卡缺少姓名，無法存入檔案庫。");
       return;
     }
+    // 先解除 Session 綁定，避免 persist 同步又把 activeCampaignId 寫回去
+    useGameStore.setState({ boundCharacterId: null });
     const record = built.entry.career[0]!;
     saveLibraryCharacterWithAdventure(built.entry.sheet, record);
-    // 解除 Session ↔ 角色雙向綁定（履歷已寫入角色卡）
-    useGameStore.setState({ boundCharacterId: null });
     setLibrarySaved(true);
     setSavedNotice(
       `已存入檔案庫「${built.entry.sheet.name}」（含本場履歷）。角色已解除進行中綁定，可帶入新劇本。`,

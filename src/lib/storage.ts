@@ -58,9 +58,20 @@ export function loadLibraryCharacters(): LibraryCharacter[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown[];
     if (!Array.isArray(parsed)) return [];
-    return parsed
+    const list = parsed
       .map(normalizeLibraryEntry)
       .filter((c): c is LibraryCharacter => c != null);
+    // 載入時順便清掉「已有履歷仍標記進行中」的卡住綁定
+    let dirty = false;
+    const healed = list.map((entry) => {
+      const active = entry.activeCampaignId;
+      if (!active) return entry;
+      if (!entry.career.some((r) => r.campaignId === active)) return entry;
+      dirty = true;
+      return { ...entry, activeCampaignId: null, updatedAt: Date.now() };
+    });
+    if (dirty) persistLibrary(healed);
+    return healed;
   } catch {
     return [];
   }
@@ -116,15 +127,25 @@ export function bindCharacterToCampaign(
   campaignId: string,
 ): string | null {
   const existing = getLibraryCharacter(sheet.id);
-  const busy = existing?.activeCampaignId;
+  let busy = existing?.activeCampaignId ?? null;
+  // 已結算仍殘留標記：先清掉再綁
+  if (
+    busy &&
+    busy !== campaignId &&
+    existing?.career.some((r) => r.campaignId === busy)
+  ) {
+    clearCharacterActiveCampaign(sheet.id);
+    busy = null;
+  }
   if (busy && busy !== campaignId) {
     return `角色「${sheet.name || "未命名"}」正在其他冒險中，無法同時進行兩場。請先完成或刪除該 Session。`;
   }
+  const fresh = getLibraryCharacter(sheet.id) ?? existing;
   upsertLibraryCharacter({
     sheet: migrateCharacterSheet(sheet),
-    career: existing?.career ?? [],
+    career: fresh?.career ?? [],
     activeCampaignId: campaignId,
-    createdAt: existing?.createdAt ?? Date.now(),
+    createdAt: fresh?.createdAt ?? Date.now(),
     updatedAt: Date.now(),
   });
   return null;
@@ -141,21 +162,43 @@ export function clearCharacterActiveCampaign(characterId: string) {
   });
 }
 
-/** 冒險進行中同步最新數值到檔案庫（保留 activeCampaignId） */
+/** 冒險進行中同步最新數值到檔案庫（不改寫綁定狀態） */
 export function syncLibraryCharacterSheet(
   sheet: UniversalCharacterSheet,
   campaignId: string,
 ) {
   const existing = getLibraryCharacter(sheet.id);
   if (!existing) return;
-  if (existing.activeCampaignId && existing.activeCampaignId !== campaignId) {
-    return;
-  }
+  // 已解除綁定：禁止在結局頁 persist 時重新綁上
+  if (!existing.activeCampaignId) return;
+  if (existing.activeCampaignId !== campaignId) return;
   upsertLibraryCharacter({
     ...existing,
     sheet: migrateCharacterSheet(sheet),
-    activeCampaignId: campaignId,
+    activeCampaignId: existing.activeCampaignId,
   });
+}
+
+/**
+ * 清理過期的進行中標記：
+ * 若該 Session 已寫入履歷（已結算存檔），視為冒險結束，解除綁定。
+ * 修正「已結算仍無法帶入新劇本」的卡住狀態。
+ */
+export function healStaleActiveCampaignBindings(): number {
+  const list = loadLibraryCharacters();
+  let fixed = 0;
+  for (const entry of list) {
+    const active = entry.activeCampaignId;
+    if (!active) continue;
+    const settled = entry.career.some((r) => r.campaignId === active);
+    if (!settled) continue;
+    upsertLibraryCharacter({
+      ...entry,
+      activeCampaignId: null,
+    });
+    fixed++;
+  }
+  return fixed;
 }
 
 /**

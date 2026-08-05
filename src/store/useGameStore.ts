@@ -133,6 +133,14 @@ interface GameStore {
   pendingDice: PendingDice | null;
   pendingRuleLookup: RuleLookupResult | null;
   ending: EndingState | null;
+  /**
+   * GM 已寫出結局口吻敘事但未呼叫 end_game_session 時，
+   * 供玩家手動進入結算。
+   */
+  pendingManualEnding: {
+    title: string;
+    narrative: string;
+  } | null;
   timelineIndex: number | null;
 
   diceResolver: ((result: {
@@ -236,6 +244,14 @@ interface GameStore {
   /** 玩家尚未行動時，清掉不完整開場敘事（供首次／重試開場） */
   clearIncompleteOpening: (mode?: "first" | "retry") => void;
   endGame: (ending: EndingState) => void;
+  offerManualEnding: (offer: { title: string; narrative: string }) => void;
+  clearManualEndingOffer: () => void;
+  /** 玩家確認：依待進入結算的結局敘事（或傳入）進入 ENDING */
+  confirmManualEnding: (override?: {
+    title?: string;
+    narrative?: string;
+    ending_type?: string;
+  }) => void;
   undoLastTurn: () => void;
   setTimelineIndex: (idx: number | null) => void;
   confirmCharacterAndPlay: () => void;
@@ -290,6 +306,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   pendingDice: null,
   pendingRuleLookup: null,
   ending: null,
+  pendingManualEnding: null,
   timelineIndex: null,
   diceResolver: null,
 
@@ -964,11 +981,44 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set((s) => ({
       ending,
       phase: "ENDING",
+      pendingManualEnding: null,
       script: { ...s.script, revealed: true },
       timelineIndex: s.history.length ? s.history.length - 1 : null,
     }));
     get().appendSystem(`結局：${ending.ending_title}`);
-    get().appendMessage({ role: "agent", content: ending.ending_narrative });
+    const msgs = get().messages;
+    const lastAgent = [...msgs].reverse().find((m) => m.role === "agent");
+    if (lastAgent?.content.trim() !== ending.ending_narrative.trim()) {
+      get().appendMessage({ role: "agent", content: ending.ending_narrative });
+    }
+  },
+
+  offerManualEnding: (offer) => {
+    if (get().phase !== "PLAYING") return;
+    set({ pendingManualEnding: offer });
+  },
+
+  clearManualEndingOffer: () => set({ pendingManualEnding: null }),
+
+  confirmManualEnding: (override) => {
+    if (get().phase !== "PLAYING") return;
+    const pending = get().pendingManualEnding;
+    const narrative =
+      override?.narrative?.trim() ||
+      pending?.narrative?.trim() ||
+      "";
+    if (!narrative) return;
+    const title =
+      override?.title?.trim() ||
+      pending?.title?.trim() ||
+      get().script.public_summary?.title ||
+      "結局";
+    get().endGame({
+      ending_type: override?.ending_type?.trim() || "TRUE_ENDING",
+      ending_title: title,
+      ending_narrative: narrative,
+      achievements: [],
+    });
   },
 
   undoLastTurn: () => {
@@ -1167,6 +1217,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       turn: data.turn,
       messages,
       ending: data.ending,
+      pendingManualEnding: null,
       timelineIndex: data.timelineIndex,
       lastPlayerAction: data.lastPlayerAction,
       composerDraft: data.composerDraft,

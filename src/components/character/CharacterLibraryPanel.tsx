@@ -339,9 +339,14 @@ export function CharacterLibraryPanel({
       ) : (
         <ul className="max-h-[42vh] space-y-2 overflow-y-auto">
           {list.map((c) => {
-            const active = c.activeCampaignId
-              ? sessions.find((s) => s.id === c.activeCampaignId)
-              : null;
+            const activeId = c.activeCampaignId;
+            const settledActive =
+              activeId != null &&
+              c.career.some((r) => r.campaignId === activeId);
+            const active =
+              activeId && !settledActive
+                ? sessions.find((s) => s.id === activeId)
+                : null;
             return (
               <li key={c.sheet.id}>
                 <button
@@ -361,7 +366,7 @@ export function CharacterLibraryPanel({
                       {c.career.length} 場
                       {active
                         ? ` · 進行中：${active.title}`
-                        : c.activeCampaignId
+                        : activeId && !settledActive
                           ? " · 進行中（Session 遺失）"
                           : ""}
                     </div>

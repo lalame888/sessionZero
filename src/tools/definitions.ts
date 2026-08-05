@@ -581,7 +581,8 @@ export const registerNpcTool = defineTool({
 
 export const endGameSessionTool = defineTool({
   name: "end_game_session",
-  description: "宣告劇本結束，進入階段四結算畫面並解鎖幕後真相。",
+  description:
+    "宣告劇本結束，進入階段四結算畫面並解鎖幕後真相。當敘事出現全劇終／恭喜通關／epilogue 完成時必須呼叫；不可只寫結局文字而不呼叫本工具。",
   argsSchema: {
     type: "object",
     properties: {

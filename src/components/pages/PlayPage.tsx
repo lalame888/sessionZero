@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Lightbulb, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Flag, Lightbulb, Sparkles } from "lucide-react";
 import { StoryLog } from "@/components/chat/StoryLog";
 import { Composer } from "@/components/chat/Composer";
 import { AiPlayerToggle } from "@/components/dev/AiPlayerToggle";
@@ -11,6 +11,10 @@ import { TaskFeedback } from "@/components/pedelec/TaskFeedback";
 import { GameSidebar } from "@/components/sheet/GameSidebar";
 import { NoteEditorModal } from "@/components/sheet/NoteEditorModal";
 import { Button } from "@/components/ui/button";
+import {
+  extractEndingTitleFromNarrative,
+  looksLikeEndingNarrative,
+} from "@/lib/endingDetect";
 import { shouldOfferOpeningRetry, findLatestOpeningFailure, hadPriorOpeningAttempt } from "@/lib/openingRetry";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
@@ -72,8 +76,36 @@ export function PlayPage({
   const retryAction = useGameStore((s) => s.retryAction);
   const setRetryAction = useGameStore((s) => s.setRetryAction);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
+  const pendingManualEnding = useGameStore((s) => s.pendingManualEnding);
+  const offerManualEnding = useGameStore((s) => s.offerManualEnding);
+  const confirmManualEnding = useGameStore((s) => s.confirmManualEnding);
+  const scriptTitle = useGameStore((s) => s.script.public_summary?.title);
   const [createNote, setCreateNote] = useState<CreateNoteSeed | null>(null);
   const [starting, setStarting] = useState(false);
+
+  /** 已卡住的舊存檔：從近期 GM 敘事還原「進入結算」提示 */
+  const endingOffer = useMemo(() => {
+    if (phase !== "PLAYING") return null;
+    if (pendingManualEnding) return pendingManualEnding;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (!m || m.role !== "agent") continue;
+      if (!looksLikeEndingNarrative(m.content)) continue;
+      return {
+        title: extractEndingTitleFromNarrative(
+          m.content,
+          scriptTitle ?? "結局",
+        ),
+        narrative: m.content,
+      };
+    }
+    return null;
+  }, [phase, pendingManualEnding, messages, scriptTitle]);
+
+  useEffect(() => {
+    if (!endingOffer || pendingManualEnding) return;
+    offerManualEnding(endingOffer);
+  }, [endingOffer, pendingManualEnding, offerManualEnding]);
 
   const offerOpeningRetry = shouldOfferOpeningRetry({
     phase,
@@ -214,6 +246,32 @@ export function PlayPage({
           )}
           <SecretRollNotice />
           <RuleLookupToast />
+          {endingOffer ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-700/40 bg-amber-950/20 px-3 py-2 text-xs text-ink">
+              <span className="min-w-0 flex-1">
+                GM 已寫出結局敘事（{endingOffer.title}
+                ），但尚未進入結算畫面。可手動進入階段四結算與角色成長。
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 shrink-0 gap-1"
+                disabled={
+                  sessionStatus === "running" ||
+                  sessionStatus === "waiting_tool_result"
+                }
+                onClick={() =>
+                  confirmManualEnding({
+                    title: endingOffer.title,
+                    narrative: endingOffer.narrative,
+                  })
+                }
+              >
+                <Flag className="h-3.5 w-3.5" />
+                進入結算
+              </Button>
+            </div>
+          ) : null}
         </div>
         <div className="min-h-0 flex-1 overflow-hidden">
           {phase === "PLAYING" &&

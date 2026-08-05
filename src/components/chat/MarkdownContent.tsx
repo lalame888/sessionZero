@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { normalizeNarrativeText } from "@/lib/normalizeNarrativeText";
 import { cn } from "@/lib/utils";
 
 export function MarkdownContent({
@@ -9,9 +10,10 @@ export function MarkdownContent({
   content: string;
   className?: string;
 }) {
+  const normalized = normalizeNarrativeText(content);
   return (
     <div className={cn("markdown-body", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{normalized}</ReactMarkdown>
     </div>
   );
 }

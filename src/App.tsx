@@ -74,9 +74,9 @@ function persistActiveCampaign() {
   const state = useGameStore.getState();
   const data = state.toPersist();
   saveCampaign(data);
-  // 冒險進行中同步角色數值到檔案庫（保留進行中綁定）
+  // 冒險進行中同步角色數值到檔案庫（結局階段不同步，避免重新綁定）
   if (
-    (data.phase === "PLAYING" || data.phase === "ENDING") &&
+    data.phase === "PLAYING" &&
     data.character &&
     data.boundCharacterId
   ) {
