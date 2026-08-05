@@ -18,7 +18,7 @@ import {
   type CampaignPersist,
 } from "@/lib/campaignStorage";
 import {
-  loadCharacterLibrary,
+  loadLibraryCharacters,
   loadGameSnapshot,
   loadPedelecSessionId,
 } from "@/lib/storage";
@@ -73,7 +73,7 @@ function collectFrontendDump() {
     campaignIndex: index,
     campaigns,
     agentPrefs: loadAgentPrefs(),
-    characterLibrary: loadCharacterLibrary(),
+    characterLibrary: loadLibraryCharacters(),
     pedelecSessionId: loadPedelecSessionId(),
     gameSnapshot: loadGameSnapshot(),
     localStorageSessionZero,

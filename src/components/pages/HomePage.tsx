@@ -1,4 +1,6 @@
-import { FolderOpen, Plus, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { FolderOpen, Plus, Trash2, Users } from "lucide-react";
+import { CharacterLibraryPanel } from "@/components/character/CharacterLibraryPanel";
 import { Button } from "@/components/ui/button";
 import type { CampaignMeta } from "@/lib/campaignStorage";
 import { cn } from "@/lib/utils";
@@ -21,6 +23,8 @@ function scaleLabel(meta: CampaignMeta): string {
   return SCENARIO_SCALE_LABELS[normalizeScenarioScale(meta.scenarioScale)];
 }
 
+type HomeTab = "sessions" | "characters";
+
 export function HomePage({
   sessions,
   pedelecReady,
@@ -36,12 +40,14 @@ export function HomePage({
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
+  const [tab, setTab] = useState<HomeTab>("sessions");
+
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col justify-center gap-8 px-2 py-6">
       <div className="text-center">
         <h1 className="brand-title text-4xl text-ink md:text-5xl">SessionZero</h1>
         <p className="mt-3 text-sm text-muted md:text-base">
-          萬用 AI TRPG 跑團引擎。先選擇既有劇本，或開一個全新 Session。
+          萬用 AI TRPG 跑團引擎。管理劇本 Session 與可跨劇本重用的角色檔案庫。
         </p>
       </div>
 
@@ -66,52 +72,85 @@ export function HomePage({
         <p className="text-center text-sm text-muted">正在建立 Session 並連線 GM…</p>
       ) : null}
 
-      <section className="rounded-xl border border-border bg-surface/80 p-4">
-        <div className="mb-3 flex items-center gap-2 text-ink">
-          <FolderOpen className="h-4 w-4" />
-          <h2 className="brand-title text-lg">既有 Session</h2>
-        </div>
-        {sessions.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted">
-            尚無存檔。建立第一個劇本開始 Session 0。
-          </p>
-        ) : (
-          <ul className="max-h-[42vh] space-y-2 overflow-y-auto">
-            {sessions.map((s) => (
-              <li
-                key={s.id}
-                className={cn(
-                  "flex items-start gap-2 rounded-lg border border-border bg-surface-2/50 p-3",
-                )}
-              >
-                <button
-                  type="button"
-                  className="min-w-0 flex-1 text-left"
-                  disabled={bootstrapping || !pedelecReady}
-                  onClick={() => onOpen(s.id)}
+      <div className="flex justify-center gap-2">
+        <Button
+          size="sm"
+          variant={tab === "sessions" ? "default" : "secondary"}
+          onClick={() => setTab("sessions")}
+        >
+          <FolderOpen className="h-3.5 w-3.5" />
+          既有 Session
+        </Button>
+        <Button
+          size="sm"
+          variant={tab === "characters" ? "default" : "secondary"}
+          onClick={() => setTab("characters")}
+        >
+          <Users className="h-3.5 w-3.5" />
+          角色檔案庫
+        </Button>
+      </div>
+
+      {tab === "sessions" ? (
+        <section className="rounded-xl border border-border bg-surface/80 p-4">
+          <div className="mb-3 flex items-center gap-2 text-ink">
+            <FolderOpen className="h-4 w-4" />
+            <h2 className="brand-title text-lg">既有 Session</h2>
+          </div>
+          {sessions.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted">
+              尚無存檔。建立第一個劇本開始 Session 0。
+            </p>
+          ) : (
+            <ul className="max-h-[42vh] space-y-2 overflow-y-auto">
+              {sessions.map((s) => (
+                <li
+                  key={s.id}
+                  className={cn(
+                    "flex items-start gap-2 rounded-lg border border-border bg-surface-2/50 p-3",
+                  )}
                 >
-                  <div className="truncate font-medium text-ink">{s.title}</div>
-                  <div className="mt-1 text-xs text-muted">
-                    {s.systemId ?? "系統未定"} · {scaleLabel(s)} ·{" "}
-                    {PHASE_LABEL[s.phase]} ·{" "}
-                    {new Date(s.updatedAt).toLocaleString()}
-                  </div>
-                </button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-danger"
-                  onClick={() => {
-                    if (confirm(`確定刪除「${s.title}」？`)) onDelete(s.id);
-                  }}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 text-left"
+                    disabled={bootstrapping || !pedelecReady}
+                    onClick={() => onOpen(s.id)}
+                  >
+                    <div className="truncate font-medium text-ink">{s.title}</div>
+                    <div className="mt-1 text-xs text-muted">
+                      {s.boundCharacterName
+                        ? `主角 ${s.boundCharacterName} · `
+                        : ""}
+                      {s.systemId ?? "系統未定"} · {scaleLabel(s)} ·{" "}
+                      {PHASE_LABEL[s.phase]} ·{" "}
+                      {new Date(s.updatedAt).toLocaleString()}
+                    </div>
+                  </button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-danger"
+                    onClick={() => {
+                      if (confirm(`確定刪除「${s.title}」？`)) onDelete(s.id);
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : (
+        <section className="rounded-xl border border-border bg-surface/80 p-4">
+          <CharacterLibraryPanel
+            sessions={sessions}
+            pedelecReady={pedelecReady}
+            bootstrapping={bootstrapping}
+            onOpenCampaign={onOpen}
+          />
+        </section>
+      )}
     </div>
   );
 }

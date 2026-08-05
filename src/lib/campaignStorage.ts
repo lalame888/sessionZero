@@ -1,3 +1,4 @@
+import type { CharacterStatSnapshot } from "@/types/characterLibrary";
 import type {
   ChapterSummary,
   CharacterSchemaState,
@@ -18,6 +19,10 @@ import type {
   UniversalCharacterSheet,
 } from "@/types/game";
 import { normalizeScenarioScale } from "@/engine/scenarioScale";
+import {
+  clearCharacterActiveCampaign,
+  getLibraryCharacter,
+} from "@/lib/storage";
 
 export interface CampaignMeta {
   id: string;
@@ -26,6 +31,10 @@ export interface CampaignMeta {
   phase: GamePhase;
   /** 劇本規模；舊索引可能缺此欄 */
   scenarioScale?: ScenarioScale | null;
+  /** 進行中主角（檔案庫角色）ID；舊索引可能缺 */
+  boundCharacterId?: string | null;
+  /** 進行中主角名稱（列表顯示用） */
+  boundCharacterName?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -44,6 +53,10 @@ export interface CampaignPersist {
   houseRules: HouseRuleConfig;
   character: UniversalCharacterSheet | null;
   characterSchema: CharacterSchemaState | null;
+  /** 冒險開始時角色數值快照（結局履歷對照）；舊存檔可能缺 */
+  characterBaseline?: CharacterStatSnapshot | null;
+  /** 綁定的檔案庫角色 ID（與 LibraryCharacter.sheet.id 雙向） */
+  boundCharacterId?: string | null;
   clues: ClueItem[];
   /** 玩家自行新增的關鍵資訊筆記；舊存檔可能缺此欄 */
   playerNotes?: PlayerNote[];
@@ -89,22 +102,36 @@ function readJson<T>(key: string): T | null {
 export function loadCampaignIndex(): CampaignIndex {
   const index =
     readJson<CampaignIndex>(INDEX_KEY) ?? { activeId: null, sessions: [] };
-  // 舊索引缺 scenarioScale 時，從完整存檔回填一次
+  // 舊索引缺欄位時，從完整存檔回填一次
   let changed = false;
   const sessions = index.sessions.map((meta) => {
-    if (meta.scenarioScale) return meta;
-    const full = loadCampaign(meta.id);
-    const scale = full?.script?.scenario_scale
-      ? normalizeScenarioScale(full.script.scenario_scale)
-      : null;
-    if (!scale) return meta;
-    changed = true;
-    return { ...meta, scenarioScale: scale };
+    let next = meta;
+    if (!next.scenarioScale || next.boundCharacterName === undefined) {
+      const full = loadCampaign(meta.id);
+      if (!full) return next;
+      if (!next.scenarioScale && full.script?.scenario_scale) {
+        changed = true;
+        next = {
+          ...next,
+          scenarioScale: normalizeScenarioScale(full.script.scenario_scale),
+        };
+      }
+      if (next.boundCharacterName === undefined) {
+        changed = true;
+        next = {
+          ...next,
+          boundCharacterId:
+            full.boundCharacterId ?? full.character?.id ?? null,
+          boundCharacterName: full.character?.name?.trim() || null,
+        };
+      }
+    }
+    return next;
   });
   if (changed) {
-    const next = { ...index, sessions };
-    saveCampaignIndex(next);
-    return next;
+    const nextIndex = { ...index, sessions };
+    saveCampaignIndex(nextIndex);
+    return nextIndex;
   }
   return index;
 }
@@ -128,6 +155,8 @@ export function saveCampaign(data: CampaignPersist) {
     scenarioScale: data.script.scenario_scale
       ? normalizeScenarioScale(data.script.scenario_scale)
       : null,
+    boundCharacterId: data.boundCharacterId ?? null,
+    boundCharacterName: data.character?.name?.trim() || null,
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
   };
@@ -139,6 +168,14 @@ export function saveCampaign(data: CampaignPersist) {
 }
 
 export function deleteCampaign(id: string) {
+  const full = loadCampaign(id);
+  const charId = full?.boundCharacterId ?? full?.character?.id ?? null;
+  if (charId) {
+    const entry = getLibraryCharacter(charId);
+    if (entry?.activeCampaignId === id) {
+      clearCharacterActiveCampaign(charId);
+    }
+  }
   localStorage.removeItem(campaignKey(id));
   const index = loadCampaignIndex();
   const sessions = index.sessions.filter((s) => s.id !== id);
@@ -278,6 +315,8 @@ export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPe
     houseRules: { preset_rules: [], custom_rules_text: "" },
     character: null,
     characterSchema: null,
+    characterBaseline: null,
+    boundCharacterId: null,
     clues: [],
     playerNotes: [],
     npcs: [],

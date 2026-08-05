@@ -53,6 +53,12 @@ import type {
   ThemeId,
   UniversalCharacterSheet,
 } from "@/types/game";
+import type { CharacterStatSnapshot } from "@/types/characterLibrary";
+import { captureStatSnapshot } from "@/engine/adventureDossier";
+import {
+  bindCharacterToCampaign,
+  syncLibraryCharacterSheet,
+} from "@/lib/storage";
 import { COC_HOUSE_PRESETS, DND_HOUSE_PRESETS } from "@/prompts/gmDirectives";
 import {
   getActiveSession,
@@ -112,6 +118,10 @@ interface GameStore {
   houseRules: HouseRuleConfig;
   character: UniversalCharacterSheet | null;
   characterSchema: CharacterSchemaState | null;
+  /** 冒險開始時數值快照（結局履歷對照） */
+  characterBaseline: CharacterStatSnapshot | null;
+  /** 綁定檔案庫角色 ID */
+  boundCharacterId: string | null;
   clues: ClueItem[];
   playerNotes: PlayerNote[];
   npcs: NPCItem[];
@@ -267,6 +277,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   houseRules: { preset_rules: [], custom_rules_text: "" },
   character: null,
   characterSchema: null,
+  characterBaseline: null,
+  boundCharacterId: null,
   clues: [],
   playerNotes: [],
   npcs: [],
@@ -993,11 +1005,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
         return;
       }
 
+      const campaignId = get().campaignId;
+      const bindErr = bindCharacterToCampaign(sheet, campaignId);
+      if (bindErr) {
+        get().appendSystem(bindErr);
+        get().setSessionError({
+          code: "CHARACTER_BUSY",
+          message: bindErr,
+        });
+        return;
+      }
+
+      const enriched = recomputeDerived(
+        enrichCharacterSheetMeta(sheet, get().characterSchema),
+      );
+      // 以結算後／確認後數值再寫一次綁定（確保檔案庫為上場版本）
+      bindCharacterToCampaign(enriched, campaignId);
+
       set({
         phase: "PLAYING",
-        character: recomputeDerived(
-          enrichCharacterSheetMeta(sheet, get().characterSchema),
-        ),
+        character: enriched,
+        characterBaseline: captureStatSnapshot(enriched, get().madness),
+        boundCharacterId: enriched.id,
         // 清掉前面 Session/創角階段的訊息，避免在冒險階段顯示舊內容
         history: [],
         messages: [],
@@ -1019,6 +1048,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
         },
         retryAction: { kind: "opening", label: "述說開場敘事" },
       });
+
+      get().appendSystem(
+        `角色「${enriched.name}」已存入檔案庫，並綁定本場冒險。一角同時僅能進行一場。`,
+      );
 
       try {
         await sendOpeningNarration();
@@ -1046,7 +1079,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
     set({ phase: "CHARACTER" });
     get().appendSystem(
-      "已確認劇本與房規，進入創角階段。可請 AI 產生創角欄位，或自行填寫角色卡。",
+      "已確認劇本與房規，進入創角階段。可創建新角色，或帶入檔案庫中同系統的角色卡。",
     );
   },
 
@@ -1079,6 +1112,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       houseRules: s.houseRules,
       character: s.character,
       characterSchema: s.characterSchema,
+      characterBaseline: s.characterBaseline,
+      boundCharacterId: s.boundCharacterId ?? s.character?.id ?? null,
       clues: s.clues,
       playerNotes: s.playerNotes,
       npcs: s.npcs,
@@ -1120,6 +1155,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       houseRules: data.houseRules,
       character: data.character,
       characterSchema: data.characterSchema,
+      characterBaseline: data.characterBaseline ?? null,
+      boundCharacterId:
+        data.boundCharacterId ?? data.character?.id ?? null,
       clues: data.clues,
       playerNotes: data.playerNotes ?? [],
       npcs: data.npcs,

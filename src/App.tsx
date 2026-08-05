@@ -30,6 +30,7 @@ import {
   sendPlayerAction,
   sessionNeedsRebuild,
 } from "@/lib/pedelec/createGameSession";
+import { syncLibraryCharacterSheet } from "@/lib/storage";
 import {
   checkPedelecPrerequisites,
   listProviderOptions,
@@ -70,8 +71,17 @@ async function resolveProvider(
 }
 
 function persistActiveCampaign() {
-  const data = useGameStore.getState().toPersist();
+  const state = useGameStore.getState();
+  const data = state.toPersist();
   saveCampaign(data);
+  // 冒險進行中同步角色數值到檔案庫（保留進行中綁定）
+  if (
+    (data.phase === "PLAYING" || data.phase === "ENDING") &&
+    data.character &&
+    data.boundCharacterId
+  ) {
+    syncLibraryCharacterSheet(data.character, data.id);
+  }
 }
 
 export default function App() {

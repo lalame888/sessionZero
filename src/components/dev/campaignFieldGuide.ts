@@ -205,6 +205,20 @@ export const CAMPAIGN_FIELD_GROUPS: FieldGuideGroup[] = [
         getValue: (c) => c.character,
       },
       {
+        path: "characterBaseline",
+        label: "冒險開始快照",
+        meaning:
+          "confirmCharacterAndPlay 時記錄的數值快照，供結局履歷前後對照。舊存檔可能為空。",
+        getValue: (c) => c.characterBaseline,
+      },
+      {
+        path: "boundCharacterId",
+        label: "綁定角色 ID",
+        meaning:
+          "與檔案庫角色雙向綁定的 sheet.id。開始冒險時寫入；結局存檔或刪除 Session 後清空。",
+        getValue: (c) => c.boundCharacterId ?? "（未綁定）",
+      },
+      {
         path: "character.name",
         label: "角色名稱",
         meaning: "角色顯示名稱。",

@@ -36,6 +36,7 @@ import { getActiveSession } from "@/lib/pedelec/createGameSession";
 import {
   exportCharacterJson,
   loadCharacterLibrary,
+  parseImportedCharacter,
   saveCharacterToLibrary,
 } from "@/lib/storage";
 import { useGameStore } from "@/store/useGameStore";
@@ -801,8 +802,10 @@ export function CharacterStage() {
             if (!file) return;
             try {
               const text = await file.text();
-              const parsed = JSON.parse(text) as UniversalCharacterSheet;
-              importCharacterSheet(parsed, "JSON 檔");
+              const parsed = JSON.parse(text) as unknown;
+              const entry = parseImportedCharacter(parsed);
+              if (!entry) throw new Error("invalid");
+              importCharacterSheet(entry.sheet, "JSON 檔");
             } catch {
               appendSystem("匯入失敗：JSON 格式無效。");
             }

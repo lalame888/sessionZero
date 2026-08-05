@@ -535,7 +535,7 @@ export function ScriptPage({
               }
               onClick={() => advanceToCharacterPhase()}
             >
-              完成劇本設定，前往創建角色卡
+              完成劇本設定，前往選擇／創建角色
             </Button>
           </div>
         </main>

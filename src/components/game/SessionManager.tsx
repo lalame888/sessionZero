@@ -104,6 +104,9 @@ export function SessionManager({
                           {isActive ? "（目前）" : ""}
                         </div>
                         <div className="mt-1 text-xs text-muted">
+                          {s.boundCharacterName
+                            ? `主角 ${s.boundCharacterName} · `
+                            : ""}
                           {s.systemId ?? "系統未定"} · {scaleLabel(s)} ·{" "}
                           {PHASE_LABEL[s.phase]} ·{" "}
                           {new Date(s.updatedAt).toLocaleString()}

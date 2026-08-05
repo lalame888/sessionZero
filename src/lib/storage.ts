@@ -1,3 +1,7 @@
+import type {
+  AdventureRecord,
+  LibraryCharacter,
+} from "@/types/characterLibrary";
 import type { UniversalCharacterSheet } from "@/types/game";
 import { migrateCharacterSheet } from "@/engine/formulas";
 
@@ -5,29 +9,192 @@ const LIBRARY_KEY = "sessionzero.character-library";
 const SESSION_ID_KEY = "sessionzero.pedelec-session-id";
 const GAME_SAVE_KEY = "sessionzero.game-save";
 
-export function loadCharacterLibrary(): UniversalCharacterSheet[] {
+function isLibraryCharacter(raw: unknown): raw is LibraryCharacter {
+  if (!raw || typeof raw !== "object") return false;
+  const o = raw as Record<string, unknown>;
+  return o.sheet != null && typeof o.sheet === "object";
+}
+
+function wrapSheetAsLibrary(sheet: UniversalCharacterSheet): LibraryCharacter {
+  const now = Date.now();
+  return {
+    sheet: migrateCharacterSheet(sheet),
+    career: [],
+    activeCampaignId: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function normalizeLibraryEntry(raw: unknown): LibraryCharacter | null {
+  try {
+    if (isLibraryCharacter(raw)) {
+      return {
+        sheet: migrateCharacterSheet(raw.sheet),
+        career: Array.isArray(raw.career) ? raw.career : [],
+        activeCampaignId:
+          typeof raw.activeCampaignId === "string"
+            ? raw.activeCampaignId
+            : null,
+        createdAt:
+          typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
+        updatedAt:
+          typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now(),
+      };
+    }
+    // 舊版：純 UniversalCharacterSheet
+    if (raw && typeof raw === "object" && "system_id" in (raw as object)) {
+      return wrapSheetAsLibrary(raw as UniversalCharacterSheet);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function loadLibraryCharacters(): LibraryCharacter[] {
   try {
     const raw = localStorage.getItem(LIBRARY_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown[];
     if (!Array.isArray(parsed)) return [];
-    return parsed.map((c) => migrateCharacterSheet(c));
+    return parsed
+      .map(normalizeLibraryEntry)
+      .filter((c): c is LibraryCharacter => c != null);
   } catch {
     return [];
   }
 }
 
+/** @deprecated 相容舊呼叫：回傳 sheet 陣列 */
+export function loadCharacterLibrary(): UniversalCharacterSheet[] {
+  return loadLibraryCharacters().map((c) => c.sheet);
+}
+
+export function getLibraryCharacter(id: string): LibraryCharacter | null {
+  return loadLibraryCharacters().find((c) => c.sheet.id === id) ?? null;
+}
+
+function persistLibrary(list: LibraryCharacter[]) {
+  localStorage.setItem(LIBRARY_KEY, JSON.stringify(list.slice(0, 40)));
+}
+
+/** 覆寫／新增完整 LibraryCharacter（依 sheet.id） */
+export function upsertLibraryCharacter(entry: LibraryCharacter) {
+  const lib = loadLibraryCharacters().filter(
+    (c) => c.sheet.id !== entry.sheet.id,
+  );
+  lib.unshift({
+    ...entry,
+    sheet: migrateCharacterSheet(entry.sheet),
+    activeCampaignId: entry.activeCampaignId ?? null,
+    updatedAt: Date.now(),
+  });
+  persistLibrary(lib);
+}
+
+/**
+ * 只更新角色卡數值，保留既有履歷與進行中綁定（創角中途／冒險中同步用）。
+ */
 export function saveCharacterToLibrary(sheet: UniversalCharacterSheet) {
-  const lib = loadCharacterLibrary().filter((c) => c.id !== sheet.id);
-  lib.unshift(sheet);
-  localStorage.setItem(LIBRARY_KEY, JSON.stringify(lib.slice(0, 30)));
+  const existing = getLibraryCharacter(sheet.id);
+  upsertLibraryCharacter({
+    sheet: migrateCharacterSheet(sheet),
+    career: existing?.career ?? [],
+    activeCampaignId: existing?.activeCampaignId ?? null,
+    createdAt: existing?.createdAt ?? Date.now(),
+    updatedAt: Date.now(),
+  });
+}
+
+/**
+ * 開始冒險：寫入／更新角色卡，並標記進行中的 Session。
+ * 若角色已綁定其他 Session，回傳錯誤字串。
+ */
+export function bindCharacterToCampaign(
+  sheet: UniversalCharacterSheet,
+  campaignId: string,
+): string | null {
+  const existing = getLibraryCharacter(sheet.id);
+  const busy = existing?.activeCampaignId;
+  if (busy && busy !== campaignId) {
+    return `角色「${sheet.name || "未命名"}」正在其他冒險中，無法同時進行兩場。請先完成或刪除該 Session。`;
+  }
+  upsertLibraryCharacter({
+    sheet: migrateCharacterSheet(sheet),
+    career: existing?.career ?? [],
+    activeCampaignId: campaignId,
+    createdAt: existing?.createdAt ?? Date.now(),
+    updatedAt: Date.now(),
+  });
+  return null;
+}
+
+/** 清空角色的進行中 Session 標記（刪除劇本／結局後） */
+export function clearCharacterActiveCampaign(characterId: string) {
+  const existing = getLibraryCharacter(characterId);
+  if (!existing) return;
+  if (!existing.activeCampaignId) return;
+  upsertLibraryCharacter({
+    ...existing,
+    activeCampaignId: null,
+  });
+}
+
+/** 冒險進行中同步最新數值到檔案庫（保留 activeCampaignId） */
+export function syncLibraryCharacterSheet(
+  sheet: UniversalCharacterSheet,
+  campaignId: string,
+) {
+  const existing = getLibraryCharacter(sheet.id);
+  if (!existing) return;
+  if (existing.activeCampaignId && existing.activeCampaignId !== campaignId) {
+    return;
+  }
+  upsertLibraryCharacter({
+    ...existing,
+    sheet: migrateCharacterSheet(sheet),
+    activeCampaignId: campaignId,
+  });
+}
+
+/**
+ * 結局結算：寫入最新 sheet + 履歷，並解除進行中綁定。
+ */
+export function saveLibraryCharacterWithAdventure(
+  sheet: UniversalCharacterSheet,
+  record: AdventureRecord,
+) {
+  const existing = getLibraryCharacter(sheet.id);
+  const prior = (existing?.career ?? []).filter(
+    (r) => r.campaignId !== record.campaignId,
+  );
+  upsertLibraryCharacter({
+    sheet: migrateCharacterSheet(sheet),
+    career: [record, ...prior],
+    activeCampaignId: null,
+    createdAt: existing?.createdAt ?? Date.now(),
+    updatedAt: Date.now(),
+  });
 }
 
 export function removeCharacterFromLibrary(id: string) {
-  const lib = loadCharacterLibrary().filter((c) => c.id !== id);
-  localStorage.setItem(LIBRARY_KEY, JSON.stringify(lib));
+  persistLibrary(loadLibraryCharacters().filter((c) => c.sheet.id !== id));
 }
 
+export function exportLibraryCharacterJson(entry: LibraryCharacter) {
+  const blob = new Blob([JSON.stringify(entry, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${entry.sheet.name || "character"}-dossier.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** 匯出純角色卡（相容舊流程） */
 export function exportCharacterJson(sheet: UniversalCharacterSheet) {
   const blob = new Blob([JSON.stringify(sheet, null, 2)], {
     type: "application/json",
@@ -38,6 +205,11 @@ export function exportCharacterJson(sheet: UniversalCharacterSheet) {
   a.download = `${sheet.name || "character"}.json`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/** 解析匯入：LibraryCharacter 或純 sheet */
+export function parseImportedCharacter(raw: unknown): LibraryCharacter | null {
+  return normalizeLibraryEntry(raw);
 }
 
 export function persistPedelecSessionId(id: string | null) {
