@@ -25,7 +25,7 @@ import {
   createEmptyCampaignPersist,
   type CampaignPersist,
 } from "@/lib/campaignStorage";
-import { isNarrativeRewrite } from "@/lib/narrativeDedupe";
+import { areDuplicateNarratives } from "@/lib/narrativeDedupe";
 import type {
   ChapterSummary,
   CharacterSchemaState,
@@ -728,7 +728,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   narrateFromTool: (narrative, systemNotice) => {
     if (systemNotice) get().appendSystem(systemNotice);
     const msgs = get().messages;
-    // 同輪檢定後若整段重寫前一則敘事：更新最早那則，並丟掉其後重複的 GM 訊息
+    // 同輪若與既有 GM 敘事近重複：更新那則，並丟掉其後重複的 GM 訊息
     const trailingAgents: { id: string; content: string; index: number }[] =
       [];
     for (let i = msgs.length - 1; i >= 0; i--) {
@@ -741,7 +741,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
     const oldestFirst = [...trailingAgents].reverse();
     const target = oldestFirst.find((a) =>
-      isNarrativeRewrite(a.content, narrative),
+      areDuplicateNarratives(a.content, narrative),
     );
     if (target) {
       get().updateMessage(target.id, narrative);
@@ -755,9 +755,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
           messages: get().messages.filter((m) => !removeIds.has(m.id)),
         });
       }
+      get().collapseNarrativeRewrites();
       return;
     }
     get().appendMessage({ role: "agent", content: narrative });
+    get().collapseNarrativeRewrites();
   },
 
   collapseNarrativeRewrites: () => {
@@ -773,20 +775,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
     if (trailing.length < 2) return;
     const oldestFirst = [...trailing].reverse();
-    const base = oldestFirst[0];
-    if (!base) return;
-    const dupIds: string[] = [];
-    for (const a of oldestFirst.slice(1)) {
-      if (isNarrativeRewrite(base.content, a.content)) {
-        dupIds.push(a.id);
+    // 兩兩比對：不要只跟「最舊一則」比（檢定前敘事還在時，兩則結果敘事彼此重複也要收）
+    const remove = new Set<string>();
+    for (let i = 0; i < oldestFirst.length; i++) {
+      const keep = oldestFirst[i];
+      if (!keep || remove.has(keep.id)) continue;
+      for (let j = i + 1; j < oldestFirst.length; j++) {
+        const other = oldestFirst[j];
+        if (!other || remove.has(other.id)) continue;
+        if (!areDuplicateNarratives(keep.content, other.content)) continue;
+        get().updateMessage(keep.id, other.content);
+        keep.content = other.content;
+        remove.add(other.id);
       }
     }
-    if (!dupIds.length) return;
-    // 保留最新一則內容寫回最早那則，刪除中間／末尾重複
-    const newestDup = oldestFirst.filter((a) => dupIds.includes(a.id)).at(-1);
-    const finalContent = newestDup?.content ?? base.content;
-    get().updateMessage(base.id, finalContent);
-    const remove = new Set(dupIds);
+    if (!remove.size) return;
     set({ messages: get().messages.filter((m) => !remove.has(m.id)) });
   },
 

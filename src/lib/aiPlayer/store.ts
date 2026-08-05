@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 export type AiPlayerPhase =
   | "idle"
+  | "wait_opening"
   | "thinking"
   | "waiting_gm"
   | "rolling"

@@ -18,9 +18,15 @@ import {
   type CheckDifficulty,
 } from "@/engine/skillCheck";
 import { findSrdByTopic } from "@/engine/srdLorebook";
-import { isNarrativeRewrite } from "@/lib/narrativeDedupe";
+import { areDuplicateNarratives } from "@/lib/narrativeDedupe";
 import { hadPriorOpeningAttempt } from "@/lib/openingRetry";
 import { pedelec } from "@/lib/pedelec/client";
+import {
+  isCompleteLeakedPayload,
+  looksLikeLeakedToolCall,
+  tryParseLeakedToolCall,
+  type LeakedToolCall,
+} from "@/lib/pedelec/leakedToolCall";
 import { persistPedelecSessionId } from "@/lib/storage";
 import { GM_DIRECTIVES } from "@/prompts/gmDirectives";
 import { useGameStore } from "@/store/useGameStore";
@@ -38,8 +44,26 @@ export type GameSessionHandle = {
   dispose: () => void;
 };
 
+type NarrateStoryArgs = {
+  system_notice?: string;
+  narrative_text: string;
+  check_request?: {
+    request_id: string;
+    check_target_name: string;
+    dice_type: string;
+    target_value?: number;
+    difficulty?: string;
+    dnd_advantage_mode?: string;
+    reason: string;
+  };
+};
+
 let activeHandle: GameSessionHandle | null = null;
 let activeAgentMessageId: string | null = null;
+/** 串流中尚未完整的洩漏 tool-call 緩衝（依 turnId） */
+const leakedChatBufferByTurn = new Map<string, string>();
+/** 避免同一則洩漏呼叫被重複還原 */
+let recoveringLeakedTool = false;
 
 const DICE_TIMEOUT_MS = 170_000;
 
@@ -141,6 +165,171 @@ export function settlePendingDiceOnTeardown() {
     });
   }
   clearDiceResolver();
+}
+
+async function runNarrateStory(args: NarrateStoryArgs) {
+  const a = args;
+  const store = useGameStore.getState();
+  const trailingAgents: { content: string }[] = [];
+  for (let i = store.messages.length - 1; i >= 0; i--) {
+    const m = store.messages[i];
+    if (!m) continue;
+    if (m.role === "user") break;
+    if (m.role === "agent") trailingAgents.push(m);
+  }
+  const rewriting = trailingAgents.some((m) =>
+    areDuplicateNarratives(m.content, a.narrative_text),
+  );
+
+  store.narrateFromTool(a.narrative_text, a.system_notice);
+
+  if (rewriting) {
+    // 更新最近一則「真正敘事」歷史，避免開場被完整記兩次
+    const history = useGameStore.getState().history;
+    let patched = false;
+    for (let i = history.length - 1; i >= 0; i--) {
+      const h = history[i];
+      if (!h) continue;
+      if (h.aiNarrative.startsWith("（檢定結果已回傳）")) continue;
+      if (areDuplicateNarratives(h.aiNarrative, a.narrative_text)) {
+        const next = history.slice();
+        next[i] = { ...h, aiNarrative: a.narrative_text };
+        useGameStore.setState({ history: next });
+        patched = true;
+        break;
+      }
+      break;
+    }
+    if (!patched) {
+      store.recordHistoryTurn({
+        playerInput: store.lastPlayerAction || undefined,
+        aiNarrative: a.narrative_text,
+      });
+    }
+  } else {
+    store.recordHistoryTurn({
+      playerInput: store.lastPlayerAction || undefined,
+      aiNarrative: a.narrative_text,
+    });
+  }
+
+  if (!a.check_request) {
+    return { ok: true as const, narrative_recorded: true as const };
+  }
+
+  const resolved = resolveCheckAgainstSheet(a.check_request);
+  const skillLabel = resolved.sheetSkillName ?? a.check_request.check_target_name;
+  const thresholdText =
+    resolved.skill_value != null && resolved.target_value != null
+      ? `角色卡「${skillLabel}」${resolved.skill_value}% · ${difficultyLabel(resolved.difficulty)}難度，成功需 ≤ ${resolved.target_value}`
+      : resolved.target_value != null
+        ? `目標值 ${resolved.target_value}`
+        : "未找到對應角色卡技能（將無法依技能％判定）";
+
+  store.appendSystem(
+    `需要檢定：${skillLabel}（${a.check_request.dice_type}）— ${a.check_request.reason}\n${thresholdText}`,
+  );
+
+  const roll = await waitForPlayerDice({
+    ...a.check_request,
+    difficulty: a.check_request.difficulty ?? resolved.difficulty,
+  });
+  if (!roll.cancelled) {
+    useGameStore.getState().recordHistoryTurn({
+      aiNarrative: `（檢定結果已回傳）${skillLabel}`,
+      diceRecord: {
+        skillName: skillLabel,
+        isSecret: false,
+        diceType: a.check_request.dice_type,
+        targetValue: resolved.target_value,
+        diceResult: roll.diceResult,
+        outcome: roll.outcome,
+      },
+    });
+  }
+  return {
+    ...roll,
+    gm_instruction:
+      "CRITICAL: Your next narrate_story.narrative_text must ONLY describe this check outcome and immediate consequences. Do NOT repeat, paraphrase, or rewrite any previously narrated scene text.",
+  };
+}
+
+function removeAgentMessageIfEmpty(id: string | null) {
+  if (!id) return;
+  const msg = useGameStore.getState().messages.find((m) => m.id === id);
+  if (msg && msg.role === "agent" && !msg.content.trim()) {
+    useGameStore.setState((s) => ({
+      messages: s.messages.filter((m) => m.id !== id),
+    }));
+    if (activeAgentMessageId === id) activeAgentMessageId = null;
+  }
+}
+
+async function recoverLeakedToolCall(
+  call: LeakedToolCall,
+  session: PedelecSession<(typeof allSessionTools)[number]["name"]>,
+) {
+  if (recoveringLeakedTool) return;
+  recoveringLeakedTool = true;
+  const store = useGameStore.getState();
+  try {
+    store.appendSystem(`（已攔截並還原漏出的工具呼叫：${call.tool}）`);
+
+    if (call.tool === "narrate_story") {
+      const a = call.args as NarrateStoryArgs;
+      if (!a?.narrative_text || typeof a.narrative_text !== "string") {
+        store.appendSystem(
+          "漏出的 narrate_story 缺少 narrative_text，無法還原。請重試上一步。",
+        );
+        return;
+      }
+      const result = await runNarrateStory(a);
+      // chat 洩漏時 runtime 不會回傳 tool result；若有檢定結果，補送一則讓 GM 接續
+      if (
+        "diceResult" in result &&
+        !result.cancelled &&
+        session.getStatus() === "idle"
+      ) {
+        try {
+          await session.sendText(
+            `[RECOVERED TOOL RESULT — narrate_story]\n${JSON.stringify(result)}\nCRITICAL: Your next narrate_story.narrative_text must ONLY describe this check outcome and immediate consequences. Do NOT repeat, paraphrase, or rewrite any previously narrated scene text.`,
+          );
+        } catch {
+          store.appendSystem(
+            "檢定結果已記錄，但無法自動通知 GM 接續；請以玩家行動描述結果或重試。",
+          );
+        }
+      }
+      return;
+    }
+
+    store.appendSystem(
+      `工具「${call.tool}」曾以文字形式漏出，無法自動執行。請重試該步驟（勿把 tool call 寫成對話）。`,
+    );
+  } finally {
+    recoveringLeakedTool = false;
+  }
+}
+
+function flushLeakedChatBuffers(
+  session: PedelecSession<(typeof allSessionTools)[number]["name"]>,
+) {
+  const entries = [...leakedChatBufferByTurn.entries()];
+  leakedChatBufferByTurn.clear();
+  for (const [, buf] of entries) {
+    const parsed = tryParseLeakedToolCall(buf);
+    if (parsed) {
+      void recoverLeakedToolCall(parsed, session);
+      continue;
+    }
+    if (looksLikeLeakedToolCall(buf)) {
+      useGameStore
+        .getState()
+        .appendSystem(
+          "偵測到疑似工具呼叫漏出為文字，但無法解析。該段已隱藏；請重試上一步。",
+        );
+    }
+  }
 }
 
 function registerHandlers(
@@ -305,104 +494,9 @@ function registerHandlers(
   );
 
   disposers.push(
-    session.onTool("narrate_story", async (args) => {
-      const a = args as {
-        system_notice?: string;
-        narrative_text: string;
-        check_request?: {
-          request_id: string;
-          check_target_name: string;
-          dice_type: string;
-          target_value?: number;
-          difficulty?: string;
-          dnd_advantage_mode?: string;
-          reason: string;
-        };
-      };
-      const store = useGameStore.getState();
-      const trailingAgents: { content: string }[] = [];
-      for (let i = store.messages.length - 1; i >= 0; i--) {
-        const m = store.messages[i];
-        if (!m) continue;
-        if (m.role === "user") break;
-        if (m.role === "agent") trailingAgents.push(m);
-      }
-      const rewriting = trailingAgents.some((m) =>
-        isNarrativeRewrite(m.content, a.narrative_text),
-      );
-
-      store.narrateFromTool(a.narrative_text, a.system_notice);
-
-      if (rewriting) {
-        // 更新最近一則「真正敘事」歷史，避免開場被完整記兩次
-        const history = useGameStore.getState().history;
-        let patched = false;
-        for (let i = history.length - 1; i >= 0; i--) {
-          const h = history[i];
-          if (!h) continue;
-          if (h.aiNarrative.startsWith("（檢定結果已回傳）")) continue;
-          if (isNarrativeRewrite(h.aiNarrative, a.narrative_text)) {
-            const next = history.slice();
-            next[i] = { ...h, aiNarrative: a.narrative_text };
-            useGameStore.setState({ history: next });
-            patched = true;
-            break;
-          }
-          break;
-        }
-        if (!patched) {
-          store.recordHistoryTurn({
-            playerInput: store.lastPlayerAction || undefined,
-            aiNarrative: a.narrative_text,
-          });
-        }
-      } else {
-        store.recordHistoryTurn({
-          playerInput: store.lastPlayerAction || undefined,
-          aiNarrative: a.narrative_text,
-        });
-      }
-
-      if (!a.check_request) {
-        return { ok: true, narrative_recorded: true };
-      }
-
-      const resolved = resolveCheckAgainstSheet(a.check_request);
-      const skillLabel = resolved.sheetSkillName ?? a.check_request.check_target_name;
-      const thresholdText =
-        resolved.skill_value != null && resolved.target_value != null
-          ? `角色卡「${skillLabel}」${resolved.skill_value}% · ${difficultyLabel(resolved.difficulty)}難度，成功需 ≤ ${resolved.target_value}`
-          : resolved.target_value != null
-            ? `目標值 ${resolved.target_value}`
-            : "未找到對應角色卡技能（將無法依技能％判定）";
-
-      store.appendSystem(
-        `需要檢定：${skillLabel}（${a.check_request.dice_type}）— ${a.check_request.reason}\n${thresholdText}`,
-      );
-
-      const roll = await waitForPlayerDice({
-        ...a.check_request,
-        difficulty: a.check_request.difficulty ?? resolved.difficulty,
-      });
-      if (!roll.cancelled) {
-        useGameStore.getState().recordHistoryTurn({
-          aiNarrative: `（檢定結果已回傳）${skillLabel}`,
-          diceRecord: {
-            skillName: skillLabel,
-            isSecret: false,
-            diceType: a.check_request.dice_type,
-            targetValue: resolved.target_value,
-            diceResult: roll.diceResult,
-            outcome: roll.outcome,
-          },
-        });
-      }
-      return {
-        ...roll,
-        gm_instruction:
-          "CRITICAL: Your next narrate_story.narrative_text must ONLY describe this check outcome and immediate consequences. Do NOT repeat, paraphrase, or rewrite any previously narrated scene text.",
-      };
-    }),
+    session.onTool("narrate_story", async (args) =>
+      runNarrateStory(args as NarrateStoryArgs),
+    ),
   );
 
   disposers.push(
@@ -588,7 +682,42 @@ export async function createGameSession(options: {
 
   const offChat = session.onChat((delta, ctx) => {
     const s = useGameStore.getState();
-    if (!activeAgentMessageId || s.messages.find((m) => m.id === activeAgentMessageId)?.turnId !== ctx.turnId) {
+    const turnKey = ctx.turnId ?? "default";
+    const sameTurn =
+      !!activeAgentMessageId &&
+      s.messages.find((m) => m.id === activeAgentMessageId)?.turnId ===
+        ctx.turnId;
+    const existingContent = sameTurn
+      ? (s.messages.find((m) => m.id === activeAgentMessageId)?.content ?? "")
+      : "";
+    const leakedBuf = leakedChatBufferByTurn.get(turnKey) ?? "";
+    const candidate = (leakedBuf || existingContent) + delta;
+
+    if (leakedBuf || looksLikeLeakedToolCall(candidate)) {
+      leakedChatBufferByTurn.set(turnKey, candidate);
+      // 隱藏洩漏內容：清空／移除本 turn 的 agent 氣泡
+      if (sameTurn && activeAgentMessageId) {
+        s.updateMessage(activeAgentMessageId, "");
+        removeAgentMessageIfEmpty(activeAgentMessageId);
+      }
+      s.setIsTyping(false);
+
+      const parsed = tryParseLeakedToolCall(candidate);
+      if (parsed) {
+        leakedChatBufferByTurn.delete(turnKey);
+        void recoverLeakedToolCall(parsed, session);
+        return;
+      }
+      if (isCompleteLeakedPayload(candidate)) {
+        leakedChatBufferByTurn.delete(turnKey);
+        s.appendSystem(
+          "偵測到工具呼叫漏出為文字，但無法解析參數。該段已隱藏；請重試上一步。",
+        );
+      }
+      return;
+    }
+
+    if (!sameTurn) {
       activeAgentMessageId = s.appendMessage({
         role: "agent",
         content: delta,
@@ -596,8 +725,30 @@ export async function createGameSession(options: {
       });
       s.setIsTyping(false);
     } else {
-      const existing = s.messages.find((m) => m.id === activeAgentMessageId);
-      s.updateMessage(activeAgentMessageId, (existing?.content ?? "") + delta);
+      s.updateMessage(activeAgentMessageId!, existingContent + delta);
+    }
+
+    // tool 已寫過近重複敘事時，隱藏 chat 重複氣泡（檢定後常見）
+    const chatId = activeAgentMessageId;
+    const chatMsg = chatId
+      ? useGameStore.getState().messages.find((m) => m.id === chatId)
+      : undefined;
+    const chatContent = chatMsg?.content ?? "";
+    if (chatId && chatContent.trim().length >= 60) {
+      const others: string[] = [];
+      const msgs = useGameStore.getState().messages;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (!m) continue;
+        if (m.role === "user") break;
+        if (m.role === "agent" && m.id !== chatId) others.push(m.content);
+      }
+      if (others.some((o) => areDuplicateNarratives(o, chatContent))) {
+        useGameStore.setState((st) => ({
+          messages: st.messages.filter((m) => m.id !== chatId),
+        }));
+        activeAgentMessageId = null;
+      }
     }
   });
 
@@ -612,11 +763,13 @@ export async function createGameSession(options: {
     }
     if (status === "idle") {
       s.setIsTyping(false);
+      flushLeakedChatBuffers(session);
       s.collapseNarrativeRewrites();
       // 不在 idle 清除 sessionError：錯誤後 Session 常回到 idle，仍需顯示重試按鈕
     }
     if (status === "error" || status === "ended") {
       s.setIsTyping(false);
+      leakedChatBufferByTurn.clear();
     }
     if (status === "waiting_tool_result") {
       s.setIsTyping(false);
@@ -648,6 +801,8 @@ export async function createGameSession(options: {
     session,
     dispose: () => {
       settlePendingDiceOnTeardown();
+      leakedChatBufferByTurn.clear();
+      recoveringLeakedTool = false;
       offChat();
       offStatus();
       offError();

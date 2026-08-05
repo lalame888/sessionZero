@@ -2,10 +2,12 @@ import type { ProviderCode } from "@kaoruisaac/pedelec";
 import { requestAiPlayerAction } from "@/lib/aiPlayer/session";
 import { useAiPlayerStore } from "@/lib/aiPlayer/store";
 import {
+  getActiveSession,
   resolvePlayerDice,
   sendPlayerAction,
 } from "@/lib/pedelec/createGameSession";
 import { useGameStore } from "@/store/useGameStore";
+import type { ChatMessage } from "@/types/game";
 
 const POLL_MS = 400;
 
@@ -13,9 +15,17 @@ export type AiPlayerLoopDeps = {
   resolveProvider: () => Promise<{ provider: ProviderCode; model?: string }>;
 };
 
+/** 代打閘門：開啟／重開時用來判斷要等開場、等 GM、擲骰或立刻行動 */
+export type AiPlayerTurnGate =
+  | "wait_phase"
+  | "wait_opening"
+  | "wait_gm"
+  | "roll_dice"
+  | "act";
+
 /**
  * 啟動 AI Player 自動迴圈。回傳 stop()。
- * 條件：enabled、PLAYING、無 ending；GM idle 後代打；公開骰自動擲。
+ * 條件：enabled、PLAYING、無 ending；已開場且輪到玩家時立刻代打；公開骰自動擲。
  */
 export function startAiPlayerLoop(deps: AiPlayerLoopDeps): () => void {
   const abort = new AbortController();
@@ -40,29 +50,33 @@ export function startAiPlayerLoop(deps: AiPlayerLoopDeps): () => void {
           break;
         }
 
-        if (game.phase !== "PLAYING") {
+        const gate = resolveAiPlayerTurnGate();
+
+        if (gate === "wait_phase") {
+          useAiPlayerStore.getState().setPhase("idle");
           await sleep(POLL_MS, abort.signal);
           continue;
         }
 
-        // 開場尚未完成：等 GM／玩家先開場
-        if (!hasPlayStarted(game)) {
+        if (gate === "wait_opening") {
+          useAiPlayerStore.getState().setPhase("wait_opening");
           await sleep(POLL_MS, abort.signal);
           continue;
         }
 
-        // 公開檢定：自動擲骰（含非 send 期間殘留的 pending）
-        if (tryAutoRoll()) {
+        if (gate === "roll_dice") {
+          tryAutoRoll();
           await sleep(POLL_MS, abort.signal);
           continue;
         }
 
-        if (game.sessionStatus !== "idle") {
+        if (gate === "wait_gm") {
           useAiPlayerStore.getState().setPhase("waiting_gm");
           await sleep(POLL_MS, abort.signal);
           continue;
         }
 
+        // gate === "act"：已開場且輪到玩家
         if (game.sessionError) {
           useAiPlayerStore.getState().setLastError(
             `GM session 錯誤，已暫停代打：${game.sessionError.code}`,
@@ -87,11 +101,24 @@ export function startAiPlayerLoop(deps: AiPlayerLoopDeps): () => void {
           if (!running || abort.signal.aborted) break;
           if (!useAiPlayerStore.getState().enabled) break;
 
+          // 送出前再確認仍輪到玩家，避免與 GM 搶回合
+          const gateAfterThink = resolveAiPlayerTurnGate();
+          if (gateAfterThink !== "act") {
+            useAiPlayerStore.getState().setPhase(
+              gateAfterThink === "wait_opening"
+                ? "wait_opening"
+                : gateAfterThink === "roll_dice"
+                  ? "rolling"
+                  : "waiting_gm",
+            );
+            await sleep(POLL_MS, abort.signal);
+            continue;
+          }
+
           useAiPlayerStore.getState().setLastAction(action);
           useAiPlayerStore.getState().bumpTurnCount();
           useAiPlayerStore.getState().setPhase("waiting_gm");
 
-          // 等到 GM 整回合結束；期間 dice watcher 會自動 resolve 公開骰
           await sendPlayerAction(action);
         } catch (err) {
           if (!running || abort.signal.aborted) break;
@@ -130,6 +157,74 @@ export function startAiPlayerLoop(deps: AiPlayerLoopDeps): () => void {
   return stop;
 }
 
+/** 供測試／UI：判斷代打此刻該做什麼 */
+export function resolveAiPlayerTurnGate(): AiPlayerTurnGate {
+  const game = useGameStore.getState();
+
+  if (game.phase !== "PLAYING" || game.ending) {
+    return "wait_phase";
+  }
+
+  if (!hasOpeningNarrative(game.messages, game.history.length)) {
+    return "wait_opening";
+  }
+
+  // 公開檢定：輪到玩家擲骰（優先於 session busy）
+  if (game.pendingDice && !game.pendingDice.isSecret) {
+    if (game.diceResolver) return "roll_dice";
+    // 有 pending 卻無 resolver：仍視為 GM 工具回合未就緒
+    return "wait_gm";
+  }
+
+  if (isGmSessionBusy(game.sessionStatus)) {
+    return "wait_gm";
+  }
+
+  // 最後一則對話是玩家 → 還在等 GM 回應（即使 store 已 idle）
+  if (isAwaitingGmReply(game.messages)) {
+    return "wait_gm";
+  }
+
+  // 已開場、GM idle、上一則為 GM（或僅系統訊息附在 GM 後）→ 輪到玩家
+  return "act";
+}
+
+function isGmSessionBusy(storeStatus: string): boolean {
+  const live = getActiveSession()?.getStatus();
+  // store 偶發未跟上 live（檢定／tool 結束後仍卡在 busy）→ 以 live 為準並回寫
+  if (live && live !== storeStatus) {
+    useGameStore.getState().setSessionStatus(live);
+  }
+  const status = live ?? storeStatus;
+  return status === "running" || status === "waiting_tool_result";
+}
+
+/** 是否已有可見開場／GM 敘事 */
+export function hasOpeningNarrative(
+  messages: ChatMessage[],
+  historyLength: number,
+): boolean {
+  if (historyLength > 0) return true;
+  return messages.some(
+    (m) => m.role === "agent" && m.content.trim().length > 0,
+  );
+}
+
+/**
+ * 從尾端略過 system：若先碰到 user 表示還在等 GM；
+ * 先碰到 agent 表示 GM 已說完、輪到玩家。
+ */
+export function isAwaitingGmReply(messages: ChatMessage[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.role === "system") continue;
+    if (m.role === "user") return true;
+    if (m.role === "agent") return false;
+  }
+  return false;
+}
+
 function tryAutoRoll(): boolean {
   const game = useGameStore.getState();
   if (!game.pendingDice || game.pendingDice.isSecret || !game.diceResolver) {
@@ -156,16 +251,6 @@ function startDiceWatcher(
     window.clearInterval(id);
     signal.removeEventListener("abort", onAbort);
   };
-}
-
-function hasPlayStarted(game: {
-  history: unknown[];
-  lastPlayerAction: string;
-  messages: { role: string }[];
-}): boolean {
-  if (game.history.length > 0) return true;
-  if (game.lastPlayerAction.trim()) return true;
-  return game.messages.some((m) => m.role === "agent");
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

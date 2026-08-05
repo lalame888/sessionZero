@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 
 const PHASE_LABEL: Record<string, string> = {
   idle: "待機",
+  wait_opening: "等待開場…",
   thinking: "AI 思考行動中…",
   waiting_gm: "等待 GM…",
   rolling: "自動擲骰…",
@@ -39,7 +40,7 @@ function AiPlayerToggleInner() {
             Dev · AI Player 代打
           </p>
           <p className="text-[10px] text-muted">
-            僅公開資訊；開啟後持續行動直到關閉或結局
+            僅公開資訊；重開時會判斷是否已開場、是否輪到玩家
           </p>
         </div>
         <Button
