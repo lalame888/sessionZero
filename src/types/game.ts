@@ -210,6 +210,10 @@ export interface ScriptState {
   scenario_scale?: ScenarioScale | null;
   /** GM 敘事定調範例（2–4 則；非史實） */
   tone_examples?: string[];
+  /** GM 建議隊伍人數（1–4）；舊存檔可能缺 */
+  recommended_party_size?: number | null;
+  /** GM 建議各席定位；舊存檔可能缺 */
+  party_role_hints?: { role_title: string; brief: string }[] | null;
 }
 
 /** 近端導演狀態：本場景目標／緊張度（由 narrate_story 可選更新） */

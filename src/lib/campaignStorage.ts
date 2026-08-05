@@ -18,11 +18,9 @@ import type {
   ThemeId,
   UniversalCharacterSheet,
 } from "@/types/game";
+import type { PartyMember } from "@/types/party";
 import { normalizeScenarioScale } from "@/engine/scenarioScale";
-import {
-  clearCharacterActiveCampaign,
-  getLibraryCharacter,
-} from "@/lib/storage";
+import { clearPartyLibraryBindingsForCampaign } from "@/lib/storage";
 
 export interface CampaignMeta {
   id: string;
@@ -35,6 +33,8 @@ export interface CampaignMeta {
   boundCharacterId?: string | null;
   /** 進行中主角名稱（列表顯示用） */
   boundCharacterName?: string | null;
+  /** 隊伍人數（1–4）；舊索引可能缺 */
+  partySize?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -78,6 +78,20 @@ export interface CampaignPersist {
    * 舊存檔可能缺此欄；亦可由檔案庫履歷（同 campaignId）推得。
    */
   endingCharacterSettled?: boolean;
+  /** 玩家確認的隊伍人數（1–4）；舊存檔缺則視為 1 */
+  partySize?: number;
+  /** GM 建議人數 */
+  recommendedPartySize?: number | null;
+  /** 隊伍成員（含 AI 隊友）；舊存檔缺則由 character 遷移 */
+  party?: PartyMember[];
+  /** 玩家操控成員 id */
+  playerMemberId?: string | null;
+  /** 創角中正在編輯的席次 */
+  editingPartySlotIndex?: number;
+  /** 結局已選擇存入角色庫的 AI 隊友 id */
+  endingCompanionsSavedIds?: string[];
+  /** 側欄目前檢視的隊伍成員 id（預設玩家） */
+  viewedPartyMemberId?: string | null;
 }
 
 export interface CampaignIndex {
@@ -112,25 +126,36 @@ export function loadCampaignIndex(): CampaignIndex {
   let changed = false;
   const sessions = index.sessions.map((meta) => {
     let next = meta;
-    if (!next.scenarioScale || next.boundCharacterName === undefined) {
-      const full = loadCampaign(meta.id);
-      if (!full) return next;
-      if (!next.scenarioScale && full.script?.scenario_scale) {
-        changed = true;
-        next = {
-          ...next,
-          scenarioScale: normalizeScenarioScale(full.script.scenario_scale),
-        };
-      }
-      if (next.boundCharacterName === undefined) {
-        changed = true;
-        next = {
-          ...next,
-          boundCharacterId:
-            full.boundCharacterId ?? full.character?.id ?? null,
-          boundCharacterName: full.character?.name?.trim() || null,
-        };
-      }
+    const needsScale = !next.scenarioScale;
+    const needsBound = next.boundCharacterName === undefined;
+    const needsParty = next.partySize == null;
+    if (!needsScale && !needsBound && !needsParty) return next;
+    const full = loadCampaign(meta.id);
+    if (!full) return next;
+    if (needsScale && full.script?.scenario_scale) {
+      changed = true;
+      next = {
+        ...next,
+        scenarioScale: normalizeScenarioScale(full.script.scenario_scale),
+      };
+    }
+    if (needsBound) {
+      changed = true;
+      next = {
+        ...next,
+        boundCharacterId:
+          full.boundCharacterId ?? full.character?.id ?? null,
+        boundCharacterName: full.character?.name?.trim() || null,
+      };
+    }
+    if (needsParty) {
+      changed = true;
+      const size =
+        full.partySize ??
+        (full.party?.length && full.party.length > 0
+          ? full.party.length
+          : 1);
+      next = { ...next, partySize: size };
     }
     return next;
   });
@@ -163,6 +188,7 @@ export function saveCampaign(data: CampaignPersist) {
       : null,
     boundCharacterId: data.boundCharacterId ?? null,
     boundCharacterName: data.character?.name?.trim() || null,
+    partySize: data.partySize ?? data.party?.length ?? 1,
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
   };
@@ -175,13 +201,15 @@ export function saveCampaign(data: CampaignPersist) {
 
 export function deleteCampaign(id: string) {
   const full = loadCampaign(id);
-  const charId = full?.boundCharacterId ?? full?.character?.id ?? null;
-  if (charId) {
-    const entry = getLibraryCharacter(charId);
-    if (entry?.activeCampaignId === id) {
-      clearCharacterActiveCampaign(charId);
+  const ids: string[] = [];
+  const primary = full?.boundCharacterId ?? full?.character?.id ?? null;
+  if (primary) ids.push(primary);
+  for (const m of full?.party ?? []) {
+    if (m.fromLibrary || m.controller === "player") {
+      ids.push(m.sheet?.id ?? m.id);
     }
   }
+  clearPartyLibraryBindingsForCampaign(id, ids);
   localStorage.removeItem(campaignKey(id));
   const index = loadCampaignIndex();
   const sessions = index.sessions.filter((s) => s.id !== id);
@@ -337,5 +365,12 @@ export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPe
     composerDraft: "",
     suggestPlayerActions: true,
     endingCharacterSettled: false,
+    partySize: 1,
+    recommendedPartySize: null,
+    party: [],
+    playerMemberId: null,
+    editingPartySlotIndex: 0,
+    endingCompanionsSavedIds: [],
+    viewedPartyMemberId: null,
   };
 }

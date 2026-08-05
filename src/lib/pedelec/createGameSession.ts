@@ -22,6 +22,7 @@ import {
   areDuplicateNarratives,
   isCorruptedNarrativeFragment,
 } from "@/lib/narrativeDedupe";
+import { requestCompanionDecision } from "@/lib/companionAi/session";
 import { normalizeNarrativeText } from "@/lib/normalizeNarrativeText";
 import {
   extractEndingTitleFromNarrative,
@@ -79,6 +80,7 @@ type NarrateStoryArgs = {
     difficulty?: string;
     dnd_advantage_mode?: string;
     reason: string;
+    character_id?: string;
   };
 };
 
@@ -100,6 +102,7 @@ function resolveCheckAgainstSheet(args: {
   dice_type: string;
   target_value?: number;
   difficulty?: string;
+  character_id?: string | null;
 }): {
   target_value?: number;
   skill_value?: number;
@@ -108,7 +111,7 @@ function resolveCheckAgainstSheet(args: {
 } {
   const difficulty = parseCheckDifficulty(args.difficulty);
   const isD100 = args.dice_type.toLowerCase().includes("100");
-  const sheet = useGameStore.getState().character;
+  const sheet = useGameStore.getState().getSheetById(args.character_id);
   const hit = lookupCharacterSkill(sheet, args.check_target_name);
 
   if (isD100 && hit) {
@@ -308,15 +311,21 @@ async function runNarrateStory(args: NarrateStoryArgs) {
 
   const resolved = resolveCheckAgainstSheet(a.check_request);
   const skillLabel = resolved.sheetSkillName ?? a.check_request.check_target_name;
+  const whoSheet = useGameStore
+    .getState()
+    .getSheetById(a.check_request.character_id);
+  const whoLabel = whoSheet?.name?.trim()
+    ? `「${whoSheet.name}」`
+    : "角色";
   const thresholdText =
     resolved.skill_value != null && resolved.target_value != null
-      ? `角色卡「${skillLabel}」${resolved.skill_value}% · ${difficultyLabel(resolved.difficulty)}難度，成功需 ≤ ${resolved.target_value}`
+      ? `${whoLabel}角色卡「${skillLabel}」${resolved.skill_value}% · ${difficultyLabel(resolved.difficulty)}難度，成功需 ≤ ${resolved.target_value}`
       : resolved.target_value != null
-        ? `目標值 ${resolved.target_value}`
-        : "未找到對應角色卡技能（將無法依技能％判定）";
+        ? `${whoLabel}目標值 ${resolved.target_value}`
+        : `${whoLabel}未找到對應角色卡技能（將無法依技能％判定）`;
 
   store.appendSystem(
-    `需要檢定：${skillLabel}（${a.check_request.dice_type}）— ${a.check_request.reason}\n${thresholdText}`,
+    `需要檢定：${whoLabel}${skillLabel}（${a.check_request.dice_type}）— ${a.check_request.reason}\n${thresholdText}`,
   );
 
   const roll = await waitForPlayerDice({
@@ -493,6 +502,8 @@ function registerHandlers(
         };
         recommended_creation_mode: string;
         tone_examples?: string[];
+        recommended_party_size?: number;
+        party_role_hints?: { role_title: string; brief: string }[];
       };
       useGameStore.getState().setupScript(a);
       return {
@@ -673,16 +684,23 @@ function registerHandlers(
   disposers.push(
     session.onTool("update_game_stats", (args) => {
       const a = args as {
+        character_id?: string;
         stat_changes: { key: string; change_amount: number; reason: string }[];
         inventory_add?: string[];
         inventory_remove?: string[];
       };
       useGameStore
         .getState()
-        .applyStatChanges(a.stat_changes, a.inventory_add, a.inventory_remove);
-      const sheet = useGameStore.getState().character;
+        .applyStatChanges(
+          a.stat_changes,
+          a.inventory_add,
+          a.inventory_remove,
+          a.character_id,
+        );
+      const sheet = useGameStore.getState().getSheetById(a.character_id);
       return {
         ok: true,
+        character_id: sheet?.id,
         hp: sheet?.derived.hp,
         san: sheet?.derived.san,
         inventory: sheet?.inventory,
@@ -692,8 +710,14 @@ function registerHandlers(
 
   disposers.push(
     session.onTool("mark_skill_success", (args) => {
-      const a = args as { skill_name: string; reason: string };
-      useGameStore.getState().markSkillSuccess(a.skill_name);
+      const a = args as {
+        skill_name: string;
+        reason: string;
+        character_id?: string;
+      };
+      useGameStore
+        .getState()
+        .markSkillSuccess(a.skill_name, a.character_id);
       return { ok: true, skill_name: a.skill_name };
     }),
   );
@@ -749,6 +773,83 @@ function registerHandlers(
         achievements: a.achievements ?? [],
       });
       return { ok: true };
+    }),
+  );
+
+  disposers.push(
+    session.onTool("request_companion_action", async (args) => {
+      const a = args as {
+        companion_id: string;
+        reason: string;
+        situation?: string;
+      };
+      const member = useGameStore
+        .getState()
+        .party.find(
+          (m) => m.id === a.companion_id || m.sheet.id === a.companion_id,
+        );
+      if (!member || member.controller !== "ai") {
+        return {
+          ok: false,
+          acted: false,
+          error: "companion_id 不是有效的 AI 隊友",
+        };
+      }
+
+      try {
+        const decision = await requestCompanionDecision({
+          companionId: member.id,
+          reason: a.reason,
+          situation: a.situation,
+        });
+        if (!decision.acted) {
+          // 靜默：不寫入任何玩家可見訊息
+          return { ok: true, acted: false, companion_id: member.id };
+        }
+
+        const label = `【隊友·${decision.companionName}】${decision.action}`;
+        useGameStore.getState().appendMessage({
+          role: "user",
+          content: label,
+        });
+
+        // 等本 tool 回合結束後再送 GM，避免 SESSION_BUSY
+        void (async () => {
+          for (let i = 0; i < 80; i++) {
+            const s = getActiveSession();
+            if (s && s.getStatus() === "idle") break;
+            await new Promise((r) => setTimeout(r, 120));
+          }
+          try {
+            await sendPlayerAction(label, {
+              skipUserMessage: true,
+              extraLayers: [
+                `[COMPANION ACTION]\nCompanion id: ${decision.companionId}\nName: ${decision.companionName}\nUse character_id=${decision.companionId} on checks/stat updates for this companion.`,
+              ],
+            });
+          } catch {
+            useGameStore
+              .getState()
+              .appendSystem(
+                `隊友「${decision.companionName}」的行動已記錄，但 GM 接續失敗；可請玩家重試上一步。`,
+              );
+          }
+        })();
+
+        return {
+          ok: true,
+          acted: true,
+          companion_id: member.id,
+          companion_name: decision.companionName,
+          action: decision.action,
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          acted: false,
+          error: e instanceof Error ? e.message : "companion_failed",
+        };
+      }
     }),
   );
 
@@ -990,6 +1091,8 @@ export async function sendPlayerAction(
     suggestPlayerActions: store.suggestPlayerActions,
     extraLayers: opts?.extraLayers,
     sceneDirector: store.sceneDirector,
+    party: store.party,
+    playerMemberId: store.playerMemberId,
   });
 
   await session.sendText(prompt);
@@ -1034,6 +1137,8 @@ export async function sendOpeningNarration() {
     // 開場第一則一律不附推薦行動（與開關無關）
     suggestPlayerActions: false,
     sceneDirector: latest.sceneDirector,
+    party: latest.party,
+    playerMemberId: latest.playerMemberId,
   });
 
   await session.sendText(prompt);

@@ -50,49 +50,60 @@ function StatBar({
 }
 
 function CharacterPanel() {
-  const character = useGameStore((s) => s.character);
+  const storeCharacter = useGameStore((s) => s.character);
+  const party = useGameStore((s) => s.party);
+  const viewedPartyMemberId = useGameStore((s) => s.viewedPartyMemberId);
+  const playerMemberId = useGameStore((s) => s.playerMemberId);
+  const setViewedPartyMemberId = useGameStore((s) => s.setViewedPartyMemberId);
   const schema = useGameStore((s) => s.characterSchema);
   const madness = useGameStore((s) => s.madness);
   const [detailOpen, setDetailOpen] = useState(false);
 
+  const viewed =
+    party.find(
+      (m) =>
+        m.id === (viewedPartyMemberId ?? playerMemberId ?? storeCharacter?.id),
+    )?.sheet ?? storeCharacter;
+
   const skillDescByName = useMemo(() => {
     const map = new Map<string, string>();
     const names = new Set<string>([
-      ...Object.keys(character?.skills ?? {}),
-      ...Object.keys(character?.skill_descriptions ?? {}),
+      ...Object.keys(viewed?.skills ?? {}),
+      ...Object.keys(viewed?.skill_descriptions ?? {}),
       ...(schema?.recommended_skills ?? []).map((s) => s.name),
       "閃避",
       "信用評級",
     ]);
     for (const name of names) {
       const tip = resolveSkillDescription(name, {
-        systemId: character?.system_id,
-        sheetDescriptions: character?.skill_descriptions,
+        systemId: viewed?.system_id,
+        sheetDescriptions: viewed?.skill_descriptions,
         schemaSkills: schema?.recommended_skills,
       });
       if (tip) map.set(name, tip);
     }
     return map;
   }, [
-    character?.system_id,
-    character?.skills,
-    character?.skill_descriptions,
+    viewed?.system_id,
+    viewed?.skills,
+    viewed?.skill_descriptions,
     schema?.recommended_skills,
   ]);
 
   const derivedTips = useMemo(() => {
-    if (!character) return new Map<string, { label: string; content: string }>();
+    if (!viewed) return new Map<string, { label: string; content: string }>();
     const map = new Map<string, { label: string; content: string }>();
-    for (const row of buildDerivedTooltipRows(character)) {
+    for (const row of buildDerivedTooltipRows(viewed)) {
       map.set(row.id, { label: row.label, content: row.content });
     }
     return map;
-  }, [character]);
+  }, [viewed]);
 
-  if (!character) {
+  if (!viewed) {
     return <p className="text-sm text-muted">尚未建立角色。</p>;
   }
 
+  const character = viewed;
   const isCoc = character.system_id === "COC_7E";
   const isDnd = character.system_id === "DND_5E";
   const attrDefs = schema?.attribute_defs;
@@ -114,6 +125,28 @@ function CharacterPanel() {
 
   return (
     <div className="space-y-3 text-sm">
+      {party.length > 1 ? (
+        <div className="flex flex-wrap gap-1">
+          {party.map((m) => {
+            const active = m.sheet.id === character.id || m.id === character.id;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                className={
+                  active
+                    ? "rounded border border-accent/50 bg-accent/15 px-2 py-0.5 text-[10px] text-ink"
+                    : "rounded border border-border px-2 py-0.5 text-[10px] text-muted hover:border-accent/30"
+                }
+                onClick={() => setViewedPartyMemberId(m.id)}
+              >
+                {m.sheet.name || "未命名"}
+                {m.controller === "player" ? " ·你" : " ·AI"}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
       <div>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">

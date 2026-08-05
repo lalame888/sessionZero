@@ -65,6 +65,15 @@ import {
   sendOpeningNarration,
 } from "@/lib/pedelec/createGameSession";
 import { normalizeScenarioScale } from "@/engine/scenarioScale";
+import {
+  clampPartySize,
+  getPlayerSheet,
+  MAX_PARTY_SIZE,
+  partyFromLegacyCharacter,
+  replacePartySlot,
+  syncPartySheet,
+  type PartyMember,
+} from "@/types/party";
 
 function snapshotOf(state: {
   character: UniversalCharacterSheet | null;
@@ -118,10 +127,19 @@ interface GameStore {
   houseRules: HouseRuleConfig;
   character: UniversalCharacterSheet | null;
   characterSchema: CharacterSchemaState | null;
-  /** 冒險開始時數值快照（結局履歷對照） */
+  /** 冒險開始時角色數值快照（結局履歷對照） */
   characterBaseline: CharacterStatSnapshot | null;
   /** 綁定檔案庫角色 ID */
   boundCharacterId: string | null;
+  /** 玩家確認的隊伍人數 */
+  partySize: number;
+  recommendedPartySize: number | null;
+  party: PartyMember[];
+  playerMemberId: string | null;
+  editingPartySlotIndex: number;
+  endingCompanionsSavedIds: string[];
+  /** 側欄／檢定目標目前檢視的成員 */
+  viewedPartyMemberId: string | null;
   clues: ClueItem[];
   playerNotes: PlayerNote[];
   npcs: NPCItem[];
@@ -181,9 +199,43 @@ interface GameStore {
     recommended_creation_mode: string;
     scenario_scale?: string | null;
     tone_examples?: string[] | null;
+    recommended_party_size?: number | null;
+    party_role_hints?: { role_title: string; brief: string }[] | null;
   }) => void;
   setHouseRules: (rules: HouseRuleConfig) => void;
   setScenarioScale: (scale: ScenarioScale) => void;
+  setPartySize: (n: number) => void;
+  setEditingPartySlotIndex: (idx: number) => void;
+  setPlayerMemberSlot: (slotIndex: number) => void;
+  upsertPartyMemberAtSlot: (
+    slotIndex: number,
+    sheet: UniversalCharacterSheet,
+    opts?: {
+      controller?: "player" | "ai";
+      roleHint?: string;
+      creationComplete?: boolean;
+      creationDraft?: import("@/types/party").CharacterCreationDraft;
+      fromLibrary?: boolean;
+      /** true 時清掉草稿／完成標記（例如席次換成空白卡） */
+      resetCreationMeta?: boolean;
+    },
+  ) => void;
+  /** 自隊伍移除指定角色（取消帶入） */
+  clearPartyMemberByCharacterId: (characterId: string) => void;
+  /** 將已在隊角色改帶到另一席次 */
+  movePartyMemberToSlot: (
+    characterId: string,
+    toSlotIndex: number,
+    opts?: { controller?: "player" | "ai" },
+  ) => void;
+  setViewedPartyMemberId: (id: string | null) => void;
+  markCompanionsSaved: (ids: string[]) => void;
+  /** 依 character_id 取 sheet；缺省為玩家 */
+  getSheetById: (characterId?: string | null) => UniversalCharacterSheet | null;
+  updateSheetById: (
+    characterId: string | null | undefined,
+    updater: (sheet: UniversalCharacterSheet) => UniversalCharacterSheet,
+  ) => void;
   togglePresetRule: (rule: string) => void;
   setCharacterSchema: (schema: CharacterSchemaState) => void;
   setCharacter: (sheet: UniversalCharacterSheet) => void;
@@ -220,8 +272,9 @@ interface GameStore {
     changes: { key: string; change_amount: number; reason: string }[],
     inventory_add?: string[],
     inventory_remove?: string[],
+    character_id?: string | null,
   ) => void;
-  markSkillSuccess: (skill_name: string) => void;
+  markSkillSuccess: (skill_name: string, character_id?: string | null) => void;
   recordClue: (clue: ClueItem) => void;
   addPlayerNote: (note: { title: string; content: string }) => string;
   updatePlayerNote: (
@@ -299,6 +352,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
   characterSchema: null,
   characterBaseline: null,
   boundCharacterId: null,
+  partySize: 1,
+  recommendedPartySize: null,
+  party: [],
+  playerMemberId: null,
+  editingPartySlotIndex: 0,
+  endingCompanionsSavedIds: [],
+  viewedPartyMemberId: null,
   clues: [],
   playerNotes: [],
   npcs: [],
@@ -374,9 +434,22 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const scenario_scale = normalizeScenarioScale(
       args.scenario_scale ?? get().script.scenario_scale ?? "oneshot",
     );
+    const recommendedPartySize = clampPartySize(
+      args.recommended_party_size ?? get().recommendedPartySize ?? 1,
+    );
+    const party_role_hints = (args.party_role_hints ?? [])
+      .filter((h) => h.role_title?.trim())
+      .slice(0, MAX_PARTY_SIZE)
+      .map((h) => ({
+        role_title: h.role_title.trim(),
+        brief: (h.brief ?? "").trim(),
+      }));
     const hidden = args.hidden_full_script;
     const sceneCount = hidden?.scenes?.length ?? 0;
     const npcCount = hidden?.npcs?.length ?? 0;
+    const blank = createBlankCharacter(
+      system_id === "DND_5E" ? "DND_5E" : "COC_7E",
+    );
     set({
       script: {
         system_id,
@@ -386,15 +459,23 @@ export const useGameStore = create<GameStore>((set, get) => ({
         revealed: false,
         scenario_scale,
         tone_examples: args.tone_examples?.filter((t) => t.trim()).slice(0, 4),
+        recommended_party_size: recommendedPartySize,
+        party_role_hints:
+          party_role_hints.length > 0 ? party_role_hints : null,
       },
       theme: themeForSystem(system_id),
       houseRules: {
         preset_rules: [],
         custom_rules_text: get().houseRules.custom_rules_text,
       },
-      character: createBlankCharacter(
-        system_id === "DND_5E" ? "DND_5E" : "COC_7E",
-      ),
+      character: blank,
+      party: [],
+      partySize: recommendedPartySize,
+      recommendedPartySize,
+      playerMemberId: null,
+      editingPartySlotIndex: 0,
+      viewedPartyMemberId: null,
+      endingCompanionsSavedIds: [],
       sceneDirector: {
         currentSceneId: null,
         sceneGoal: args.public_summary?.player_hook ?? "",
@@ -407,7 +488,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         ? "規模：種子大綱"
         : `規模：${scenario_scale} · 場景 ${sceneCount} · NPC ${npcCount}`;
     get().appendSystem(
-      `劇本已建立／更新：${args.public_summary?.title ?? "未命名"}（${system_id}，${depthNote}）。可繼續對話調整設定與房規；確認後再按「下一步」進入創角。可用預設房規：${presets.join("、")}`,
+      `劇本已建立／更新：${args.public_summary?.title ?? "未命名"}（${system_id}，${depthNote}；建議隊伍 ${recommendedPartySize} 人）。可繼續對話調整設定與房規；確認後再按「下一步」進入創角。可用預設房規：${presets.join("、")}`,
     );
   },
 
@@ -417,6 +498,241 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set((s) => ({
       script: { ...s.script, scenario_scale: scale },
     })),
+
+  setPartySize: (n) => {
+    const size = clampPartySize(n);
+    set((s) => ({
+      partySize: size,
+      editingPartySlotIndex: Math.min(s.editingPartySlotIndex, size - 1),
+      party: s.party.filter((m) => m.slotIndex < size),
+    }));
+  },
+
+  setEditingPartySlotIndex: (idx) => {
+    const size = get().partySize;
+    const slot = Math.max(0, Math.min(size - 1, idx));
+    const existing = get().party.find((m) => m.slotIndex === slot);
+    set({
+      editingPartySlotIndex: slot,
+      character: existing?.sheet ?? get().character,
+    });
+  },
+
+  setPlayerMemberSlot: (slotIndex) => {
+    const size = get().partySize;
+    const slot = Math.max(0, Math.min(size - 1, slotIndex));
+    set((s) => {
+      const party = s.party.map((m) => ({
+        ...m,
+        controller: (m.slotIndex === slot ? "player" : "ai") as
+          | "player"
+          | "ai",
+      }));
+      const player = party.find((m) => m.slotIndex === slot);
+      return {
+        party,
+        playerMemberId: player?.id ?? s.playerMemberId,
+        character: player?.sheet ?? s.character,
+        viewedPartyMemberId: player?.id ?? s.viewedPartyMemberId,
+      };
+    });
+  },
+
+  upsertPartyMemberAtSlot: (slotIndex, sheet, opts) => {
+    const size = get().partySize;
+    const slot = Math.max(0, Math.min(size - 1, slotIndex));
+    const migrated = migrateCharacterSheet(sheet);
+    const hints = get().script.party_role_hints ?? [];
+    const existing = get().party.find((m) => m.slotIndex === slot);
+    const roleHint =
+      opts?.roleHint ??
+      existing?.roleHint ??
+      hints[slot]?.role_title ??
+      migrated.role_title;
+    const existingController = existing?.controller;
+    const controller: "player" | "ai" =
+      opts?.controller ??
+      (get().playerMemberId === migrated.id
+        ? "player"
+        : existingController) ??
+      (slot === 0 && !get().party.some((m) => m.controller === "player")
+        ? "player"
+        : "ai");
+    const resetMeta = opts?.resetCreationMeta === true;
+    const member: PartyMember = {
+      id: migrated.id,
+      sheet: migrated,
+      controller,
+      roleHint,
+      slotIndex: slot,
+      creationComplete: resetMeta
+        ? false
+        : (opts?.creationComplete ?? existing?.creationComplete),
+      creationDraft: resetMeta
+        ? undefined
+        : (opts?.creationDraft ?? existing?.creationDraft),
+      fromLibrary: resetMeta
+        ? false
+        : (opts?.fromLibrary ?? existing?.fromLibrary),
+    };
+    set((s) => {
+      let party = replacePartySlot(s.party, slot, member);
+      // 確保只有一位 player
+      if (controller === "player") {
+        party = party.map((m) =>
+          m.slotIndex === slot
+            ? m
+            : { ...m, controller: "ai" as const },
+        );
+      }
+      const playerId =
+        controller === "player"
+          ? migrated.id
+          : s.playerMemberId === migrated.id
+            ? migrated.id
+            : party.find((m) => m.controller === "player")?.id ??
+              s.playerMemberId;
+      const playerSheet =
+        getPlayerSheet(party, playerId, migrated) ?? migrated;
+      return {
+        party,
+        playerMemberId: playerId,
+        character:
+          s.editingPartySlotIndex === slot || controller === "player"
+            ? migrated
+            : playerSheet,
+        viewedPartyMemberId: s.viewedPartyMemberId ?? playerId,
+      };
+    });
+  },
+
+  clearPartyMemberByCharacterId: (characterId) => {
+    const s0 = get();
+    const member = s0.party.find(
+      (m) => m.id === characterId || m.sheet.id === characterId,
+    );
+    if (!member) return;
+    const systemId =
+      s0.script.system_id === "DND_5E" ? "DND_5E" : "COC_7E";
+    const party = s0.party.filter((m) => m.slotIndex !== member.slotIndex);
+    const wasEditing = s0.editingPartySlotIndex === member.slotIndex;
+    const blank = createBlankCharacter(systemId);
+    const nextPlayer =
+      party.find((m) => m.controller === "player") ??
+      party.find((m) => m.id === s0.playerMemberId) ??
+      null;
+    set({
+      party,
+      playerMemberId:
+        member.controller === "player" || s0.playerMemberId === member.id
+          ? (nextPlayer?.id ?? null)
+          : s0.playerMemberId,
+      character: wasEditing
+        ? blank
+        : s0.character?.id === member.id
+          ? (nextPlayer?.sheet ?? blank)
+          : s0.character,
+      viewedPartyMemberId:
+        s0.viewedPartyMemberId === member.id
+          ? (nextPlayer?.id ?? null)
+          : s0.viewedPartyMemberId,
+    });
+    get().appendSystem(
+      `已取消帶入「${member.sheet.name || "未命名"}」（席次 ${member.slotIndex + 1} 已清空）。`,
+    );
+  },
+
+  movePartyMemberToSlot: (characterId, toSlotIndex, opts) => {
+    const s0 = get();
+    const size = s0.partySize;
+    const toSlot = Math.max(0, Math.min(size - 1, toSlotIndex));
+    const member = s0.party.find(
+      (m) => m.id === characterId || m.sheet.id === characterId,
+    );
+    if (!member) return;
+    if (member.slotIndex === toSlot) return;
+
+    const fromSlot = member.slotIndex;
+    const controller: "player" | "ai" =
+      opts?.controller ?? member.controller;
+    const moved: PartyMember = {
+      ...member,
+      slotIndex: toSlot,
+      controller,
+    };
+
+    let party = s0.party.filter(
+      (m) => m.slotIndex !== fromSlot && m.slotIndex !== toSlot,
+    );
+    party = [...party, moved].sort((a, b) => a.slotIndex - b.slotIndex);
+    if (controller === "player") {
+      party = party.map((m) =>
+        m.slotIndex === toSlot
+          ? m
+          : { ...m, controller: "ai" as const },
+      );
+    }
+
+    const playerId =
+      controller === "player"
+        ? moved.id
+        : party.find((m) => m.controller === "player")?.id ??
+          (s0.playerMemberId === member.id ? null : s0.playerMemberId);
+
+    set({
+      party,
+      playerMemberId: playerId,
+      editingPartySlotIndex: toSlot,
+      character: moved.sheet,
+      viewedPartyMemberId:
+        s0.viewedPartyMemberId === member.id
+          ? moved.id
+          : s0.viewedPartyMemberId,
+    });
+    get().appendSystem(
+      `已將「${member.sheet.name || "未命名"}」自席次 ${fromSlot + 1} 改帶入席次 ${toSlot + 1}。`,
+    );
+  },
+
+  setViewedPartyMemberId: (id) => set({ viewedPartyMemberId: id }),
+
+  markCompanionsSaved: (ids) =>
+    set({ endingCompanionsSavedIds: [...new Set(ids)] }),
+
+  getSheetById: (characterId) => {
+    const s = get();
+    if (!characterId) {
+      return (
+        getPlayerSheet(s.party, s.playerMemberId, s.character) ?? s.character
+      );
+    }
+    return (
+      s.party.find((m) => m.id === characterId || m.sheet.id === characterId)
+        ?.sheet ??
+      (s.character?.id === characterId ? s.character : null)
+    );
+  },
+
+  updateSheetById: (characterId, updater) => {
+    const targetId =
+      characterId ||
+      get().playerMemberId ||
+      get().character?.id ||
+      null;
+    const current = get().getSheetById(targetId);
+    if (!current) return;
+    const next = recomputeDerived(updater(current));
+    set((s) => {
+      const party = syncPartySheet(s.party, next);
+      const isPlayer =
+        next.id === s.playerMemberId ||
+        party.find((m) => m.id === next.id)?.controller === "player";
+      return {
+        party,
+        character: isPlayer || s.character?.id === next.id ? next : s.character,
+      };
+    });
+  },
 
   togglePresetRule: (rule) =>
     set((s) => {
@@ -530,6 +846,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       characterSchema: { ...normalized, starting_inventory: inventory },
       character: sheet,
     });
+    get().upsertPartyMemberAtSlot(get().editingPartySlotIndex, sheet);
     get().appendSystem(
       `創角規則已就緒（${mode}）。請完成「數值」與「劇情鉤子」雙軌；屬性不可任意手填。`,
     );
@@ -540,13 +857,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
   },
 
-  setCharacter: (sheet) =>
-    set({ character: migrateCharacterSheet(sheet) }),
+  setCharacter: (sheet) => {
+    const migrated = migrateCharacterSheet(sheet);
+    const slot = get().editingPartySlotIndex;
+    get().upsertPartyMemberAtSlot(slot, migrated);
+  },
 
   updateCharacterField: (updater) => {
-    const current = get().character;
+    const slot = get().editingPartySlotIndex;
+    const existing = get().party.find((m) => m.slotIndex === slot)?.sheet;
+    const current = existing ?? get().character;
     if (!current) return;
-    set({ character: recomputeDerived(updater(current)) });
+    const next = recomputeDerived(updater(current));
+    get().upsertPartyMemberAtSlot(slot, next);
   },
 
   applyCharacterNarrative: (payload) => {
@@ -679,6 +1002,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!next.inventory.length) missing.push("起始背包");
 
     set({ character: next });
+    get().upsertPartyMemberAtSlot(get().editingPartySlotIndex, next);
     const note = payload.player_note?.trim();
     if (missing.length) {
       get().appendSystem(
@@ -693,8 +1017,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
   },
 
-  applyStatChanges: (changes, inventory_add = [], inventory_remove = []) => {
-    const sheet = get().character;
+  applyStatChanges: (
+    changes,
+    inventory_add = [],
+    inventory_remove = [],
+    character_id = null,
+  ) => {
+    const sheet = get().getSheetById(character_id);
     if (!sheet) return;
     const blocked: string[] = [];
     const allowed = changes.filter((ch) => {
@@ -712,61 +1041,65 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!allowed.length && !inventory_add.length && !inventory_remove.length) {
       return;
     }
-    const next = structuredClone(sheet);
-    for (const ch of allowed) {
-      const key = ch.key;
-      if (key === "HP" || key === "hp") {
-        next.derived.hp.current = Math.min(
-          next.derived.hp.max,
-          Math.max(0, next.derived.hp.current + ch.change_amount),
-        );
-      } else if (
-        (key === "SAN" || key === "san" || key === "理智") &&
-        next.derived.san
-      ) {
-        next.derived.san.current = Math.min(
-          next.derived.san.max,
-          Math.max(0, next.derived.san.current + ch.change_amount),
-        );
-      } else if (key === "MP" || key === "mp") {
-        if (!next.derived.mp_or_slots) continue;
-        next.derived.mp_or_slots.current = Math.min(
-          next.derived.mp_or_slots.max,
-          Math.max(
-            0,
-            next.derived.mp_or_slots.current + ch.change_amount,
-          ),
-        );
-      } else if (key === "AC" && next.derived.ac != null) {
-        next.derived.ac += ch.change_amount;
-      } else if (key in next.attributes) {
-        next.attributes[key] += ch.change_amount;
-      } else if (key in next.skills) {
-        next.skills[key] += ch.change_amount;
+    get().updateSheetById(character_id ?? sheet.id, (base) => {
+      const next = structuredClone(base);
+      for (const ch of allowed) {
+        const key = ch.key;
+        if (key === "HP" || key === "hp") {
+          next.derived.hp.current = Math.min(
+            next.derived.hp.max,
+            Math.max(0, next.derived.hp.current + ch.change_amount),
+          );
+        } else if (
+          (key === "SAN" || key === "san" || key === "理智") &&
+          next.derived.san
+        ) {
+          next.derived.san.current = Math.min(
+            next.derived.san.max,
+            Math.max(0, next.derived.san.current + ch.change_amount),
+          );
+        } else if (key === "MP" || key === "mp") {
+          if (!next.derived.mp_or_slots) continue;
+          next.derived.mp_or_slots.current = Math.min(
+            next.derived.mp_or_slots.max,
+            Math.max(
+              0,
+              next.derived.mp_or_slots.current + ch.change_amount,
+            ),
+          );
+        } else if (key === "AC" && next.derived.ac != null) {
+          next.derived.ac += ch.change_amount;
+        } else if (key in next.attributes) {
+          next.attributes[key] += ch.change_amount;
+        } else if (key in next.skills) {
+          next.skills[key] += ch.change_amount;
+        }
       }
-    }
-    let inv = [...next.inventory, ...inventory_add];
-    for (const rem of inventory_remove) {
-      const idx = inv.findIndex((i) => i === rem);
-      if (idx >= 0) inv.splice(idx, 1);
-    }
-    next.inventory = inv;
-    next.skills = clampSkillsToSystemBases(next.system_id, next.skills);
-    set({ character: recomputeDerived(next) });
+      let inv = [...next.inventory, ...inventory_add];
+      for (const rem of inventory_remove) {
+        const idx = inv.findIndex((i) => i === rem);
+        if (idx >= 0) inv.splice(idx, 1);
+      }
+      next.inventory = inv;
+      next.skills = clampSkillsToSystemBases(next.system_id, next.skills);
+      return next;
+    });
     if (allowed.length) {
+      const who =
+        get().getSheetById(character_id ?? sheet.id)?.name?.trim() || "角色";
       get().appendSystem(
-        `狀態更新：${allowed.map((c) => `${c.key}${c.change_amount >= 0 ? "+" : ""}${c.change_amount}（${c.reason}）`).join("；")}`,
+        `狀態更新（${who}）：${allowed.map((c) => `${c.key}${c.change_amount >= 0 ? "+" : ""}${c.change_amount}（${c.reason}）`).join("；")}`,
       );
     }
   },
 
-  markSkillSuccess: (skill_name) => {
-    const sheet = get().character;
+  markSkillSuccess: (skill_name, character_id = null) => {
+    const sheet = get().getSheetById(character_id);
     if (!sheet) return;
-    const marked = new Set(sheet.markedSkillsForGrowth ?? []);
-    marked.add(skill_name);
-    set({
-      character: { ...sheet, markedSkillsForGrowth: [...marked] },
+    get().updateSheetById(character_id ?? sheet.id, (base) => {
+      const marked = new Set(base.markedSkillsForGrowth ?? []);
+      marked.add(skill_name);
+      return { ...base, markedSkillsForGrowth: [...marked] };
     });
     get().appendSystem(`已標記技能成功（成長）：${skill_name}`);
   },
@@ -1050,8 +1383,29 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setTimelineIndex: (idx) => set({ timelineIndex: idx }),
 
   confirmCharacterAndPlay: () => {
-    const sheet = get().character;
-    if (!sheet) return;
+    const s0 = get();
+    // 確保每位席次都有成員；玩家席必須存在
+    if (s0.party.length < s0.partySize) {
+      get().appendSystem(
+        `隊伍尚未建齊（${s0.party.length}/${s0.partySize}）。請為每位成員完成角色卡。`,
+      );
+      return;
+    }
+    const player =
+      s0.party.find((m) => m.controller === "player") ??
+      s0.party.find((m) => m.id === s0.playerMemberId);
+    if (!player?.sheet) {
+      get().appendSystem("請指定「我扮演」的角色席次。");
+      return;
+    }
+    const incomplete = s0.party.filter((m) => !m.sheet.name?.trim());
+    if (incomplete.length) {
+      get().appendSystem(
+        `尚有未命名角色（席次 ${incomplete.map((m) => m.slotIndex + 1).join("、")}）。`,
+      );
+      return;
+    }
+
     void (async () => {
       const session = getActiveSession();
       if (!session || session.getStatus() !== "idle") {
@@ -1065,28 +1419,69 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
 
       const campaignId = get().campaignId;
-      const bindErr = bindCharacterToCampaign(sheet, campaignId);
-      if (bindErr) {
-        get().appendSystem(bindErr);
-        get().setSessionError({
-          code: "CHARACTER_BUSY",
-          message: bindErr,
-        });
-        return;
+      const sheet = player.sheet;
+
+      // 玩家 + 自檔案庫帶入的 AI 隊友皆佔用角色卡（同時僅一場）
+      const toBind = get().party.filter(
+        (m) =>
+          m.controller === "player" ||
+          m.id === player.id ||
+          m.fromLibrary === true,
+      );
+      const bindTargets = new Map<string, (typeof toBind)[0]>();
+      for (const m of toBind) {
+        bindTargets.set(m.sheet.id, m);
+      }
+      for (const m of bindTargets.values()) {
+        const err = bindCharacterToCampaign(m.sheet, campaignId);
+        if (err) {
+          get().appendSystem(err);
+          get().setSessionError({
+            code: "CHARACTER_BUSY",
+            message: err,
+          });
+          return;
+        }
       }
 
       const enriched = recomputeDerived(
         enrichCharacterSheetMeta(sheet, get().characterSchema),
       );
-      // 以結算後／確認後數值再寫一次綁定（確保檔案庫為上場版本）
       bindCharacterToCampaign(enriched, campaignId);
+
+      const party = get().party.map((m) => {
+        if (m.id === player.id || m.controller === "player") {
+          return {
+            ...m,
+            id: enriched.id,
+            sheet: enriched,
+            controller: "player" as const,
+          };
+        }
+        if (m.fromLibrary) {
+          const aiEnriched = recomputeDerived(
+            enrichCharacterSheetMeta(m.sheet, get().characterSchema),
+          );
+          bindCharacterToCampaign(aiEnriched, campaignId);
+          return {
+            ...m,
+            id: aiEnriched.id,
+            sheet: aiEnriched,
+            controller: "ai" as const,
+            fromLibrary: true,
+          };
+        }
+        return { ...m, controller: "ai" as const };
+      });
 
       set({
         phase: "PLAYING",
         character: enriched,
+        party,
+        playerMemberId: enriched.id,
+        viewedPartyMemberId: enriched.id,
         characterBaseline: captureStatSnapshot(enriched, get().madness),
         boundCharacterId: enriched.id,
-        // 清掉前面 Session/創角階段的訊息，避免在冒險階段顯示舊內容
         history: [],
         messages: [],
         chapterSummaries: [],
@@ -1108,8 +1503,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
         retryAction: { kind: "opening", label: "述說開場敘事" },
       });
 
+      const libAi = party.filter((m) => m.controller === "ai" && m.fromLibrary);
+      const newAi = party.filter((m) => m.controller === "ai" && !m.fromLibrary);
+      const bits = [
+        `角色「${enriched.name}」已存入檔案庫並綁定本場`,
+        libAi.length
+          ? `另有 ${libAi.length} 名自庫帶入的 AI 隊友（已佔用；結局可選寫回）`
+          : null,
+        newAi.length
+          ? `${newAi.length} 名新建 AI 隊友（結局可選存入）`
+          : null,
+      ].filter(Boolean);
       get().appendSystem(
-        `角色「${enriched.name}」已存入檔案庫，並綁定本場冒險。一角同時僅能進行一場。`,
+        bits.length > 1
+          ? `${bits.join("；")}。一角同時僅能進行一場。`
+          : `角色「${enriched.name}」已存入檔案庫，並綁定本場冒險。一角同時僅能進行一場。`,
       );
 
       try {
@@ -1121,7 +1529,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
             : "SEND_FAILED";
         const message =
           err instanceof Error ? err.message : "開場敘事送出失敗";
-        // onError 多半已寫入 sessionError；此處補齊未觸發 onError 的情況
         if (!get().sessionError) {
           get().setSessionError({ code, message });
           get().appendSystem(`錯誤：${code} — ${message}`);
@@ -1131,19 +1538,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   advanceToCharacterPhase: () => {
-    const { script } = get();
+    const { script, partySize } = get();
     if (!script.system_id || !script.public_summary) {
       get().appendSystem("請先與 GM 完成劇本設定（setup_script），再進入創角。");
       return;
     }
-    set({ phase: "CHARACTER" });
+    set({ phase: "CHARACTER", editingPartySlotIndex: 0 });
     get().appendSystem(
-      "已確認劇本與房規，進入創角階段。可創建新角色，或帶入檔案庫中同系統的角色卡。",
+      partySize > 1
+        ? `已確認劇本與房規，進入創角（隊伍 ${partySize} 人）。請為每位完成完整角色卡；各席次均可新建或帶入檔案庫（帶入會佔用該卡，一角同時僅一場；結局可選寫回）。僅「我扮演」席次冒險中會自動結算寫回。`
+        : "已確認劇本與房規，進入創角階段。可創建新角色，或帶入檔案庫中同系統的角色卡。",
     );
   },
 
   applyGrowthResult: (skill, gained) => {
-    get().updateCharacterField((sheet) => ({
+    get().updateSheetById(get().playerMemberId, (sheet) => ({
       ...sheet,
       skills: {
         ...sheet.skills,
@@ -1187,6 +1596,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
       composerDraft: s.composerDraft,
       suggestPlayerActions: s.suggestPlayerActions,
       endingCharacterSettled: s.endingCharacterSettled,
+      partySize: s.partySize,
+      recommendedPartySize: s.recommendedPartySize,
+      party: s.party,
+      playerMemberId: s.playerMemberId,
+      editingPartySlotIndex: s.editingPartySlotIndex,
+      endingCompanionsSavedIds: s.endingCompanionsSavedIds,
+      viewedPartyMemberId: s.viewedPartyMemberId,
     };
   },
 
@@ -1207,6 +1623,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
         ),
     );
 
+    const legacy = partyFromLegacyCharacter(data.character);
+    const party =
+      data.party && data.party.length > 0 ? data.party : legacy.party;
+    const playerMemberId =
+      data.playerMemberId ?? legacy.playerMemberId;
+    const partySize = clampPartySize(
+      data.partySize ??
+        data.script.recommended_party_size ??
+        legacy.partySize,
+    );
+    const playerSheet = getPlayerSheet(party, playerMemberId, data.character);
+
     set({
       campaignId: data.id,
       campaignCreatedAt: data.createdAt,
@@ -1221,11 +1649,22 @@ export const useGameStore = create<GameStore>((set, get) => ({
       },
       script: data.script,
       houseRules: data.houseRules,
-      character: data.character,
+      character: playerSheet ?? data.character,
       characterSchema: data.characterSchema,
       characterBaseline: data.characterBaseline ?? null,
       boundCharacterId:
         data.boundCharacterId ?? data.character?.id ?? null,
+      partySize,
+      recommendedPartySize:
+        data.recommendedPartySize ??
+        data.script.recommended_party_size ??
+        null,
+      party,
+      playerMemberId,
+      editingPartySlotIndex: data.editingPartySlotIndex ?? 0,
+      endingCompanionsSavedIds: data.endingCompanionsSavedIds ?? [],
+      viewedPartyMemberId:
+        data.viewedPartyMemberId ?? playerMemberId ?? null,
       clues: data.clues,
       playerNotes: data.playerNotes ?? [],
       npcs: data.npcs,

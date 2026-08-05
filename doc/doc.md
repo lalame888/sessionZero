@@ -141,25 +141,26 @@
 2. 連線成功後，建立 `session = await pedelec.createSession({ provider, skills: { tools: allSessionTools } })`。
 
 
-3. 玩家輸入故事想法，AI 呼叫 `setup_script` 傳回 `system_id`（`COC_7E` 或 `DND_5E`）、公開簡介與隱藏劇本真相。
-4. 玩家選定創角機制，並在「房規設定區」勾選或上傳個人自訂房規。
+3. 玩家輸入故事想法，AI 呼叫 `setup_script` 傳回 `system_id`（`COC_7E` 或 `DND_5E`）、公開簡介、隱藏劇本真相，以及 **建議隊伍人數** `recommended_party_size`（1–4）與 `party_role_hints`。
+4. 玩家可在劇本頁調整實際 `partySize`，選定創角機制，並在「房規設定區」勾選或上傳個人自訂房規。
 
 ### 階段二：角色卡設定與雙軌建構
 
-1. 劇本確認後進入創角閘門：可「創建新角色」或「帶入檔案庫同系統角色」。
-2. **新建**：呼叫 `generate_character_schema` 取得欄位與推薦技能，進行屬性分配、衍生計算與劇情鉤子填寫。
-3. **帶入**：沿用檔案庫屬性／技能（不重擲、不重配點），僅微調外貌／簡介／背包後確認上場（比照 CoC 幕間歸隊）。
-4. 角色可存入本機檔案庫（`LibraryCharacter`：最新角色卡 + 冒險履歷）。
+1. 劇本確認後進入創角閘門：依 `partySize` 組建隊伍席次；指定唯一「我扮演」席次。
+2. **玩家席**：可「創建新角色」或「帶入檔案庫同系統角色」（開始冒險後佔用該卡）。
+3. **AI 隊友席**：可新建，或帶入檔案庫角色（同樣佔用、一角同時僅一場）；**結局可選是否寫回檔案庫**。新建隊友結局可選存入。
+4. 全部席次完成後方可開始冒險；僅玩家角色綁定 `activeCampaignId`。
 
 ### 階段三：遊戲主迴圈（Game Loop）
 
 1. 玩家輸入對話或點擊 Quick Action 按鈕。
 2. 冒險開始時記錄 `characterBaseline` 數值快照（供結局履歷對照）。
 3. AI 敘事並隨時呼叫 Tool：
-* **明骰** (`narrate_story`)：跳出「擲骰視窗」，玩家點擊後前端產出骰點帶回 AI。
+* **明骰** (`narrate_story`)：跳出「擲骰視窗」，玩家點擊後前端產出骰點帶回 AI。可選 `character_id` 指定隊友檢定。
 * **暗骰** (`secret_check_request`)：前端背景完成判定，玩家 UI 不顯示數字，直接回傳給 AI。
+* **喚起隊友** (`request_companion_action`)：GM 決定何時請 AI 隊友行動；隊友可 pass（靜默無提示）或行動（以【隊友·名】送出）。
 * **規則說明** (`lookup_rule`)：AI 引用 SRD 或房規說明複雜判決依據。
-* **狀態與線索** (`update_game_stats`, `record_clue`, `trigger_madness`, `register_npc`)：更新側邊欄 UI。
+* **狀態與線索** (`update_game_stats`, `record_clue`, `trigger_madness`, `register_npc`)：更新側邊欄 UI；`update_game_stats` 可帶 `character_id`。
 * **結束** (`end_game_session`)：推進至階段四。
 
 
@@ -172,6 +173,7 @@
    - 若無可成長技能（或其他系統）→「儲存角色結果，繼續」同樣自動存檔。
    - 完成後標記 `endingCharacterSettled`；之後再進入本頁**略過結算**，直接上帝視角與時間軸回放。
    - **履歷摘要**應為故事來龍去脈（可「AI 生成故事經歷總結」）；成長／數值／線索另欄紀錄。
+   - **AI 隊友**：自庫帶入者可勾選「寫回」本場數值；新建者可勾選「存入」角色庫。結算時會先解除占用。
 3. 解鎖 `hidden_full_script` 上帝視角，以及 **時間軸拉桿（Timeline Scrubber）**（對照歷史快照與暗骰）。
 4. 首頁「角色檔案庫」可檢視履歷、進行中 Session（可一鍵進入），並在新劇本帶入同一角色。一角同時只能進行一場冒險。
 

@@ -202,6 +202,35 @@ export function healStaleActiveCampaignBindings(): number {
 }
 
 /**
+ * 結局：將本場數值寫回檔案庫並解除進行中綁定（不含履歷列，供 AI 隊友選寫回）。
+ */
+export function writeBackLibraryCharacterSheet(sheet: UniversalCharacterSheet) {
+  const existing = getLibraryCharacter(sheet.id);
+  upsertLibraryCharacter({
+    sheet: migrateCharacterSheet(sheet),
+    career: existing?.career ?? [],
+    activeCampaignId: null,
+    createdAt: existing?.createdAt ?? Date.now(),
+    updatedAt: Date.now(),
+  });
+}
+
+/**
+ * 解除本場所有已佔用角色卡的進行中標記（刪 Session／結局結算用）。
+ */
+export function clearPartyLibraryBindingsForCampaign(
+  campaignId: string,
+  characterIds: string[],
+) {
+  for (const id of characterIds) {
+    const entry = getLibraryCharacter(id);
+    if (entry?.activeCampaignId === campaignId) {
+      clearCharacterActiveCampaign(id);
+    }
+  }
+}
+
+/**
  * 結局結算：寫入最新 sheet + 履歷，並解除進行中綁定。
  */
 export function saveLibraryCharacterWithAdventure(

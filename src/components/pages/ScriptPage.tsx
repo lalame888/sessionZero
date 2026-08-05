@@ -40,6 +40,9 @@ export function ScriptPage({
 }) {
   const script = useGameStore((s) => s.script);
   const setScenarioScale = useGameStore((s) => s.setScenarioScale);
+  const partySize = useGameStore((s) => s.partySize);
+  const recommendedPartySize = useGameStore((s) => s.recommendedPartySize);
+  const setPartySize = useGameStore((s) => s.setPartySize);
   const appendSystem = useGameStore((s) => s.appendSystem);
   const characterSchema = useGameStore((s) => s.characterSchema);
   const history = useGameStore((s) => s.history);
@@ -280,6 +283,70 @@ export function ScriptPage({
                   <p className="mt-2 text-sm text-muted">
                     主角定位：{script.public_summary.protagonist_role}
                   </p>
+                  <div className="mt-3 space-y-2 rounded-md border border-border/50 bg-bg/30 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-sm text-ink">
+                        隊伍人數
+                        {recommendedPartySize != null ? (
+                          <span className="ml-2 text-xs text-muted">
+                            （GM 建議 {recommendedPartySize}）
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {[1, 2, 3, 4].map((n) => (
+                          <Button
+                            key={n}
+                            type="button"
+                            size="sm"
+                            variant={partySize === n ? "default" : "secondary"}
+                            className="h-7 w-8 px-0"
+                            onClick={() => setPartySize(n)}
+                          >
+                            {n}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-muted">
+                      含你扮演的 1 名 PC；其餘席次由 AI 隊友代打（結局可選存入角色庫）。
+                    </p>
+                    {(script.party_role_hints?.length ||
+                      script.public_summary.protagonist_role) && (
+                      <ul className="space-y-1 text-xs text-ink/90">
+                        {(
+                          script.party_role_hints?.length
+                            ? script.party_role_hints
+                            : [
+                                {
+                                  role_title:
+                                    script.public_summary.protagonist_role,
+                                  brief: "玩家核心定位",
+                                },
+                              ]
+                        )
+                          .slice(0, Math.max(partySize, 1))
+                          .map((h, i) => (
+                            <li key={`${h.role_title}-${i}`}>
+                              <span className="text-muted">
+                                席次 {i + 1}
+                                {i === 0 ? "（建議玩家）" : ""}：
+                              </span>
+                              {h.role_title}
+                              {h.brief ? (
+                                <span className="text-muted"> — {h.brief}</span>
+                              ) : null}
+                            </li>
+                          ))}
+                        {partySize >
+                        (script.party_role_hints?.length || 1) ? (
+                          <li className="text-muted">
+                            其餘席次待創角時自訂定位。
+                          </li>
+                        ) : null}
+                      </ul>
+                    )}
+                  </div>
                   {script.hidden_full_script ? (
                     <p className="mt-2 text-[11px] text-accent-2">
                       GM 備註已就緒：場景{" "}

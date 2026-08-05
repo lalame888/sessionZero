@@ -9,11 +9,23 @@ import { cn } from "@/lib/utils";
 export function ReturningCharacterConfirm({
   entry,
   onBack,
+  onAssigned,
+  asPlayer = true,
 }: {
   entry: LibraryCharacter;
   onBack: () => void;
+  /** 多人隊伍：帶入後回呼，不立刻開打 */
+  onAssigned?: () => void;
+  /** false = AI 隊友席（仍佔用原卡；結局可選寫回） */
+  asPlayer?: boolean;
 }) {
   const setCharacter = useGameStore((s) => s.setCharacter);
+  const upsertPartyMemberAtSlot = useGameStore(
+    (s) => s.upsertPartyMemberAtSlot,
+  );
+  const editingPartySlotIndex = useGameStore((s) => s.editingPartySlotIndex);
+  const partySize = useGameStore((s) => s.partySize);
+  const setPlayerMemberSlot = useGameStore((s) => s.setPlayerMemberSlot);
   const confirmCharacterAndPlay = useGameStore((s) => s.confirmCharacterAndPlay);
   const appendSystem = useGameStore((s) => s.appendSystem);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
@@ -55,11 +67,33 @@ export function ReturningCharacterConfirm({
       .map((l) => l.trim())
       .filter(Boolean);
     const next = { ...sheet, inventory };
+
+    if (asPlayer) {
+      setPlayerMemberSlot(editingPartySlotIndex);
+      upsertPartyMemberAtSlot(editingPartySlotIndex, next, {
+        controller: "player",
+        creationComplete: true,
+        fromLibrary: true,
+      });
+    } else {
+      upsertPartyMemberAtSlot(editingPartySlotIndex, next, {
+        controller: "ai",
+        creationComplete: true,
+        fromLibrary: true,
+      });
+    }
     setCharacter(next);
     appendSystem(
-      `已帶入調查員「${next.name}」上場（沿用既有屬性／技能，不重配點）。`,
+      asPlayer
+        ? `已帶入調查員「${next.name}」至席次 ${editingPartySlotIndex + 1}（沿用既有屬性／技能；開始冒險後將佔用此卡）。`
+        : `已帶入「${next.name}」至席次 ${editingPartySlotIndex + 1} 作為 AI 隊友（將佔用此卡；結局可選是否寫回檔案庫）。`,
     );
-    confirmCharacterAndPlay();
+    if (partySize <= 1) {
+      confirmCharacterAndPlay();
+    } else {
+      appendSystem("請繼續完成其餘席次後再開始冒險。");
+      onAssigned?.();
+    }
   };
 
   return (
@@ -171,7 +205,7 @@ export function ReturningCharacterConfirm({
         onClick={handleConfirm}
       >
         <Play className="h-4 w-4" />
-        確認上場，開始冒險
+        {partySize > 1 ? "確認帶入此席次" : "確認上場，開始冒險"}
       </Button>
       {!canConfirm && sessionStatus !== "idle" ? (
         <p className="text-xs text-muted">Session 未就緒，請稍候再上場。</p>

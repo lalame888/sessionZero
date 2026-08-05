@@ -121,8 +121,8 @@ export function HomePage({
                       {s.boundCharacterName
                         ? `主角 ${s.boundCharacterName} · `
                         : ""}
-                      {s.systemId ?? "系統未定"} · {scaleLabel(s)} ·{" "}
-                      {PHASE_LABEL[s.phase]} ·{" "}
+                      隊伍 {s.partySize ?? 1} 人 · {s.systemId ?? "系統未定"} ·{" "}
+                      {scaleLabel(s)} · {PHASE_LABEL[s.phase]} ·{" "}
                       {new Date(s.updatedAt).toLocaleString()}
                     </div>
                   </button>

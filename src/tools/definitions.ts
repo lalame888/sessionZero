@@ -3,7 +3,7 @@ import { defineTool } from "@kaoruisaac/pedelec";
 export const setupScriptTool = defineTool({
   name: "setup_script",
   description:
-    "初始化或更新劇本設定與（依 scenario_scale）正規劇本備註。Call when Session 0 premise is clear, and again when the solo player revises settings. Always design for exactly one PC (NPCs allowed). Respect the player's chosen scenario_scale depth.",
+    "初始化或更新劇本設定與（依 scenario_scale）正規劇本備註。Call when Session 0 premise is clear, and again when the solo player revises settings. Design for 1 player PC + optional AI companion PCs (recommended_party_size 1–4). Respect the player's chosen scenario_scale depth.",
   argsSchema: {
     type: "object",
     properties: {
@@ -12,12 +12,31 @@ export const setupScriptTool = defineTool({
         type: "string",
         description: "seed | oneshot | arc — 必須符合玩家選擇的規模",
       },
+      recommended_party_size: {
+        type: "number",
+        description: "建議同行人數 1–4（含玩家）。密謀調查常 1–2，探險／對抗常 2–4。",
+      },
+      party_role_hints: {
+        type: "array",
+        description: "各席定位建議；第 1 項對應玩家可扮演的核心定位",
+        items: {
+          type: "object",
+          properties: {
+            role_title: { type: "string" },
+            brief: { type: "string" },
+          },
+          required: ["role_title", "brief"],
+        },
+      },
       public_summary: {
         type: "object",
         properties: {
           title: { type: "string" },
           background: { type: "string" },
-          protagonist_role: { type: "string" },
+          protagonist_role: {
+            type: "string",
+            description: "玩家可扮演的核心定位（非整隊描述）",
+          },
           genre: { type: "string" },
           player_hook: { type: "string" },
           known_facts: { type: "array", items: { type: "string" } },
@@ -265,7 +284,7 @@ export const generateCharacterSchemaTool = defineTool({
 export const fillCharacterNarrativeTool = defineTool({
   name: "fill_character_narrative",
   description:
-    "依目前劇本與創角藍圖，一次填滿角色卡所有「敘事／身分」開放欄位（姓名、職稱、完整身分資料、系統專屬欄、每一題劇情鉤子、起始背包）。禁止填寫屬性點數或技能配點／技能％。必須填寫完整、不可省略身分欄；僅在玩家明確要求時呼叫。所有文字必須繁體中文。",
+    "依目前劇本、創角藍圖與（若有）已完成的隊友敘事，一次填滿本席角色卡所有「敘事／身分」開放欄位。若訊息含隊伍現況：避免與已完成隊友撞名／撞職／撞背景，並讓職能互補以平衡隊伍。禁止填寫屬性點數或技能配點／技能％。必須填寫完整；僅在玩家明確要求時呼叫。所有文字必須繁體中文。",
   argsSchema: {
     type: "object",
     properties: {
@@ -451,6 +470,10 @@ export const narrateStoryTool = defineTool({
           },
           dnd_advantage_mode: { type: "string" },
           reason: { type: "string" },
+          character_id: {
+            type: "string",
+            description: "檢定對象角色 id；省略則為玩家 PC",
+          },
         },
         required: ["request_id", "check_target_name", "dice_type", "reason"],
       },
@@ -491,10 +514,15 @@ export const secretCheckRequestTool = defineTool({
 
 export const updateGameStatsTool = defineTool({
   name: "update_game_stats",
-  description: "修改玩家的角色數值、血量或背包物品。MUST be used for any numeric/inventory change.",
+  description:
+    "修改角色數值、血量或背包。預設為玩家 PC；若變更 AI 隊友請帶 character_id。",
   argsSchema: {
     type: "object",
     properties: {
+      character_id: {
+        type: "string",
+        description: "目標角色 id；省略則為玩家操控的 PC",
+      },
       stat_changes: {
         type: "array",
         items: {
@@ -520,6 +548,10 @@ export const markSkillSuccessTool = defineTool({
   argsSchema: {
     type: "object",
     properties: {
+      character_id: {
+        type: "string",
+        description: "目標角色 id；省略則為玩家 PC",
+      },
       skill_name: { type: "string" },
       reason: { type: "string" },
     },
@@ -595,6 +627,30 @@ export const endGameSessionTool = defineTool({
   },
 });
 
+export const requestCompanionActionTool = defineTool({
+  name: "request_companion_action",
+  description:
+    "喚起一名 AI 隊友考慮是否行動。隊友可選擇行動或靜默不動作（不動作時玩家端無提示）。僅在場景需要其專長／分頭行動時呼叫；勿每位每回合必叫。",
+  argsSchema: {
+    type: "object",
+    properties: {
+      companion_id: {
+        type: "string",
+        description: "隊伍成員 id（與角色卡 id 相同）",
+      },
+      reason: {
+        type: "string",
+        description: "為何此刻適合喚起此隊友",
+      },
+      situation: {
+        type: "string",
+        description: "給隊友 AI 的情境摘要（可選）",
+      },
+    },
+    required: ["companion_id", "reason"],
+  },
+});
+
 export const lookupRuleTool = defineTool({
   name: "lookup_rule",
   description: "引用官方 SRD 規則或玩家自訂房規說明複雜判決依據。",
@@ -621,5 +677,6 @@ export const allSessionTools = [
   triggerMadnessTool,
   registerNpcTool,
   endGameSessionTool,
+  requestCompanionActionTool,
   lookupRuleTool,
 ] as const;

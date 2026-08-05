@@ -107,6 +107,7 @@ export function SessionManager({
                           {s.boundCharacterName
                             ? `主角 ${s.boundCharacterName} · `
                             : ""}
+                          隊伍 {s.partySize ?? 1} 人 ·{" "}
                           {s.systemId ?? "系統未定"} · {scaleLabel(s)} ·{" "}
                           {PHASE_LABEL[s.phase]} ·{" "}
                           {new Date(s.updatedAt).toLocaleString()}

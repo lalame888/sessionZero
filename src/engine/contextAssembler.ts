@@ -10,6 +10,7 @@ import type {
   ScriptState,
   UniversalCharacterSheet,
 } from "@/types/game";
+import type { PartyMember } from "@/types/party";
 import { buildStructuredChapterSummary } from "@/engine/chapterSummary";
 import { formatScenarioBibleOnDemand } from "@/engine/scenarioLorebook";
 import { lookupSrdEntries } from "@/engine/srdLorebook";
@@ -41,6 +42,8 @@ export interface ContextAssemblyInput {
   extraLayers?: string[];
   /** 近端導演狀態 */
   sceneDirector?: SceneDirectorState | null;
+  party?: PartyMember[];
+  playerMemberId?: string | null;
 }
 
 export function houseRulesSummary(houseRules: HouseRuleConfig): string {
@@ -159,6 +162,21 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
   }
   const identity = identityBits.length ? identityBits.join(" | ") : "無";
 
+  const partyLine =
+    input.party && input.party.length
+      ? input.party
+          .map((m) => {
+            const tag =
+              m.controller === "player" || m.id === input.playerMemberId
+                ? "PLAYER"
+                : "AI";
+            return `${tag}:${m.sheet.name || "未命名"}(id=${m.id})`;
+          })
+          .join("; ")
+      : c
+        ? `PLAYER:${c.name}(id=${c.id})`
+        : "無";
+
   const attributes = c?.attributes
     ? Object.entries(c.attributes)
         .map(([k, v]) => `${k} ${v}`)
@@ -172,7 +190,8 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
 
   return `[CURRENT SSOT GAME STATE - DO NOT OVERRIDE]
 - Game System: ${input.script.system_id ?? "UNSET"} | Location: ${input.location}
-- Player: ${c ? `${c.name} (${c.role_title})` : "尚未創角"} | HP: ${hp} | SAN: ${san} | AC: ${ac} | MP/Slots: ${slots}
+- Player: ${c ? `${c.name} (${c.role_title}) id=${c.id}` : "尚未創角"} | HP: ${hp} | SAN: ${san} | AC: ${ac} | MP/Slots: ${slots}
+- Party (use request_companion_action with companion_id; checks/stats may pass character_id): [${partyLine}]
 - Identity (narrate with these; do NOT invent contradicting sheet facts): [${identity}]
 - Attributes: [${attributes}]
 - Skills (prefer these exact names for check_target_name; if none fit, MUST supply target_value): [${skills}]
@@ -190,7 +209,7 @@ export function assemblePlayerTurnPrompt(input: ContextAssemblyInput): string {
   const layers: string[] = [];
 
   layers.push(`[SESSION CONTEXT]
-Mode: SOLO (exactly 1 PC; NPCs allowed; never create multiple PCs)
+Mode: SOLO+PARTY (1 human PC + optional AI companion PCs; never multiple human players)
 System: ${input.script.system_id ?? "pending"}
 Scenario scale: ${normalizeScenarioScale(input.script.scenario_scale)}
 Public Title: ${input.script.public_summary?.title ?? "（討論中）"}

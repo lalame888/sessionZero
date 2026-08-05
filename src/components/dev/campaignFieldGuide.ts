@@ -318,6 +318,39 @@ export const CAMPAIGN_FIELD_GROUPS: FieldGuideGroup[] = [
           "結局頁已完成成長／儲存。為真時再進入結算頁會略過結算步驟。",
         getValue: (c) => (c.endingCharacterSettled ? "是" : "否"),
       },
+      {
+        path: "partySize",
+        label: "隊伍人數",
+        meaning: "玩家確認的同行人數（1–4，含玩家）。",
+        getValue: (c) => String(c.partySize ?? 1),
+      },
+      {
+        path: "recommendedPartySize",
+        label: "建議人數",
+        meaning: "GM setup_script 建議的隊伍人數。",
+        getValue: (c) =>
+          c.recommendedPartySize != null
+            ? String(c.recommendedPartySize)
+            : "（無）",
+      },
+      {
+        path: "party",
+        label: "隊伍成員",
+        meaning: "含玩家與 AI 隊友的完整角色卡列表。",
+        getValue: (c) => c.party,
+      },
+      {
+        path: "playerMemberId",
+        label: "玩家成員 ID",
+        meaning: "玩家操控的 party 成員 id。",
+        getValue: (c) => c.playerMemberId || "（無）",
+      },
+      {
+        path: "endingCompanionsSavedIds",
+        label: "已存庫 AI 隊友",
+        meaning: "結局勾選存入角色庫的 AI 隊友 id 列表。",
+        getValue: (c) => c.endingCompanionsSavedIds,
+      },
     ],
   },
 ];

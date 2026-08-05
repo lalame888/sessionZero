@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { HoverTooltip } from "@/components/ui/hover-tooltip";
@@ -18,8 +18,13 @@ import {
   resolveSkillDescription,
   clampSkillsToSystemBases,
 } from "@/engine/creation";
+import {
+  draftFromUi,
+  hydrateUiFromDraft,
+  type SkillSpend,
+} from "@/engine/creationDraft";
+import { buildPartyNarrativeDesignContext } from "@/engine/partyNarrativeBrief";
 import type { RecommendedSkill } from "@/types/game";
-import { migrateCharacterSheet } from "@/engine/formulas";
 import {
   CREDIT_LIFESTYLE_BANDS,
   CREDIT_RATING_TOOLTIP,
@@ -35,64 +40,29 @@ import {
 import { getActiveSession } from "@/lib/pedelec/createGameSession";
 import {
   exportCharacterJson,
-  loadCharacterLibrary,
-  parseImportedCharacter,
   saveCharacterToLibrary,
 } from "@/lib/storage";
 import { useGameStore } from "@/store/useGameStore";
-import type { UniversalCharacterSheet } from "@/types/game";
 
-type SkillSpend = Record<string, { occ: number; interest: number }>;
-
-function buildSkillSpendFromSheet(
-  sheet: UniversalCharacterSheet,
-  skills: { name: string; base_value: number; is_occupational?: boolean }[],
-): SkillSpend {
-  const spend: SkillSpend = {};
-  for (const sk of skills) {
-    const final = sheet.skills[sk.name] ?? sk.base_value;
-    const extra = Math.max(0, Math.floor(final - sk.base_value));
-    if (extra <= 0) {
-      spend[sk.name] = { occ: 0, interest: 0 };
-    } else if (sk.is_occupational) {
-      spend[sk.name] = { occ: extra, interest: 0 };
-    } else {
-      spend[sk.name] = { occ: 0, interest: extra };
-    }
-  }
-  return spend;
-}
-
-function buildArrayAssignmentsFromSheet(
-  attrs: Record<string, number>,
-  keys: string[],
-  arrayValues: number[],
-): Record<string, number | ""> {
-  const used = new Set<number>();
-  const next: Record<string, number | ""> = {};
-  for (const key of keys) {
-    const val = attrs[key];
-    if (val == null || val <= 0) {
-      next[key] = "";
-      continue;
-    }
-    const idx = arrayValues.findIndex((v, i) => v === val && !used.has(i));
-    if (idx >= 0) {
-      used.add(idx);
-      next[key] = idx;
-    } else {
-      next[key] = "";
-    }
-  }
-  return next;
-}
-
-export function CharacterStage() {
+export function CharacterStage({
+  allowLibrarySave = true,
+  onSlotSaved,
+}: {
+  /** AI 隊友席次禁止寫入角色庫 */
+  allowLibrarySave?: boolean;
+  /** 多人隊伍：本席存好後回調（不立刻開打時） */
+  onSlotSaved?: () => void;
+} = {}) {
   const character = useGameStore((s) => s.character);
   const schema = useGameStore((s) => s.characterSchema);
   const script = useGameStore((s) => s.script);
-  const setCharacter = useGameStore((s) => s.setCharacter);
+  const partySize = useGameStore((s) => s.partySize);
+  const party = useGameStore((s) => s.party);
+  const editingPartySlotIndex = useGameStore((s) => s.editingPartySlotIndex);
   const updateCharacterField = useGameStore((s) => s.updateCharacterField);
+  const upsertPartyMemberAtSlot = useGameStore(
+    (s) => s.upsertPartyMemberAtSlot,
+  );
   const confirmCharacterAndPlay = useGameStore((s) => s.confirmCharacterAndPlay);
   const appendSystem = useGameStore((s) => s.appendSystem);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
@@ -104,8 +74,6 @@ export function CharacterStage() {
     }
     return null;
   });
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [library, setLibrary] = useState(() => loadCharacterLibrary());
   const [generatingNarrative, setGeneratingNarrative] = useState(false);
 
   const mode = normalizeCreationMode(
@@ -133,16 +101,155 @@ export function CharacterStage() {
   const [extraSkills, setExtraSkills] = useState<RecommendedSkill[]>([]);
   const [addSkillPick, setAddSkillPick] = useState("");
 
-  useEffect(() => {
-    setRolledPool([]);
+  const occOverridesRef = useRef(occOverrides);
+  occOverridesRef.current = occOverrides;
+  const extraSkillsRef = useRef(extraSkills);
+  extraSkillsRef.current = extraSkills;
+  const assignmentsRef = useRef(assignments);
+  assignmentsRef.current = assignments;
+  const rolledPoolRef = useRef(rolledPool);
+  rolledPoolRef.current = rolledPool;
+
+  const slotDraftKeyRef = useRef(
+    `${editingPartySlotIndex}:${character?.id ?? ""}`,
+  );
+
+  const buildCurrentDraft = (): CharacterCreationDraft =>
+    draftFromUi({
+      skillSpend: skillSpendRef.current,
+      occOverrides: occOverridesRef.current,
+      extraSkills: extraSkillsRef.current,
+      assignments: assignmentsRef.current,
+      rolledPool: rolledPoolRef.current,
+    });
+
+  const persistDraftToSlot = (
+    slotIndex: number,
+    sheet: typeof character,
+    draft: CharacterCreationDraft,
+    extra?: { creationComplete?: boolean },
+  ) => {
+    if (!sheet) return;
+    const editing = useGameStore
+      .getState()
+      .party.find((m) => m.slotIndex === slotIndex);
+    upsertPartyMemberAtSlot(slotIndex, sheet, {
+      controller: editing?.controller,
+      roleHint: editing?.roleHint,
+      creationDraft: draft,
+      ...extra,
+    });
+  };
+
+  const applyHydratedDraft = (
+    draft: ReturnType<typeof hydrateUiFromDraft>,
+  ) => {
+    skillSpendRef.current = draft.skillSpend;
+    setSkillSpend(draft.skillSpend);
+    setOccOverrides(draft.occOverrides);
+    setExtraSkills(draft.extraSkills);
+    setAssignments(draft.assignments);
+    setRolledPool(draft.rolledPool);
     setRollLog([]);
-    setAssignments({});
-    setSkillSpend({});
     setHighSkillWarned(new Set());
-    setOccOverrides({});
-    setExtraSkills([]);
     setAddSkillPick("");
-  }, [schema?.creation_mode, schema?.recommended_skills?.length]);
+  };
+
+  /** 換席／換角色卡：先把上一席配點草稿寫回 party，再還原目前席 */
+  useLayoutEffect(() => {
+    const nextKey = `${editingPartySlotIndex}:${character?.id ?? ""}`;
+    const prevKey = slotDraftKeyRef.current;
+    if (prevKey !== nextKey) {
+      const prevSlot = Number(prevKey.split(":")[0]);
+      const prevId = prevKey.slice(prevKey.indexOf(":") + 1);
+      if (prevId) {
+        const prevSheet =
+          useGameStore
+            .getState()
+            .party.find((m) => m.slotIndex === prevSlot)?.sheet ??
+          (useGameStore.getState().character?.id === prevId
+            ? useGameStore.getState().character
+            : null);
+        if (prevSheet) {
+          persistDraftToSlot(prevSlot, prevSheet, buildCurrentDraft());
+        }
+      }
+      slotDraftKeyRef.current = nextKey;
+    }
+
+    if (!character) return;
+    const schemaSkills = (schema?.recommended_skills ?? []).map((sk) => ({
+      ...sk,
+      base_value: resolveSkillBaseValue(
+        character.system_id,
+        sk.name,
+        sk.base_value,
+      ),
+    }));
+    const member = useGameStore
+      .getState()
+      .party.find((m) => m.slotIndex === editingPartySlotIndex);
+    const hydrated = hydrateUiFromDraft(
+      member?.creationDraft,
+      character,
+      schemaSkills,
+    );
+    applyHydratedDraft(hydrated);
+
+    // 以草稿配點覆寫 sheet.skills，避免換席後只剩敘事、技能被還原成基礎值
+    const mergedSkills = [
+      ...schemaSkills,
+      ...hydrated.extraSkills.filter(
+        (ex) => !schemaSkills.some((s) => s.name === ex.name),
+      ),
+    ];
+    if (mergedSkills.length && Object.keys(hydrated.skillSpend).length) {
+      const spend = hydrated.skillSpend;
+      useGameStore.getState().updateCharacterField((sheet) => {
+        if (sheet.id !== character.id) return sheet;
+        const skills = { ...sheet.skills };
+        for (const sk of mergedSkills) {
+          const base = resolveSkillBaseValue(
+            sheet.system_id,
+            sk.name,
+            sk.base_value,
+          );
+          const extra = spend[sk.name] ?? { occ: 0, interest: 0 };
+          skills[sk.name] = base + extra.occ + extra.interest;
+        }
+        return { ...sheet, skills };
+      });
+    }
+    // 僅在席次／角色 id／藍圖技能列表變更時重載，避免配點時被覆寫
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+  }, [
+    character?.id,
+    editingPartySlotIndex,
+    schema?.creation_mode,
+    schema?.recommended_skills?.length,
+  ]);
+
+  /** 離開創角頁時也寫回配點草稿，避免只改敘事就返回而遺失 */
+  useEffect(() => {
+    return () => {
+      const st = useGameStore.getState();
+      const sheet = st.character;
+      const slot = st.editingPartySlotIndex;
+      if (!sheet) return;
+      const editing = st.party.find((m) => m.slotIndex === slot);
+      st.upsertPartyMemberAtSlot(slot, sheet, {
+        controller: editing?.controller,
+        roleHint: editing?.roleHint,
+        creationDraft: draftFromUi({
+          skillSpend: skillSpendRef.current,
+          occOverrides: occOverridesRef.current,
+          extraSkills: extraSkillsRef.current,
+          assignments: assignmentsRef.current,
+          rolledPool: rolledPoolRef.current,
+        }),
+      });
+    };
+  }, []);
 
   const modeConfig = schema?.mode_config;
   const pointBuy = schema?.point_buy;
@@ -385,8 +492,20 @@ export function CharacterStage() {
       systemFields,
     ].join("\n");
 
+    const partyContext = buildPartyNarrativeDesignContext({
+      party,
+      partySize,
+      editingSlotIndex: editingPartySlotIndex,
+      roleHints: script.party_role_hints,
+      protagonistRole: script.public_summary.protagonist_role,
+    });
+
     setGeneratingNarrative(true);
-    appendSystem("正在請 AI 依劇本與藍圖完整填寫角色敘事欄位…");
+    appendSystem(
+      partySize > 1
+        ? "正在請 AI 依劇本、藍圖與現有隊友設定，設計不重複且互補的角色敘事…"
+        : "正在請 AI 依劇本與藍圖完整填寫角色敘事欄位…",
+    );
     try {
       await session.sendText(
         [
@@ -406,10 +525,14 @@ export function CharacterStage() {
           schema.starting_inventory?.length
             ? `藍圖建議背包可參考：${schema.starting_inventory.join("、")}`
             : "",
+          partyContext,
           "請讓角色貼合上述定位與氛圍，文字一律繁體中文，內容具體可用。",
+          partySize > 1
+            ? "若上方有已完成隊友：務必避免撞名、撞職、撞背景；職能與個性應互補以平衡隊伍。"
+            : "",
           "backstory_hooks 的 id 必須完全對應下列問題（每一題都要有答案）：",
           hooksList,
-          "填完工具後用一句繁中 player_note 說明設計概念即可。",
+          "填完工具後用一句繁中 player_note 說明設計概念即可（可簡述如何與隊友互補）。",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -531,55 +654,6 @@ export function CharacterStage() {
       }
       return { ...sheet, skills };
     });
-  };
-
-  /** 完整帶入檔案庫／JSON：屬性、技能、背包、鉤子，並還原本機分配 UI 狀態 */
-  const importCharacterSheet = (
-    raw: UniversalCharacterSheet,
-    sourceLabel: string,
-  ) => {
-    const sheet = migrateCharacterSheet(raw);
-    setCharacter(sheet);
-
-    const spend = buildSkillSpendFromSheet(sheet, allocSkills);
-    setSkillSpend(spend);
-
-    const attrPool = attrKeys.map((k) => sheet.attributes[k] ?? 0);
-    setRolledPool(attrPool);
-    setRollLog(
-      defs.map((d) => {
-        const v = sheet.attributes[d.key];
-        return `${d.label}: ${v != null && v > 0 ? v : "—"}（自${sourceLabel}帶入）`;
-      }),
-    );
-    setAssignments(
-      buildArrayAssignmentsFromSheet(
-        sheet.attributes,
-        attrKeys,
-        arrayValues,
-      ),
-    );
-
-    const warned = new Set<string>();
-    for (const sk of allocSkills) {
-      const v = sheet.skills[sk.name] ?? sk.base_value;
-      if (v > 80) warned.add(sk.name);
-    }
-    setHighSkillWarned(warned);
-
-    if (
-      schema?.system_id &&
-      sheet.system_id &&
-      schema.system_id !== sheet.system_id
-    ) {
-      appendSystem(
-        `已帶入「${sheet.name}」的完整數值，但系統（${sheet.system_id}）與目前劇本（${schema.system_id}）不同，請留意規則是否相容。`,
-      );
-    } else {
-      appendSystem(
-        `已從${sourceLabel}完整帶入「${sheet.name}」：屬性、技能、背包與劇情鉤子。`,
-      );
-    }
   };
 
   const maxAffordableFor = (
@@ -755,9 +829,26 @@ export function CharacterStage() {
     return warns;
   }, [character, isCoc, showSkillAlloc, occBudget, occUsed]);
 
-  const adventureCta = script.public_summary?.title
-    ? `踏上「${script.public_summary.title}」`
-    : "確認角色，開始冒險";
+  const adventureCta = (() => {
+    if (partySize > 1) {
+      const st = useGameStore.getState();
+      const named = st.party.filter((m) => m.sheet.name?.trim()).length;
+      const willCompleteCurrent = Boolean(character?.name?.trim());
+      const projected = Math.max(
+        named,
+        willCompleteCurrent ? named + (st.party.some((m) => m.slotIndex === editingPartySlotIndex && m.sheet.name?.trim()) ? 0 : 1) : named,
+      );
+      if (projected < partySize || st.party.length < partySize) {
+        return `完成席次 ${editingPartySlotIndex + 1}，繼續組隊`;
+      }
+      return script.public_summary?.title
+        ? `隊伍就緒，開始《${script.public_summary.title}》`
+        : "隊伍就緒，開始冒險";
+    }
+    return script.public_summary?.title
+      ? `踏上「${script.public_summary.title}」`
+      : "確認角色，開始冒險";
+  })();
 
   return (
     <div className="space-y-4 overflow-y-auto p-1 text-sm">
@@ -789,35 +880,18 @@ export function CharacterStage() {
         >
           匯出 JSON
         </Button>
-        <Button size="sm" variant="secondary" onClick={() => fileRef.current?.click()}>
-          匯入 JSON
-        </Button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="application/json,.json"
-          className="hidden"
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            try {
-              const text = await file.text();
-              const parsed = JSON.parse(text) as unknown;
-              const entry = parseImportedCharacter(parsed);
-              if (!entry) throw new Error("invalid");
-              importCharacterSheet(entry.sheet, "JSON 檔");
-            } catch {
-              appendSystem("匯入失敗：JSON 格式無效。");
-            }
-          }}
-        />
         <Button
           size="sm"
           variant="secondary"
-          disabled={!attrsReady || !character.name}
+          disabled={!attrsReady || !character.name || !allowLibrarySave}
+          title={
+            allowLibrarySave
+              ? "存入本機角色檔案庫"
+              : "AI 隊友席次不會寫入角色庫"
+          }
           onClick={() => {
+            if (!allowLibrarySave) return;
             saveCharacterToLibrary(enrichCharacterSheetMeta(character, schema));
-            setLibrary(loadCharacterLibrary());
             appendSystem("已存入本機角色檔案庫。");
           }}
         >
@@ -832,24 +906,6 @@ export function CharacterStage() {
             ? "AI 設計中，完成後會自動帶入身分／鉤子／背包欄位（不會改配點）。"
             : latestSystemNotice}
         </p>
-      ) : null}
-
-      {library.length ? (
-        <div className="space-y-1">
-          <Label>本機檔案庫</Label>
-          <div className="flex flex-wrap gap-2">
-            {library.map((c) => (
-              <Button
-                key={c.id}
-                size="sm"
-                variant="ghost"
-                onClick={() => importCharacterSheet(c, "本機檔案庫")}
-              >
-                {c.name}（{c.system_id}）
-              </Button>
-            ))}
-          </div>
-        </div>
       ) : null}
 
       <div className="grid gap-3 md:grid-cols-2">
@@ -1672,13 +1728,48 @@ export function CharacterStage() {
       <Button
         disabled={!canConfirm}
         onClick={() => {
-          if (character) {
-            updateCharacterField((s) => ({
-              ...s,
-              skills: clampSkillsToSystemBases(s.system_id, s.skills),
-            }));
+          if (!character) return;
+          // 確認前強制把目前配點寫進角色卡
+          syncSkillsFromSpend(skillSpendRef.current);
+          updateCharacterField((s) => ({
+            ...s,
+            skills: clampSkillsToSystemBases(s.system_id, s.skills),
+          }));
+          const latest = useGameStore.getState().character;
+          if (!latest) return;
+          const editing = useGameStore
+            .getState()
+            .party.find((m) => m.slotIndex === editingPartySlotIndex);
+          const draft = buildCurrentDraft();
+          upsertPartyMemberAtSlot(editingPartySlotIndex, latest, {
+            controller: editing?.controller,
+            roleHint: editing?.roleHint,
+            creationComplete: true,
+            creationDraft: draft,
+          });
+
+          const st = useGameStore.getState();
+          const allSlotsReady = Array.from(
+            { length: st.partySize },
+            (_, i) => st.party.find((m) => m.slotIndex === i),
+          ).every(
+            (m) =>
+              Boolean(m?.creationComplete) ||
+              Boolean(m?.sheet.name?.trim()),
+          );
+          const ready =
+            st.party.length >= st.partySize &&
+            allSlotsReady &&
+            st.party.some((m) => m.controller === "player");
+
+          if (ready) {
+            confirmCharacterAndPlay();
+          } else {
+            appendSystem(
+              `席次 ${editingPartySlotIndex + 1}「${latest.name}」已就緒（屬性／技能配點已保存）。請繼續完成其餘席次。`,
+            );
+            onSlotSaved?.();
           }
-          confirmCharacterAndPlay();
         }}
       >
         {adventureCta}

@@ -12,9 +12,12 @@ import { rollDice } from "@/engine/dice";
 import { requestStorySynopsis } from "@/lib/adventureSynopsis/requestStorySynopsis";
 import { resolveAvailableProvider } from "@/lib/pedelec/resolveProvider";
 import {
+  clearPartyLibraryBindingsForCampaign,
   exportLibraryCharacterJson,
   getLibraryCharacter,
+  saveCharacterToLibrary,
   saveLibraryCharacterWithAdventure,
+  writeBackLibraryCharacterSheet,
 } from "@/lib/storage";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
@@ -152,6 +155,11 @@ export function EndingStage() {
   const campaignId = useGameStore((s) => s.campaignId);
   const clues = useGameStore((s) => s.clues);
   const madness = useGameStore((s) => s.madness);
+  const party = useGameStore((s) => s.party);
+  const endingCompanionsSavedIds = useGameStore(
+    (s) => s.endingCompanionsSavedIds,
+  );
+  const markCompanionsSaved = useGameStore((s) => s.markCompanionsSaved);
   const endingCharacterSettled = useGameStore((s) => s.endingCharacterSettled);
   const applyGrowthResult = useGameStore((s) => s.applyGrowthResult);
   const appendSystem = useGameStore((s) => s.appendSystem);
@@ -181,6 +189,14 @@ export function EndingStage() {
   );
   const [synopsisGenerating, setSynopsisGenerating] = useState(false);
   const [synopsisError, setSynopsisError] = useState<string | null>(null);
+  const [companionSavePick, setCompanionSavePick] = useState<
+    Record<string, boolean>
+  >({});
+
+  const aiCompanions = useMemo(
+    () => party.filter((m) => m.controller === "ai"),
+    [party],
+  );
 
   // 再進入結局頁：略過結算，直接上帝視角／回放
   useEffect(() => {
@@ -264,6 +280,14 @@ export function EndingStage() {
     });
     useGameStore.setState({ boundCharacterId: null });
     saveLibraryCharacterWithAdventure(sheet, record);
+    // 自庫帶入的 AI 隊友：結算時先解除占用；寫回與否由下方勾選決定
+    clearPartyLibraryBindingsForCampaign(
+      campaignId,
+      useGameStore
+        .getState()
+        .party.filter((m) => m.controller === "ai" && m.fromLibrary)
+        .map((m) => m.sheet.id),
+    );
     markEndingCharacterSettled();
     setLibrarySaved(true);
     setSettled(true);
@@ -598,6 +622,111 @@ export function EndingStage() {
           ) : null}
         </div>
       )}
+
+      {settled && aiCompanions.length > 0 ? (
+        <div className="space-y-3 rounded-lg border border-border p-4">
+          <h3 className="brand-title text-sm">AI 隊友與檔案庫</h3>
+          <p className="text-xs text-muted">
+            自庫帶入者：勾選可將本場數值寫回檔案庫（占用已於結算解除）。新建者：勾選可存入檔案庫供之後帶入。
+          </p>
+          <ul className="space-y-2">
+            {aiCompanions.map((m) => {
+              const already = endingCompanionsSavedIds.includes(m.id);
+              const fromLib = Boolean(m.fromLibrary);
+              const checked = companionSavePick[m.id] ?? already;
+              return (
+                <li
+                  key={m.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/60 bg-bg/30 px-3 py-2 text-xs"
+                >
+                  <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      disabled={already}
+                      checked={checked}
+                      onChange={(e) =>
+                        setCompanionSavePick((prev) => ({
+                          ...prev,
+                          [m.id]: e.target.checked,
+                        }))
+                      }
+                    />
+                    <span className="text-ink">
+                      {m.sheet.name || "（未命名）"}
+                      <span className="text-muted">
+                        {" "}
+                        · {m.sheet.role_title || m.roleHint || "—"}
+                        {fromLib ? " · 自庫帶入" : " · 本場新建"}
+                      </span>
+                    </span>
+                  </label>
+                  {already ? (
+                    <span className="text-accent-2">
+                      {fromLib ? "已寫回" : "已存入"}
+                    </span>
+                  ) : (
+                    <span className="text-muted">
+                      {fromLib ? "寫回檔案庫" : "存入檔案庫"}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={
+              !aiCompanions.some(
+                (m) =>
+                  (companionSavePick[m.id] ?? false) &&
+                  !endingCompanionsSavedIds.includes(m.id),
+              )
+            }
+            onClick={() => {
+              const toSave = aiCompanions.filter(
+                (m) =>
+                  (companionSavePick[m.id] ?? false) &&
+                  !endingCompanionsSavedIds.includes(m.id),
+              );
+              if (!toSave.length) return;
+              const written: string[] = [];
+              const created: string[] = [];
+              for (const m of toSave) {
+                const enriched = enrichCharacterSheetMeta(
+                  m.sheet,
+                  characterSchema,
+                );
+                if (m.fromLibrary) {
+                  writeBackLibraryCharacterSheet(enriched);
+                  written.push(m.sheet.name || "未命名");
+                } else {
+                  saveCharacterToLibrary(enriched);
+                  created.push(m.sheet.name || "未命名");
+                }
+              }
+              const ids = [
+                ...endingCompanionsSavedIds,
+                ...toSave.map((m) => m.id),
+              ];
+              markCompanionsSaved(ids);
+              const parts = [
+                written.length
+                  ? `已寫回 ${written.map((n) => `「${n}」`).join("、")}`
+                  : null,
+                created.length
+                  ? `已存入 ${created.map((n) => `「${n}」`).join("、")}`
+                  : null,
+              ].filter(Boolean);
+              setSavedNotice(parts.join("；") + "。");
+              appendSystem(`結局：AI 隊友 ${parts.join("；")}。`);
+            }}
+          >
+            <Archive className="h-3.5 w-3.5" />
+            套用勾選
+          </Button>
+        </div>
+      ) : null}
 
       {/* Step 2：上帝視角 + 時間軸（結算完成後顯示） */}
       {revealed ? (
