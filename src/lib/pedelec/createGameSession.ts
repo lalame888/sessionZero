@@ -18,7 +18,10 @@ import {
   type CheckDifficulty,
 } from "@/engine/skillCheck";
 import { findSrdByTopic } from "@/engine/srdLorebook";
-import { areDuplicateNarratives } from "@/lib/narrativeDedupe";
+import {
+  areDuplicateNarratives,
+  isCorruptedNarrativeFragment,
+} from "@/lib/narrativeDedupe";
 import { hadPriorOpeningAttempt } from "@/lib/openingRetry";
 import { pedelec } from "@/lib/pedelec/client";
 import {
@@ -35,9 +38,13 @@ import type {
   CharacterSchemaState,
   ClueItem,
   GameSystemID,
+  HistoryLog,
   MadnessStatus,
   NPCItem,
 } from "@/types/game";
+import {
+  isSuccessDiceOutcome,
+} from "@/lib/historyHygiene";
 
 export type GameSessionHandle = {
   session: PedelecSession<(typeof allSessionTools)[number]["name"]>;
@@ -47,6 +54,18 @@ export type GameSessionHandle = {
 type NarrateStoryArgs = {
   system_notice?: string;
   narrative_text: string;
+  location?: string;
+  scene_id?: string;
+  scene_goal?: string;
+  tension?: string;
+  director_notes?: string;
+  npc_updates?: {
+    npc_id: string;
+    name: string;
+    relation: string;
+    status: string;
+    description: string;
+  }[];
   check_request?: {
     request_id: string;
     check_target_name: string;
@@ -64,6 +83,10 @@ let activeAgentMessageId: string | null = null;
 const leakedChatBufferByTurn = new Map<string, string>();
 /** 避免同一則洩漏呼叫被重複還原 */
 let recoveringLeakedTool = false;
+/** 公開檢定結果暫存，待下一則真正敘事寫入 history */
+let pendingPublicDiceRecord: HistoryLog["diceRecord"] | null = null;
+/** 下一則 narrate 應覆寫最近一則 history 敘事（重抽） */
+let replaceNextHistoryNarrative = false;
 
 const DICE_TIMEOUT_MS = 170_000;
 
@@ -181,35 +204,82 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     areDuplicateNarratives(m.content, a.narrative_text),
   );
 
+  if (a.location?.trim()) {
+    store.setLocation(a.location.trim());
+  }
+
+  if (
+    a.scene_id ||
+    a.scene_goal ||
+    a.tension ||
+    a.director_notes !== undefined
+  ) {
+    store.setSceneDirector({
+      ...(a.scene_id !== undefined
+        ? { currentSceneId: a.scene_id || null }
+        : {}),
+      ...(a.scene_goal !== undefined ? { sceneGoal: a.scene_goal } : {}),
+      ...(a.tension !== undefined ? { tension: a.tension } : {}),
+      ...(a.director_notes !== undefined ? { notes: a.director_notes } : {}),
+    });
+  }
+
+  if (a.npc_updates?.length) {
+    for (const n of a.npc_updates) {
+      store.registerNpc({
+        npc_id: n.npc_id,
+        name: n.name,
+        relation: (n.relation as NPCItem["relation"]) || "NEUTRAL",
+        status: (n.status as NPCItem["status"]) || "ALIVE",
+        description: n.description,
+      });
+    }
+  }
+
   store.narrateFromTool(a.narrative_text, a.system_notice);
 
-  if (rewriting) {
-    // 更新最近一則「真正敘事」歷史，避免開場被完整記兩次
+  const diceAttach = pendingPublicDiceRecord;
+  pendingPublicDiceRecord = null;
+  const shouldReplace = replaceNextHistoryNarrative;
+  replaceNextHistoryNarrative = false;
+
+  if (shouldReplace || rewriting) {
     const history = useGameStore.getState().history;
     let patched = false;
     for (let i = history.length - 1; i >= 0; i--) {
       const h = history[i];
       if (!h) continue;
       if (h.aiNarrative.startsWith("（檢定結果已回傳）")) continue;
-      if (areDuplicateNarratives(h.aiNarrative, a.narrative_text)) {
+      if (h.aiNarrative.startsWith("（暗骰）")) continue;
+      if (
+        shouldReplace ||
+        areDuplicateNarratives(h.aiNarrative, a.narrative_text)
+      ) {
         const next = history.slice();
-        next[i] = { ...h, aiNarrative: a.narrative_text };
+        next[i] = {
+          ...h,
+          aiNarrative: a.narrative_text,
+          timestamp: Date.now(),
+          diceRecord: diceAttach ?? h.diceRecord,
+        };
         useGameStore.setState({ history: next });
         patched = true;
         break;
       }
-      break;
+      if (!shouldReplace) break;
     }
     if (!patched) {
       store.recordHistoryTurn({
         playerInput: store.lastPlayerAction || undefined,
         aiNarrative: a.narrative_text,
+        diceRecord: diceAttach ?? undefined,
       });
     }
   } else {
     store.recordHistoryTurn({
       playerInput: store.lastPlayerAction || undefined,
       aiNarrative: a.narrative_text,
+      diceRecord: diceAttach ?? undefined,
     });
   }
 
@@ -235,22 +305,30 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     difficulty: a.check_request.difficulty ?? resolved.difficulty,
   });
   if (!roll.cancelled) {
-    useGameStore.getState().recordHistoryTurn({
-      aiNarrative: `（檢定結果已回傳）${skillLabel}`,
-      diceRecord: {
-        skillName: skillLabel,
-        isSecret: false,
-        diceType: a.check_request.dice_type,
-        targetValue: resolved.target_value,
-        diceResult: roll.diceResult,
-        outcome: roll.outcome,
-      },
-    });
+    pendingPublicDiceRecord = {
+      skillName: skillLabel,
+      isSecret: false,
+      diceType: a.check_request.dice_type,
+      targetValue: resolved.target_value,
+      diceResult: roll.diceResult,
+      outcome: roll.outcome,
+    };
+    if (isSuccessDiceOutcome(roll.outcome)) {
+      useGameStore.getState().markSkillSuccess(skillLabel);
+    }
   }
+
+  const sheetSkills = useGameStore.getState().character?.skills ?? {};
+  const skillHint = Object.entries(sheetSkills)
+    .map(([k, v]) => `${k}${v}%`)
+    .slice(0, 12)
+    .join("、");
+
   return {
     ...roll,
     gm_instruction:
-      "CRITICAL: Your next narrate_story.narrative_text must ONLY describe this check outcome and immediate consequences. Do NOT repeat, paraphrase, or rewrite any previously narrated scene text.",
+      "CRITICAL: Your next narrate_story.narrative_text must ONLY describe this check outcome and immediate consequences. Do NOT repeat, paraphrase, or rewrite any previously narrated scene text. Prefer updating location/scene_id/npc_updates if the scene changed. Sheet skills: " +
+      (skillHint || "（無）"),
   };
 }
 
@@ -339,6 +417,17 @@ function registerHandlers(
 
   disposers.push(
     session.onTool("setup_script", (args) => {
+      const phase = useGameStore.getState().phase;
+      if (
+        phase === "PLAYING" ||
+        phase === "ENDING" ||
+        phase === "CHARACTER"
+      ) {
+        return {
+          ok: false,
+          error: `setup_script is forbidden during phase ${phase}. Do not reset the script or character card. Continue with narrate_story only.`,
+        };
+      }
       const a = args as {
         system_id: string;
         scenario_scale?: string;
@@ -384,6 +473,7 @@ function registerHandlers(
           acts?: { name: string; summary: string }[];
         };
         recommended_creation_mode: string;
+        tone_examples?: string[];
       };
       useGameStore.getState().setupScript(a);
       return {
@@ -392,12 +482,20 @@ function registerHandlers(
         scenario_scale: a.scenario_scale ?? null,
         scenes: a.hidden_full_script.scenes?.length ?? 0,
         npcs: a.hidden_full_script.npcs?.length ?? 0,
+        tone_examples: a.tone_examples?.length ?? 0,
       };
     }),
   );
 
   disposers.push(
     session.onTool("generate_character_schema", (args) => {
+      const phase = useGameStore.getState().phase;
+      if (phase === "PLAYING" || phase === "ENDING") {
+        return {
+          ok: false,
+          error: `generate_character_schema is forbidden during phase ${phase}. Character sheet must not be reset mid-adventure.`,
+        };
+      }
       const a = args as {
         system_id: string;
         creation_mode: string;
@@ -728,13 +826,14 @@ export async function createGameSession(options: {
       s.updateMessage(activeAgentMessageId!, existingContent + delta);
     }
 
-    // tool 已寫過近重複敘事時，隱藏 chat 重複氣泡（檢定後常見）
+    // tool 已寫過近重複敘事時，隱藏 chat 重複氣泡（檢定後常見）；
+    // 亦丟掉含 � 的截斷碎片與「等待骰子」等內部狀態句
     const chatId = activeAgentMessageId;
     const chatMsg = chatId
       ? useGameStore.getState().messages.find((m) => m.id === chatId)
       : undefined;
     const chatContent = chatMsg?.content ?? "";
-    if (chatId && chatContent.trim().length >= 60) {
+    if (chatId && chatContent.trim().length >= 24) {
       const others: string[] = [];
       const msgs = useGameStore.getState().messages;
       for (let i = msgs.length - 1; i >= 0; i--) {
@@ -743,7 +842,10 @@ export async function createGameSession(options: {
         if (m.role === "user") break;
         if (m.role === "agent" && m.id !== chatId) others.push(m.content);
       }
-      if (others.some((o) => areDuplicateNarratives(o, chatContent))) {
+      const drop =
+        isCorruptedNarrativeFragment(chatContent) ||
+        others.some((o) => areDuplicateNarratives(o, chatContent));
+      if (drop) {
         useGameStore.setState((st) => ({
           messages: st.messages.filter((m) => m.id !== chatId),
         }));
@@ -803,6 +905,8 @@ export async function createGameSession(options: {
       settlePendingDiceOnTeardown();
       leakedChatBufferByTurn.clear();
       recoveringLeakedTool = false;
+      pendingPublicDiceRecord = null;
+      replaceNextHistoryNarrative = false;
       offChat();
       offStatus();
       offError();
@@ -866,13 +970,14 @@ export async function sendPlayerAction(
     turn: store.turn,
     suggestPlayerActions: store.suggestPlayerActions,
     extraLayers: opts?.extraLayers,
+    sceneDirector: store.sceneDirector,
   });
 
   await session.sendText(prompt);
 }
 
 export const OPENING_NARRATION_ACTION =
-  "現在已確認角色卡。請立刻開始劇本並述說故事開場（請呼叫 narrate_story；如需檢定請在同一則 narrate_story 附上 check_request，不要先等待玩家輸入）。若開場含檢定：收到擲骰結果後，下一次 narrate_story 只寫檢定結果與當下後續，禁止重寫已述說過的開場文字。";
+  "現在已確認角色卡。請立刻開始劇本並述說故事開場（請呼叫 narrate_story）。開場必須包含：明確時間、地點（並設定 location）、感官細節、眼前可行動的壓力；如需檢定請在同一則 narrate_story 附上 check_request，不要先等待玩家輸入。若開場含檢定：收到擲骰結果後，下一次 narrate_story 只寫檢定結果與當下後續，禁止重寫已述說過的開場文字。";
 
 /** 送出開場敘事（不寫入玩家訊息）；失敗時由呼叫端／onError 記錄 sessionError */
 export async function sendOpeningNarration() {
@@ -909,9 +1014,53 @@ export async function sendOpeningNarration() {
     turn: latest.turn,
     // 開場第一則一律不附推薦行動（與開關無關）
     suggestPlayerActions: false,
+    sceneDirector: latest.sceneDirector,
   });
 
   await session.sendText(prompt);
+}
+
+const REGENERATE_NARRATIVE_ACTION =
+  "【系統指令】請重新生成上一則 GM 敘事（呼叫 narrate_story）。保持同一場景前提與檢定結果（若有），改寫文筆與細節，禁止複讀上一版原文，禁止代操 PC。";
+
+const CONTINUE_NARRATIVE_ACTION =
+  "【系統指令】請自上一則 GM 敘事結尾繼續寫下去（呼叫 narrate_story），不要重複已寫過的內容，推進場面後暫停等待玩家。";
+
+/** 重抽最近一則 GM 敘事 */
+export async function regenerateLastNarrative() {
+  const session = getActiveSession();
+  if (!session) throw new Error("NO_SESSION");
+  if (session.getStatus() !== "idle") throw new Error("SESSION_BUSY");
+  const store = useGameStore.getState();
+  store.removeLastAgentMessage();
+  replaceNextHistoryNarrative = true;
+  store.setRetryAction({
+    kind: "player",
+    label: "重試重新生成敘事",
+    text: REGENERATE_NARRATIVE_ACTION,
+  });
+  await sendPlayerAction(REGENERATE_NARRATIVE_ACTION, {
+    skipUserMessage: true,
+    extraLayers: [
+      "[NARRATIVE CONTROL] Regenerate previous GM beat only. Write a fresh narrate_story; the engine will replace the last history narrative.",
+    ],
+  });
+}
+
+/** 續寫最近一則 GM 敘事 */
+export async function continueLastNarrative() {
+  const session = getActiveSession();
+  if (!session) throw new Error("NO_SESSION");
+  if (session.getStatus() !== "idle") throw new Error("SESSION_BUSY");
+  const store = useGameStore.getState();
+  store.setRetryAction({
+    kind: "player",
+    label: "重試續寫敘事",
+    text: CONTINUE_NARRATIVE_ACTION,
+  });
+  await sendPlayerAction(CONTINUE_NARRATIVE_ACTION, {
+    skipUserMessage: true,
+  });
 }
 
 /** Session 損壞（error/ended）時是否需要重建 */

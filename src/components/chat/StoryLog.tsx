@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { StickyNote } from "lucide-react";
+import { StickyNote, RefreshCw, CornerDownRight } from "lucide-react";
 import { MarkdownContent } from "@/components/chat/MarkdownContent";
 import { Button } from "@/components/ui/button";
+import {
+  continueLastNarrative,
+  regenerateLastNarrative,
+} from "@/lib/pedelec/createGameSession";
+import { isCorruptedNarrativeFragment } from "@/lib/narrativeDedupe";
+import { looksLikeLeakedToolCall } from "@/lib/pedelec/leakedToolCall";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
 
@@ -29,19 +35,38 @@ type SelectionToolbar = {
 
 export function StoryLog({
   onAddSelectionToNote,
+  narrativeControls,
 }: {
   onAddSelectionToNote?: (seed: { content: string }) => void;
+  /** PLAYING 階段啟用重抽／續寫 */
+  narrativeControls?: boolean;
 } = {}) {
   const messages = useGameStore((s) => s.messages);
+  const sessionStatus = useGameStore((s) => s.sessionStatus);
+  const pendingDice = useGameStore((s) => s.pendingDice);
   const containerRef = useRef<HTMLDivElement>(null);
   const isTyping = useGameStore((s) => s.isTyping);
   const [toolbar, setToolbar] = useState<SelectionToolbar | null>(null);
+  const [busy, setBusy] = useState<"regen" | "continue" | null>(null);
+
+  const visibleMessages = messages.filter(
+    (m) =>
+      !(
+        m.role === "agent" &&
+        (looksLikeLeakedToolCall(m.content) ||
+          isCorruptedNarrativeFragment(m.content))
+      ),
+  );
+
+  const lastAgentId = [...visibleMessages]
+    .reverse()
+    .find((m) => m.role === "agent")?.id;
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, isTyping]);
+  }, [visibleMessages, isTyping]);
 
   const clearToolbar = useCallback(() => setToolbar(null), []);
 
@@ -87,7 +112,6 @@ export function StoryLog({
     if (!root) return;
 
     const onMouseUp = () => {
-      // 等瀏覽器完成選取
       window.setTimeout(updateSelectionToolbar, 0);
     };
     const onScroll = () => clearToolbar();
@@ -108,17 +132,55 @@ export function StoryLog({
     };
   }, [clearToolbar, onAddSelectionToNote, updateSelectionToolbar]);
 
+  const controlsLocked =
+    busy != null ||
+    sessionStatus !== "idle" ||
+    Boolean(pendingDice) ||
+    isTyping;
+
+  const runRegen = async () => {
+    if (controlsLocked) return;
+    setBusy("regen");
+    try {
+      await regenerateLastNarrative();
+    } catch (e) {
+      useGameStore
+        .getState()
+        .appendSystem(
+          `重新生成失敗：${e instanceof Error ? e.message : String(e)}`,
+        );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runContinue = async () => {
+    if (controlsLocked) return;
+    setBusy("continue");
+    try {
+      await continueLastNarrative();
+    } catch (e) {
+      useGameStore
+        .getState()
+        .appendSystem(
+          `續寫失敗：${e instanceof Error ? e.message : String(e)}`,
+        );
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div
       ref={containerRef}
       className="relative flex h-full max-h-full flex-col gap-3 overflow-y-auto overscroll-contain px-1 py-2"
     >
-      {messages.length === 0 ? (
+      {visibleMessages.length === 0 ? (
         <p className="story-text text-sm text-muted">
           歡迎來到 SessionZero。描述你想玩的故事氛圍，GM 會與你討論劇本、系統與房規。
         </p>
       ) : null}
-      {messages.map((m) => (
+      {visibleMessages.map((m) => (
         <div
           key={m.id}
           className={cn(
@@ -143,6 +205,34 @@ export function StoryLog({
           ) : (
             <div className="whitespace-pre-wrap">{m.content}</div>
           )}
+          {narrativeControls &&
+          m.role === "agent" &&
+          m.id === lastAgentId ? (
+            <div className="mt-2 flex flex-wrap gap-1.5 border-t border-border/50 pt-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="h-7 gap-1 px-2 text-[11px]"
+                disabled={controlsLocked}
+                onClick={() => void runRegen()}
+              >
+                <RefreshCw className="h-3 w-3" />
+                {busy === "regen" ? "重抽中…" : "重新生成"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="h-7 gap-1 px-2 text-[11px]"
+                disabled={controlsLocked}
+                onClick={() => void runContinue()}
+              >
+                <CornerDownRight className="h-3 w-3" />
+                {busy === "continue" ? "續寫中…" : "續寫"}
+              </Button>
+            </div>
+          ) : null}
         </div>
       ))}
       <TypingIndicator />
@@ -157,7 +247,6 @@ export function StoryLog({
             size="sm"
             className="h-7 gap-1 px-2 shadow-md"
             onMouseDown={(e) => {
-              // 避免按下按鈕時清掉選取
               e.preventDefault();
             }}
             onClick={() => {

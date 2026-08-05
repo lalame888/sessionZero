@@ -2,14 +2,19 @@ import type {
   ChapterSummary,
   ChatMessage,
   ClueItem,
-  HiddenFullScript,
+  HistoryLog,
   HouseRuleConfig,
   MadnessStatus,
   NPCItem,
+  SceneDirectorState,
   ScriptState,
   UniversalCharacterSheet,
 } from "@/types/game";
+import { buildStructuredChapterSummary } from "@/engine/chapterSummary";
+import { formatScenarioBibleOnDemand } from "@/engine/scenarioLorebook";
 import { lookupSrdEntries } from "@/engine/srdLorebook";
+import { isNoiseHistoryNarrative } from "@/lib/historyHygiene";
+import { looksLikeLeakedToolCall } from "@/lib/pedelec/leakedToolCall";
 import {
   normalizeScenarioScale,
   scenarioScaleRequirements,
@@ -34,6 +39,8 @@ export interface ContextAssemblyInput {
   suggestPlayerActions?: boolean;
   /** 額外上下文層（不會寫入對話紀錄，僅本回合送給 LLM） */
   extraLayers?: string[];
+  /** 近端導演狀態 */
+  sceneDirector?: SceneDirectorState | null;
 }
 
 export function houseRulesSummary(houseRules: HouseRuleConfig): string {
@@ -44,66 +51,46 @@ export function houseRulesSummary(houseRules: HouseRuleConfig): string {
   return parts.length ? parts.join("; ") : "無";
 }
 
-function formatScenarioBible(hidden: HiddenFullScript): string {
-  const chunks: string[] = [];
-  chunks.push(`Truth: ${hidden.truth_and_secrets}`);
-  chunks.push(`Win: ${hidden.winning_condition}`);
-  if (hidden.failure_consequences) {
-    chunks.push(`Failure: ${hidden.failure_consequences}`);
-  }
-  if (hidden.san_and_threats) {
-    chunks.push(`SAN/Threats: ${hidden.san_and_threats}`);
-  }
-  if (hidden.key_clues?.length) {
-    chunks.push(`Key clues: ${hidden.key_clues.join(" | ")}`);
-  }
-  if (hidden.acts?.length) {
-    chunks.push(
-      `Acts:\n${hidden.acts.map((a) => `- ${a.name}: ${a.summary}`).join("\n")}`,
-    );
-  }
-  if (hidden.timeline?.length) {
-    chunks.push(
-      `Timeline:\n${hidden.timeline.map((t) => `- ${t.when}: ${t.what}`).join("\n")}`,
-    );
-  }
-  if (hidden.scenes?.length) {
-    chunks.push(
-      `Scenes:\n${hidden.scenes
-        .map((s) => {
-          const clues = s.clues?.length ? ` clues=[${s.clues.join("; ")}]` : "";
-          const dangers = s.dangers?.length
-            ? ` dangers=[${s.dangers.join("; ")}]`
-            : "";
-          const npcs = s.linked_npc_ids?.length
-            ? ` npcs=[${s.linked_npc_ids.join(",")}]`
-            : "";
-          return `- [${s.id}] ${s.name}: ${s.summary}${clues}${dangers}${npcs}`;
-        })
-        .join("\n")}`,
-    );
-  }
-  if (hidden.npcs?.length) {
-    chunks.push(
-      `NPCs:\n${hidden.npcs
-        .map(
-          (n) =>
-            `- [${n.id}] ${n.name}（${n.role}）動機=${n.motivation}；知情=${n.knows}；對PC=${n.attitude_to_pc}`,
-        )
-        .join("\n")}`,
-    );
-  }
-  if (hidden.factions?.length) {
-    chunks.push(
-      `Factions:\n${hidden.factions
-        .map(
-          (f) =>
-            `- [${f.id}] ${f.name}: ${f.goal}${f.methods ? `（${f.methods}）` : ""}`,
-        )
-        .join("\n")}`,
-    );
-  }
-  return chunks.join("\n\n");
+function buildSceneDirectorBlock(
+  input: ContextAssemblyInput,
+): string | null {
+  const d = input.sceneDirector;
+  const scenes = input.script.hidden_full_script?.scenes ?? [];
+  const scene =
+    (d?.currentSceneId &&
+      scenes.find((s) => s.id === d.currentSceneId)) ||
+    scenes.find((s) =>
+      input.location &&
+      (s.name.includes(input.location) ||
+        input.location.includes(s.name)),
+    ) ||
+    null;
+
+  const goal =
+    d?.sceneGoal?.trim() ||
+    scene?.summary ||
+    input.script.public_summary?.player_hook ||
+    "";
+  const tension = d?.tension?.trim() || "medium";
+  const notes = d?.notes?.trim() || "";
+  const hooks = input.character?.backstory_hooks
+    ? Object.entries(input.character.backstory_hooks)
+        .filter(([, v]) => v.trim())
+        .map(([k, v]) => `${k}:${v}`)
+        .slice(0, 4)
+        .join(" | ")
+    : "";
+
+  if (!goal && !scene && !notes) return null;
+
+  return `[SCENE DIRECTOR — NEAR CONTEXT, OBEY]
+- Current scene: ${scene ? `[${scene.id}] ${scene.name}` : d?.currentSceneId || "（未標）"}
+- Location SSOT: ${input.location}
+- Scene goal / pressure: ${goal || "（推進調查或當下威脅；失敗須改變場面）"}
+- Tension: ${tension}
+${notes ? `- Director notes: ${notes}\n` : ""}- NEVER speak/decide for the PC. Pause for player agency.
+- Check economy: no SAN loss for social/info failures; avoid isomorphic re-rolls; prefer NPC/document beats.
+${hooks ? `- Hook callbacks available: ${hooks}` : ""}`;
 }
 
 export function buildSootBlock(input: ContextAssemblyInput): string {
@@ -193,6 +180,7 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
 - Active House Rules: [${houseRulesSummary(input.houseRules)}]
 - Active Inventory: [${inventory}]
 - Active Quests/Clues: [${clues}]
+- Known NPCs: [${input.npcs.map((n) => n.name).join(", ") || "無"}]
 - Madness: ${madness}
 --------------------------------------------------
 [User Action]: ${input.playerAction}`;
@@ -208,7 +196,6 @@ Scenario scale: ${normalizeScenarioScale(input.script.scenario_scale)}
 Public Title: ${input.script.public_summary?.title ?? "（討論中）"}
 Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
 
-  // Session 0 尚未定稿時，提醒 AI 依規模填 setup_script
   if (!input.script.public_summary) {
     layers.push(
       scenarioScaleRequirements(
@@ -233,6 +220,14 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
     );
   }
 
+  if (input.script.tone_examples?.length) {
+    layers.push(
+      `[TONE EXAMPLES — STYLE ONLY, NOT CANON HISTORY]\n${input.script.tone_examples
+        .map((ex, i) => `(${i + 1}) ${ex}`)
+        .join("\n")}`,
+    );
+  }
+
   if (input.script.hidden_full_script && !input.script.revealed) {
     const hidden = input.script.hidden_full_script;
     const hasBible =
@@ -241,7 +236,14 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
       (hidden.timeline?.length ?? 0) > 0;
     layers.push(
       hasBible
-        ? `[SCENARIO BIBLE — GM ONLY, NEVER REVEAL DIRECTLY]\n${formatScenarioBible(hidden)}`
+        ? `[SCENARIO BIBLE — GM ONLY, NEVER REVEAL DIRECTLY]\n${formatScenarioBibleOnDemand(
+            hidden,
+            {
+              location: input.location,
+              playerAction: input.playerAction,
+              currentSceneId: input.sceneDirector?.currentSceneId,
+            },
+          )}`
         : `[HIDDEN TRUTH — GM ONLY, NEVER REVEAL DIRECTLY]
 ${hidden.truth_and_secrets}
 Key clues: ${hidden.key_clues.join(" | ")}
@@ -275,6 +277,8 @@ ${hr}`);
 
   const windowMsgs = input.recentMessages
     .filter((m) => m.role === "user" || m.role === "agent")
+    .filter((m) => !looksLikeLeakedToolCall(m.content))
+    .filter((m) => !isNoiseHistoryNarrative(m.content))
     .slice(-SLIDING_WINDOW * 2);
   if (windowMsgs.length) {
     layers.push(
@@ -283,6 +287,9 @@ ${hr}`);
         .join("\n")}`,
     );
   }
+
+  const director = buildSceneDirectorBlock(input);
+  if (director) layers.push(director);
 
   layers.push(buildSootBlock(input));
 
@@ -306,13 +313,30 @@ Do NOT provide「你可以：」、行動選項清單、或多重選擇式下一
 
 export function maybeCompressChapters(
   turn: number,
-  historyNarratives: { turn: number; text: string }[],
+  historyEntries: HistoryLog[] | { turn: number; text: string }[],
   existing: ChapterSummary[],
 ): ChapterSummary[] {
   if (turn === 0 || turn % SUMMARIZE_EVERY !== 0) return existing;
   const fromTurn = turn - SUMMARIZE_EVERY + 1;
-  const slice = historyNarratives.filter(
-    (h) => h.turn >= fromTurn && h.turn <= turn,
+
+  // 新路徑：完整 HistoryLog
+  if (
+    historyEntries.length &&
+    "aiNarrative" in (historyEntries[0] as HistoryLog)
+  ) {
+    const logs = historyEntries as HistoryLog[];
+    const slice = logs.filter((h) => h.turn >= fromTurn && h.turn <= turn);
+    if (!slice.length) return existing;
+    const summary = buildStructuredChapterSummary(fromTurn, turn, slice);
+    return [...existing, summary];
+  }
+
+  // 舊相容：僅 narrative 字串
+  const slice = (historyEntries as { turn: number; text: string }[]).filter(
+    (h) =>
+      h.turn >= fromTurn &&
+      h.turn <= turn &&
+      !isNoiseHistoryNarrative(h.text),
   );
   if (!slice.length) return existing;
   const summary = slice

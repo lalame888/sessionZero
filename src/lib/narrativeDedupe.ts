@@ -1,9 +1,34 @@
-/** 正規化後比對用：忽略空白、引號與常見標點 */
+/** 正規化後比對用：忽略空白、引號、常見標點與 UTF-8 損壞替代字元 */
 function normNarrative(text: string) {
   return text
+    .replace(/\uFFFD+/g, "")
     .replace(/\s+/g, "")
     .replace(/[「」『』""'']/g, "")
     .replace(/[，。！？、；：…—·,.!?;:]/g, "");
+}
+
+/**
+ * 是否為「損壞／截斷」的敘事碎片（常見於 tool 已寫完整敘事後，
+ * chat 串流又吐出後半段，開頭多個 �）。
+ */
+export function isCorruptedNarrativeFragment(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (t.includes("\uFFFD")) return true;
+  // 模型把內部狀態寫進對話
+  if (/停用工具調用|等待後台任務|wait for the game system|waiting for .*dice/i.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+/** 較短字串是否為較長字串的片段（忽略 � 與空白） */
+function isNormalizedFragmentOf(shorter: string, longer: string): boolean {
+  const a = normNarrative(shorter);
+  const b = normNarrative(longer);
+  if (a.length < 40 || b.length < 60) return false;
+  if (a.length >= b.length * 0.95) return false;
+  return b.includes(a);
 }
 
 /** 1 - 正規化 Levenshtein / maxLen；短字串可接受 */
@@ -47,6 +72,14 @@ export function isNarrativeRewrite(previous: string, next: string): boolean {
   const prev = previous.trim();
   const curr = next.trim();
   if (prev.length < 60 || curr.length < 60) return false;
+
+  // 截斷碎片：較短者為較長者子字串（含 � 開頭的後半段重複）
+  if (
+    isNormalizedFragmentOf(prev, curr) ||
+    isNormalizedFragmentOf(curr, prev)
+  ) {
+    return true;
+  }
 
   const a = normNarrative(prev);
   const b = normNarrative(curr);

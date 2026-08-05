@@ -17,6 +17,40 @@ import { cn } from "@/lib/utils";
 
 type CreateNoteSeed = { title: string; content: string };
 
+function PlayTitleCard() {
+  const summary = useGameStore((s) => s.script.public_summary);
+  const character = useGameStore((s) => s.character);
+  if (!summary) {
+    return (
+      <p className="story-text text-sm text-muted">
+        冒險即將開始。請 GM 述說開場。
+      </p>
+    );
+  }
+  return (
+    <div className="mx-auto max-w-lg space-y-3 text-center">
+      <p className="text-[10px] uppercase tracking-[0.2em] text-muted">
+        Session Zero · 開場扉頁
+      </p>
+      <h2 className="font-display text-2xl text-ink">{summary.title}</h2>
+      <p className="text-sm text-muted">{summary.genre}</p>
+      {summary.player_hook ? (
+        <p className="story-text text-left text-sm leading-relaxed text-ink/90">
+          {summary.player_hook}
+        </p>
+      ) : null}
+      <p className="text-xs text-muted">
+        {character
+          ? `${character.name} · ${character.role_title}`
+          : summary.protagonist_role}
+      </p>
+      {summary.geography ? (
+        <p className="text-[11px] text-muted">舞台：{summary.geography}</p>
+      ) : null}
+    </div>
+  );
+}
+
 export function PlayPage({
   composerDisabled,
   onRegenerate,
@@ -146,8 +180,8 @@ export function PlayPage({
               <span className="min-w-0 flex-1">
                 {openingBusy && !openingFailure
                   ? isOpeningRetry
-                    ? "正在重新述說開場…請稍候。"
-                    : "冒險開始中…請稍候 GM 述說開場。"
+                    ? "場景重啟中——GM 正重新述說開場…"
+                    : "夜幕將至——GM 正在為你述說開場…"
                   : openingFailure
                     ? `開場中斷（${openingFailure.code}）。可請 GM 重新述說開場。`
                     : isOpeningRetry
@@ -182,7 +216,23 @@ export function PlayPage({
           <RuleLookupToast />
         </div>
         <div className="min-h-0 flex-1 overflow-hidden">
-          <StoryLog onAddSelectionToNote={openCreateNote} />
+          {phase === "PLAYING" &&
+          !messages.some((m) => m.role === "agent") ? (
+            <div className="flex h-full flex-col gap-3 overflow-y-auto px-2 py-4">
+              <PlayTitleCard />
+              {messages.length ? (
+                <StoryLog
+                  onAddSelectionToNote={openCreateNote}
+                  narrativeControls={false}
+                />
+              ) : null}
+            </div>
+          ) : (
+            <StoryLog
+              onAddSelectionToNote={openCreateNote}
+              narrativeControls={phase === "PLAYING"}
+            />
+          )}
         </div>
         <div className="shrink-0">
           <Composer disabled={composerDisabled} onRegenerate={onRegenerate} />

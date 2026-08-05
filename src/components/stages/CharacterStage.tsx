@@ -16,6 +16,7 @@ import {
   listCocSkillCatalog,
   enrichCharacterSheetMeta,
   resolveSkillDescription,
+  clampSkillsToSystemBases,
 } from "@/engine/creation";
 import type { RecommendedSkill } from "@/types/game";
 import { migrateCharacterSheet } from "@/engine/formulas";
@@ -720,6 +721,42 @@ export function CharacterStage() {
   const showSkillAlloc = Boolean(
     schema && attrsReady && (mode === "SKILL_ALLOC" || isCoc),
   );
+
+  const creationWarnings = useMemo(() => {
+    if (!character) return [] as string[];
+    const warns: string[] = [];
+    if (isCoc) {
+      const edu = character.attributes.EDU ?? 0;
+      const role = `${character.role_title} ${character.profile_coc?.occupation ?? ""}`;
+      if (
+        edu > 0 &&
+        edu < 50 &&
+        /調查|學者|教授|研究員|圖書館|神秘|人類學|歷史/.test(role)
+      ) {
+        warns.push(
+          `教育（EDU ${edu}）偏低，與「${character.role_title || "調查員／學者"}」敘事不太相符；建議提高 EDU 或調整職稱。`,
+        );
+      }
+      if (showSkillAlloc && occBudget > 0 && occUsed < occBudget * 0.5) {
+        warns.push(
+          `職業技能點尚餘 ${occBudget - occUsed}（預算 ${occBudget}），建議多配置職業技能。`,
+        );
+      }
+      for (const [name, val] of Object.entries(character.skills)) {
+        const base = resolveSkillBaseValue(character.system_id, name, undefined);
+        if (val < base) {
+          warns.push(
+            `「${name}」目前 ${val}% 低於系統基礎 ${base}%（確認時會自動抬升）。`,
+          );
+        }
+      }
+    }
+    return warns;
+  }, [character, isCoc, showSkillAlloc, occBudget, occUsed]);
+
+  const adventureCta = script.public_summary?.title
+    ? `踏上「${script.public_summary.title}」`
+    : "確認角色，開始冒險";
 
   return (
     <div className="space-y-4 overflow-y-auto p-1 text-sm">
@@ -1614,8 +1651,34 @@ export function CharacterStage() {
         </section>
       </div>
 
-      <Button disabled={!canConfirm} onClick={() => confirmCharacterAndPlay()}>
-        確認角色，開始冒險
+      {creationWarnings.length ? (
+        <div className="space-y-1 rounded-md border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-ink">
+          <div className="font-medium text-accent-2">創角提醒（仍可開始）</div>
+          {creationWarnings.map((w) => (
+            <p key={w} className="text-muted">
+              {w}
+            </p>
+          ))}
+        </div>
+      ) : null}
+
+      <p className="text-[11px] text-muted">
+        鉤子會成為冒險中的情緒錨點——GM 會在關鍵時刻回扣它們。填完後，準備踏入劇本舞台。
+      </p>
+
+      <Button
+        disabled={!canConfirm}
+        onClick={() => {
+          if (character) {
+            updateCharacterField((s) => ({
+              ...s,
+              skills: clampSkillsToSystemBases(s.system_id, s.skills),
+            }));
+          }
+          confirmCharacterAndPlay();
+        }}
+      >
+        {adventureCta}
       </Button>
       {!canConfirm ? (
         <p className="text-xs text-muted">

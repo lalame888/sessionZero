@@ -208,6 +208,16 @@ export interface ScriptState {
   revealed: boolean;
   /** 玩家選擇的劇本規模；舊存檔可能缺此欄 */
   scenario_scale?: ScenarioScale | null;
+  /** GM 敘事定調範例（2–4 則；非史實） */
+  tone_examples?: string[];
+}
+
+/** 近端導演狀態：本場景目標／緊張度（由 narrate_story 可選更新） */
+export interface SceneDirectorState {
+  currentSceneId: string | null;
+  sceneGoal: string;
+  tension: "low" | "medium" | "high" | "climax" | string;
+  notes: string;
 }
 
 export interface ChapterSummary {

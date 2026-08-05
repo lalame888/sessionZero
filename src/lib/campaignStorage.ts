@@ -12,6 +12,7 @@ import type {
   NPCItem,
   PlayerNote,
   ScenarioScale,
+  SceneDirectorState,
   ScriptState,
   ThemeId,
   UniversalCharacterSheet,
@@ -37,6 +38,8 @@ export interface CampaignPersist {
   phase: GamePhase;
   theme: ThemeId;
   location: string;
+  /** 近端導演狀態；舊存檔可能缺 */
+  sceneDirector?: SceneDirectorState;
   script: ScriptState;
   houseRules: HouseRuleConfig;
   character: UniversalCharacterSheet | null;
@@ -258,6 +261,12 @@ export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPe
     phase: "SESSION_0",
     theme: "neutral",
     location: "未知之地",
+    sceneDirector: {
+      currentSceneId: null,
+      sceneGoal: "",
+      tension: "medium",
+      notes: "",
+    },
     script: {
       system_id: null,
       public_summary: null,

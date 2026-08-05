@@ -113,6 +113,12 @@ export const setupScriptTool = defineTool({
         type: "string",
         description: "DICE | ARRAY | POINT_BUY | SKILL_ALLOC",
       },
+      tone_examples: {
+        type: "array",
+        description:
+          "2–4 則繁中 GM 敘事定調範例（文風／感官密度；禁止劇透 hidden 結局）",
+        items: { type: "string" },
+      },
     },
     required: [
       "system_id",
@@ -377,13 +383,49 @@ export const fillCharacterNarrativeTool = defineTool({
 export const narrateStoryTool = defineTool({
   name: "narrate_story",
   description:
-    "輸出主線劇情（可用 Markdown），並可選擇發起玩家可見的擲骰檢定請求。When check_request is present, wait for the tool result containing the dice outcome before continuing. After a dice outcome is returned, the NEXT narrate_story must ONLY narrate the check result and immediate consequences — never repeat or rewrite previously narrated scene text. narrative_text 必須為繁體中文。",
+    "輸出主線劇情（可用 Markdown），並可選擇發起玩家可見的擲骰檢定請求。When check_request is present, wait for the tool result containing the dice outcome before continuing. After a dice outcome is returned, the NEXT narrate_story must ONLY narrate the check result and immediate consequences — never repeat or rewrite previously narrated scene text. Prefer setting location / scene_id / npc_updates when the scene or cast changes. narrative_text 必須為繁體中文。",
   timeoutMs: 180_000,
   argsSchema: {
     type: "object",
     properties: {
       system_notice: { type: "string" },
       narrative_text: { type: "string" },
+      location: {
+        type: "string",
+        description:
+          "當前地點短名（繁中）。進入新場景時必填，寫入 SSOT 側欄。",
+      },
+      scene_id: {
+        type: "string",
+        description: "對應 bible scenes[].id（若可知）",
+      },
+      scene_goal: {
+        type: "string",
+        description: "本場景玩家可感知的目標／壓力（一句，繁中）",
+      },
+      tension: {
+        type: "string",
+        description: "low | medium | high | climax",
+      },
+      director_notes: {
+        type: "string",
+        description: "給下一回合的導演備註（勿劇透 hidden truth）",
+      },
+      npc_updates: {
+        type: "array",
+        description: "首次會面或狀態變化的 NPC，寫入側欄",
+        items: {
+          type: "object",
+          properties: {
+            npc_id: { type: "string" },
+            name: { type: "string" },
+            relation: { type: "string" },
+            status: { type: "string" },
+            description: { type: "string" },
+          },
+          required: ["npc_id", "name", "relation", "status", "description"],
+        },
+      },
       check_request: {
         type: "object",
         properties: {

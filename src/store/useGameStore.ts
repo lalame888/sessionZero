@@ -15,6 +15,8 @@ import {
   defaultModeConfig,
   defaultPointBuy,
   enrichCharacterSheetMeta,
+  filterKeyClueInventoryItems,
+  clampSkillsToSystemBases,
   normalizeBackgroundQuestions,
   normalizeCreationMode,
   resolveSkillBaseValue,
@@ -25,6 +27,7 @@ import {
   createEmptyCampaignPersist,
   type CampaignPersist,
 } from "@/lib/campaignStorage";
+import { isBlockedSocialSanLoss } from "@/lib/historyHygiene";
 import { areDuplicateNarratives } from "@/lib/narrativeDedupe";
 import type {
   ChapterSummary,
@@ -44,6 +47,7 @@ import type {
   RetryAction,
   RuleLookupResult,
   ScenarioScale,
+  SceneDirectorState,
   ScriptState,
   SessionErrorInfo,
   ThemeId,
@@ -89,6 +93,7 @@ interface GameStore {
   phase: GamePhase;
   theme: ThemeId;
   location: string;
+  sceneDirector: SceneDirectorState;
   preflight: PreflightState;
   sessionStatus: PedelecSessionStatus | "disconnected";
   sessionError: SessionErrorInfo | null;
@@ -140,10 +145,14 @@ interface GameStore {
   setIsTyping: (v: boolean) => void;
   setPhase: (p: GamePhase) => void;
   setLocation: (v: string) => void;
-
+  setSceneDirector: (patch: Partial<SceneDirectorState>) => void;
   appendMessage: (msg: Omit<ChatMessage, "id" | "timestamp"> & { id?: string }) => string;
   updateMessage: (id: string, content: string) => void;
   appendSystem: (content: string) => void;
+  /** 替換最近一則真正的 GM 敘事（重抽用） */
+  replaceLastNarrative: (narrative: string) => void;
+  /** 移除最近一則 agent 敘事訊息（重抽前） */
+  removeLastAgentMessage: () => void;
 
   setupScript: (args: {
     system_id: string;
@@ -151,6 +160,7 @@ interface GameStore {
     hidden_full_script: ScriptState["hidden_full_script"];
     recommended_creation_mode: string;
     scenario_scale?: string | null;
+    tone_examples?: string[] | null;
   }) => void;
   setHouseRules: (rules: HouseRuleConfig) => void;
   setScenarioScale: (scale: ScenarioScale) => void;
@@ -234,6 +244,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
   phase: "PREFLIGHT",
   theme: "neutral",
   location: "未知之地",
+  sceneDirector: {
+    currentSceneId: null,
+    sceneGoal: "",
+    tension: "medium",
+    notes: "",
+  },
   preflight: { ready: false, reason: "CHECKING" },
   sessionStatus: "disconnected",
   sessionError: null,
@@ -278,6 +294,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setIsTyping: (v) => set({ isTyping: v }),
   setPhase: (p) => set({ phase: p }),
   setLocation: (v) => set({ location: v }),
+  setSceneDirector: (patch) =>
+    set((s) => ({
+      sceneDirector: { ...s.sceneDirector, ...patch },
+    })),
   setLastPlayerAction: (action) => set({ lastPlayerAction: action }),
 
   appendMessage: (msg) => {
@@ -301,6 +321,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   setupScript: (args) => {
+    const phase = get().phase;
+    // 冒險／創角／結局中禁止重設劇本與角色卡（GM 誤再呼叫 setup_script 時曾清空角色）
+    if (
+      phase === "PLAYING" ||
+      phase === "ENDING" ||
+      phase === "CHARACTER"
+    ) {
+      get().appendSystem(
+        `（忽略）目前為${phase === "CHARACTER" ? "創角" : phase === "ENDING" ? "結局" : "冒險"}階段，不可重設劇本／角色卡。請繼續遊玩或開新 Session。`,
+      );
+      return;
+    }
+
     const system_id = args.system_id as GameSystemID;
     const presets =
       system_id === "DND_5E" ? DND_HOUSE_PRESETS : COC_HOUSE_PRESETS;
@@ -318,6 +351,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         recommended_creation_mode: args.recommended_creation_mode,
         revealed: false,
         scenario_scale,
+        tone_examples: args.tone_examples?.filter((t) => t.trim()).slice(0, 4),
       },
       theme: themeForSystem(system_id),
       houseRules: {
@@ -327,6 +361,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
       character: createBlankCharacter(
         system_id === "DND_5E" ? "DND_5E" : "COC_7E",
       ),
+      sceneDirector: {
+        currentSceneId: null,
+        sceneGoal: args.public_summary?.player_hook ?? "",
+        tension: "medium",
+        notes: "",
+      },
     });
     const depthNote =
       scenario_scale === "seed"
@@ -433,6 +473,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
         ? prev.backstory_hooks
         : {};
 
+    const keyClues = get().script.hidden_full_script?.key_clues;
+    const rawInv = normalized.starting_inventory?.length
+      ? [...normalized.starting_inventory]
+      : [];
+    const { kept: inventory, removed: strippedKeys } =
+      filterKeyClueInventoryItems(rawInv, keyClues);
+
     const sheet = recomputeDerived({
       ...shell,
       id: prev?.id ?? shell.id,
@@ -440,18 +487,23 @@ export const useGameStore = create<GameStore>((set, get) => ({
       role_title:
         prev?.role_title || normalized.role_title_suggestion || "",
       attributes: { ...shell.attributes, ...attrs },
-      skills,
-      inventory:
-        normalized.starting_inventory?.length
-          ? [...normalized.starting_inventory]
-          : [],
+      skills: clampSkillsToSystemBases(systemId, skills),
+      inventory,
       backstory_hooks: prevHooks,
     });
 
-    set({ characterSchema: normalized, character: sheet });
+    set({
+      characterSchema: { ...normalized, starting_inventory: inventory },
+      character: sheet,
+    });
     get().appendSystem(
       `創角規則已就緒（${mode}）。請完成「數值」與「劇情鉤子」雙軌；屬性不可任意手填。`,
     );
+    if (strippedKeys.length) {
+      get().appendSystem(
+        `已自起始背包移除關鍵物證（應於冒險中發現）：${strippedKeys.join("、")}`,
+      );
+    }
   },
 
   setCharacter: (sheet) =>
@@ -543,9 +595,20 @@ export const useGameStore = create<GameStore>((set, get) => ({
         ...current.backstory_hooks,
         ...hooksFromAi,
       },
-      inventory: payload.inventory?.length
-        ? payload.inventory.map((x) => x.trim()).filter(Boolean)
-        : current.inventory,
+      inventory: (() => {
+        if (!payload.inventory?.length) return current.inventory;
+        const raw = payload.inventory.map((x) => x.trim()).filter(Boolean);
+        const { kept, removed } = filterKeyClueInventoryItems(
+          raw,
+          get().script.hidden_full_script?.key_clues,
+        );
+        if (removed.length) {
+          get().appendSystem(
+            `已自 AI 填入背包移除關鍵物證：${removed.join("、")}`,
+          );
+        }
+        return kept;
+      })(),
     });
 
     const missing: string[] = [];
@@ -599,24 +662,44 @@ export const useGameStore = create<GameStore>((set, get) => ({
   applyStatChanges: (changes, inventory_add = [], inventory_remove = []) => {
     const sheet = get().character;
     if (!sheet) return;
+    const blocked: string[] = [];
+    const allowed = changes.filter((ch) => {
+      if (ch.change_amount < 0 && isBlockedSocialSanLoss(ch.key, ch.reason)) {
+        blocked.push(`${ch.key}${ch.change_amount}（${ch.reason}）`);
+        return false;
+      }
+      return true;
+    });
+    if (blocked.length) {
+      get().appendSystem(
+        `已攔截不當 SAN 損失（社交／資訊檢定失敗不可扣理智）：${blocked.join("；")}`,
+      );
+    }
+    if (!allowed.length && !inventory_add.length && !inventory_remove.length) {
+      return;
+    }
     const next = structuredClone(sheet);
-    for (const ch of changes) {
-      const key = ch.key.toUpperCase();
-      if (key === "HP") {
-        next.derived.hp.current = Math.max(
-          0,
-          Math.min(next.derived.hp.max, next.derived.hp.current + ch.change_amount),
+    for (const ch of allowed) {
+      const key = ch.key;
+      if (key === "HP" || key === "hp") {
+        next.derived.hp.current = Math.min(
+          next.derived.hp.max,
+          Math.max(0, next.derived.hp.current + ch.change_amount),
         );
-      } else if (key === "SAN" && next.derived.san) {
-        next.derived.san.current = Math.max(
-          0,
-          Math.min(next.derived.san.max, next.derived.san.current + ch.change_amount),
+      } else if (
+        (key === "SAN" || key === "san" || key === "理智") &&
+        next.derived.san
+      ) {
+        next.derived.san.current = Math.min(
+          next.derived.san.max,
+          Math.max(0, next.derived.san.current + ch.change_amount),
         );
-      } else if ((key === "MP" || key === "SPELLSLOTS") && next.derived.mp_or_slots) {
-        next.derived.mp_or_slots.current = Math.max(
-          0,
-          Math.min(
-            next.derived.mp_or_slots.max,
+      } else if (key === "MP" || key === "mp") {
+        if (!next.derived.mp_or_slots) continue;
+        next.derived.mp_or_slots.current = Math.min(
+          next.derived.mp_or_slots.max,
+          Math.max(
+            0,
             next.derived.mp_or_slots.current + ch.change_amount,
           ),
         );
@@ -634,10 +717,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
       if (idx >= 0) inv.splice(idx, 1);
     }
     next.inventory = inv;
+    next.skills = clampSkillsToSystemBases(next.system_id, next.skills);
     set({ character: recomputeDerived(next) });
-    get().appendSystem(
-      `狀態更新：${changes.map((c) => `${c.key}${c.change_amount >= 0 ? "+" : ""}${c.change_amount}（${c.reason}）`).join("；")}`,
-    );
+    if (allowed.length) {
+      get().appendSystem(
+        `狀態更新：${allowed.map((c) => `${c.key}${c.change_amount >= 0 ? "+" : ""}${c.change_amount}（${c.reason}）`).join("；")}`,
+      );
+    }
   },
 
   markSkillSuccess: (skill_name) => {
@@ -806,8 +892,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
     get().appendSystem(
       mode === "first"
-        ? "冒險開始中…請稍候 GM 述說開場。"
-        : "正在重新述說開場…",
+        ? "夜幕將至——GM 正在為你述說開場…"
+        : "場景重啟中——GM 正重新述說開場…",
     );
   },
 
@@ -822,20 +908,44 @@ export const useGameStore = create<GameStore>((set, get) => ({
       diceRecord: partial.diceRecord,
       snapshot: snapshotOf(state),
     };
-    const narratives = [
-      ...state.history.map((h) => ({ turn: h.turn, text: h.aiNarrative })),
-      { turn, text: partial.aiNarrative },
-    ];
+    const nextHistory = [...state.history, entry];
     const chapterSummaries = maybeCompressChapters(
       turn,
-      narratives,
+      nextHistory,
       state.chapterSummaries,
     );
     set({
       turn,
-      history: [...state.history, entry],
+      history: nextHistory,
       chapterSummaries,
     });
+  },
+
+  replaceLastNarrative: (narrative) => {
+    const history = get().history;
+    for (let i = history.length - 1; i >= 0; i--) {
+      const h = history[i];
+      if (!h) continue;
+      if (h.aiNarrative.startsWith("（檢定結果已回傳）")) continue;
+      if (h.aiNarrative.startsWith("（暗骰）")) continue;
+      const next = history.slice();
+      next[i] = { ...h, aiNarrative: narrative, timestamp: Date.now() };
+      set({ history: next });
+      return;
+    }
+  },
+
+  removeLastAgentMessage: () => {
+    const msgs = get().messages;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m) continue;
+      if (m.role === "user") break;
+      if (m.role === "agent") {
+        set({ messages: msgs.filter((x) => x.id !== m.id) });
+        return;
+      }
+    }
   },
 
   endGame: (ending) => {
@@ -897,6 +1007,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
         timelineIndex: null,
         lastPlayerAction: "",
         sessionError: null,
+        location:
+          get().script.public_summary?.geography?.split(/[，,、]/)[0]?.trim() ||
+          "冒險開始之處",
+        sceneDirector: {
+          currentSceneId:
+            get().script.hidden_full_script?.scenes?.[0]?.id ?? null,
+          sceneGoal: get().script.public_summary?.player_hook ?? "",
+          tension: "medium",
+          notes: "",
+        },
         retryAction: { kind: "opening", label: "述說開場敘事" },
       });
 
@@ -954,6 +1074,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       phase: persistPhase,
       theme: s.theme,
       location: s.location,
+      sceneDirector: s.sceneDirector,
       script: s.script,
       houseRules: s.houseRules,
       character: s.character,
@@ -989,6 +1110,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
       phase: data.phase === "PREFLIGHT" ? "SESSION_0" : data.phase,
       theme: data.theme,
       location: data.location,
+      sceneDirector: data.sceneDirector ?? {
+        currentSceneId: null,
+        sceneGoal: data.script.public_summary?.player_hook ?? "",
+        tension: "medium",
+        notes: "",
+      },
       script: data.script,
       houseRules: data.houseRules,
       character: data.character,

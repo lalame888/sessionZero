@@ -461,13 +461,60 @@ export function resolveSkillBaseValue(
   name: string,
   baseValue: number | undefined,
 ): number {
-  if (typeof baseValue === "number" && baseValue > 0) return baseValue;
   if (systemId !== "COC_7E") return Math.max(0, baseValue ?? 0);
   // 模糊匹配：技能名包含預設表 key（如「語言(古希臘語)」→「語言」）
+  let catalog = 5;
   for (const [key, val] of Object.entries(COC_SKILL_BASE_DEFAULTS)) {
-    if (name === key || name.startsWith(key)) return val;
+    if (name === key || name.startsWith(key)) {
+      catalog = val;
+      break;
+    }
   }
-  return 5;
+  // 不可低於系統基礎值（避免 AI 把心理學設成 5% 等）
+  if (typeof baseValue === "number" && baseValue >= 0) {
+    return Math.max(catalog, baseValue);
+  }
+  return catalog;
+}
+
+/** 確保角色卡技能％不低於系統基礎值 */
+export function clampSkillsToSystemBases(
+  systemId: GameSystemID,
+  skills: Record<string, number>,
+): Record<string, number> {
+  if (systemId !== "COC_7E") return skills;
+  const next = { ...skills };
+  for (const [name, value] of Object.entries(next)) {
+    const base = resolveSkillBaseValue(systemId, name, undefined);
+    if (typeof value === "number" && value < base) next[name] = base;
+  }
+  return next;
+}
+
+/** 起始背包不可含 bible 關鍵物證關鍵字 */
+export function filterKeyClueInventoryItems(
+  inventory: string[],
+  keyClues: string[] | undefined | null,
+): { kept: string[]; removed: string[] } {
+  if (!keyClues?.length) return { kept: [...inventory], removed: [] };
+  const clueHay = keyClues.join("\n");
+  const kept: string[] = [];
+  const removed: string[] = [];
+  for (const item of inventory) {
+    const token = item.trim();
+    if (!token) continue;
+    // 物品名出現在關鍵線索描述中 → 視為關鍵物證，禁止開局持有
+    const hit =
+      clueHay.includes(token) ||
+      keyClues.some(
+        (c) =>
+          c.includes(token) ||
+          (token.length >= 2 && c.replace(/\s/g, "").includes(token)),
+      );
+    if (hit) removed.push(token);
+    else kept.push(token);
+  }
+  return { kept, removed };
 }
 
 /** 創角可新增的 CoC 技能目錄（名稱＋基礎％） */
