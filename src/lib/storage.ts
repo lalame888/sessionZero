@@ -202,7 +202,8 @@ export function healStaleActiveCampaignBindings(): number {
 }
 
 /**
- * 結局：將本場數值寫回檔案庫並解除進行中綁定（不含履歷列，供 AI 隊友選寫回）。
+ * 結局：將本場數值寫回檔案庫並解除進行中綁定（不含履歷列）。
+ * AI 隊友若需含履歷，請改用 saveLibraryCharacterWithAdventure。
  */
 export function writeBackLibraryCharacterSheet(sheet: UniversalCharacterSheet) {
   const existing = getLibraryCharacter(sheet.id);

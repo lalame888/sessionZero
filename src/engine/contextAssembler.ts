@@ -11,6 +11,8 @@ import type {
   UniversalCharacterSheet,
 } from "@/types/game";
 import type { PartyMember } from "@/types/party";
+import { buildCompanionMentionDirective } from "@/engine/companionTrigger";
+import { formatPartyRosterForGm } from "@/engine/partyNarrativeBrief";
 import { buildStructuredChapterSummary } from "@/engine/chapterSummary";
 import { formatScenarioBibleOnDemand } from "@/engine/scenarioLorebook";
 import { lookupSrdEntries } from "@/engine/srdLorebook";
@@ -170,12 +172,19 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
               m.controller === "player" || m.id === input.playerMemberId
                 ? "PLAYER"
                 : "AI";
-            return `${tag}:${m.sheet.name || "未命名"}(id=${m.id})`;
+            const role =
+              m.sheet.role_title?.trim() || m.roleHint?.trim() || "";
+            return `${tag}:${m.sheet.name || "未命名"}${role ? `(${role})` : ""}(id=${m.id})`;
           })
           .join("; ")
       : c
         ? `PLAYER:${c.name}(id=${c.id})`
         : "無";
+
+  const partyRoster =
+    input.party && input.party.length > 1
+      ? `\n${formatPartyRosterForGm(input.party, input.playerMemberId)}`
+      : "";
 
   const attributes = c?.attributes
     ? Object.entries(c.attributes)
@@ -191,7 +200,7 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
   return `[CURRENT SSOT GAME STATE - DO NOT OVERRIDE]
 - Game System: ${input.script.system_id ?? "UNSET"} | Location: ${input.location}
 - Player: ${c ? `${c.name} (${c.role_title}) id=${c.id}` : "尚未創角"} | HP: ${hp} | SAN: ${san} | AC: ${ac} | MP/Slots: ${slots}
-- Party (use request_companion_action with companion_id; checks/stats may pass character_id): [${partyLine}]
+- Party size: ${input.party?.length ?? (c ? 1 : 0)} | Quick ids: [${partyLine}]
 - Identity (narrate with these; do NOT invent contradicting sheet facts): [${identity}]
 - Attributes: [${attributes}]
 - Skills (prefer these exact names for check_target_name; if none fit, MUST supply target_value): [${skills}]
@@ -200,7 +209,7 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
 - Active Inventory: [${inventory}]
 - Active Quests/Clues: [${clues}]
 - Known NPCs: [${input.npcs.map((n) => n.name).join(", ") || "無"}]
-- Madness: ${madness}
+- Madness: ${madness}${partyRoster}
 --------------------------------------------------
 [User Action]: ${input.playerAction}`;
 }
@@ -312,6 +321,13 @@ ${hr}`);
 
   layers.push(buildSootBlock(input));
 
+  const companionTrigger = buildCompanionMentionDirective(
+    input.playerAction,
+    input.party ?? [],
+    input.playerMemberId,
+  );
+  if (companionTrigger) layers.push(companionTrigger);
+
   const suggest = input.suggestPlayerActions !== false;
   layers.push(
     suggest
@@ -324,7 +340,8 @@ After this turn's narration (and tools), end with a Traditional Chinese block:
 - （共 2–4 項，貼近當下場景；勿替玩家做決定）`
       : `[PLAYER UX PREFS — MANDATORY]
 Suggest player actions: OFF
-Do NOT provide「你可以：」、行動選項清單、或多重選擇式下一步建議。只敘事並等待玩家自由輸入。`,
+Do NOT provide「你可以：」、行動選項清單、或多重選擇式下一步建議。
+Do NOT write fourth-wall UI prompts (e.g.「請輸入您的下一步行動」「請於輸入框輸入」). End in-fiction only; wait silently for player input.`,
   );
 
   return layers.join("\n\n");

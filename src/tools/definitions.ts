@@ -402,7 +402,7 @@ export const fillCharacterNarrativeTool = defineTool({
 export const narrateStoryTool = defineTool({
   name: "narrate_story",
   description:
-    "輸出主線劇情（可用 Markdown），並可選擇發起玩家可見的擲骰檢定請求。When check_request is present, wait for the tool result containing the dice outcome before continuing. After a dice outcome is returned, the NEXT narrate_story must ONLY narrate the check result and immediate consequences — never repeat or rewrite previously narrated scene text. Prefer setting location / scene_id / npc_updates when the scene or cast changes. narrative_text 必須為繁體中文。",
+    "輸出主線劇情（可用 Markdown），並可選擇發起玩家可見的擲骰檢定請求。Never narrate/decide PC actions, speech, or thoughts — especially on the opening beat; end with the situation waiting for the player. Never write UI prompts like「請輸入您的下一步行動」. When check_request is present, wait for the tool result containing the dice outcome before continuing. After a dice outcome is returned, the NEXT narrate_story must ONLY narrate the check result and immediate consequences — never repeat or rewrite previously narrated scene text. Prefer setting location / scene_id / npc_updates when the scene or cast changes. Do not attach check_request on the opening beat unless the player already declared an action. narrative_text 必須為繁體中文。",
   timeoutMs: 180_000,
   argsSchema: {
     type: "object",
@@ -452,7 +452,7 @@ export const narrateStoryTool = defineTool({
           check_target_name: {
             type: "string",
             description:
-              "技能／屬性繁中名稱。盡量選角色卡既有技能（與 SSOT Skills 完全同名，如 神秘學）。若角色卡有該技能，前端會用其數值當成功門檻。",
+              "技能／屬性繁中名稱。盡量選角色卡既有技能（與 SSOT Skills 完全同名，如 神秘學）。CoC 理智檢定用「理智」— 前端以當前 SAN 為門檻，非技能欄。若角色卡有該技能，前端會用其數值當成功門檻。",
           },
           dice_type: {
             type: "string",
@@ -461,7 +461,7 @@ export const narrateStoryTool = defineTool({
           target_value: {
             type: "number",
             description:
-              "成功門檻。角色卡有對應技能且為 CoC d100 時可省略（前端覆寫為技能％）。若角色卡沒有對應技能，則必須提供（CoC 為成功需 ≤ 的％；D&D 為 AC／DC）。禁止兩者皆缺。",
+              "成功門檻。角色卡有對應技能且為 CoC d100 時可省略（前端覆寫為技能％）。CoC 理智檢定（check_target_name=理智）可省略（前端覆寫為當前 SAN）。若角色卡沒有對應技能，則必須提供（CoC 為成功需 ≤ 的％；D&D 為 AC／DC）。禁止兩者皆缺。",
           },
           difficulty: {
             type: "string",
@@ -493,7 +493,7 @@ export const secretCheckRequestTool = defineTool({
       check_target_name: {
         type: "string",
         description:
-          "技能／屬性繁中名稱；盡量與 SSOT Skills 完全同名。",
+          "技能／屬性繁中名稱；盡量與 SSOT Skills 完全同名。CoC 理智檢定用「理智」（門檻＝當前 SAN）。",
       },
       dice_type: { type: "string" },
       target_value: {
@@ -502,6 +502,10 @@ export const secretCheckRequestTool = defineTool({
           "成功門檻。角色卡無對應技能時必填；有對應技能的 CoC d100 可省略。",
       },
       reason_for_gm: { type: "string" },
+      character_id: {
+        type: "string",
+        description: "暗骰對象角色 id；省略則為玩家 PC。隊友行動時必須帶其 id。",
+      },
     },
     required: [
       "request_id",
@@ -630,7 +634,7 @@ export const endGameSessionTool = defineTool({
 export const requestCompanionActionTool = defineTool({
   name: "request_companion_action",
   description:
-    "喚起一名 AI 隊友考慮是否行動。隊友可選擇行動或靜默不動作（不動作時玩家端無提示）。僅在場景需要其專長／分頭行動時呼叫；勿每位每回合必叫。",
+    "喚起一名 AI 隊友以桌邊玩家口吻宣告（或靜默 pass）。隊友可 pause（等人類插話）或 immediate（危機立刻結算）。勿每位每回合必叫。結算時必須對該隊友使用 character_id。",
   argsSchema: {
     type: "object",
     properties: {
@@ -645,6 +649,11 @@ export const requestCompanionActionTool = defineTool({
       situation: {
         type: "string",
         description: "給隊友 AI 的情境摘要（可選）",
+      },
+      prefer_immediate: {
+        type: "boolean",
+        description:
+          "危機中可設 true，提示隊友若出手需立刻檢定則用 handoff=immediate；最終仍由隊友決定",
       },
     },
     required: ["companion_id", "reason"],

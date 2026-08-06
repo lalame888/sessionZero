@@ -30,6 +30,14 @@ function sheetBrief(sheet: UniversalCharacterSheet): string {
   return bits.join("；") || "（僅有空白卡）";
 }
 
+function topSkillsLine(sheet: UniversalCharacterSheet, n = 4): string {
+  const top = Object.entries(sheet.skills)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([name, v]) => `${name}${v}%`);
+  return top.length ? top.join("、") : "（無）";
+}
+
 function isSlotConfigured(m: PartyMember | undefined): boolean {
   if (!m) return false;
   if (m.creationComplete) return true;
@@ -61,11 +69,12 @@ export function buildPartyNarrativeDesignContext(input: {
   ];
 
   const configured = party.filter(
-    (m) =>
-      m.slotIndex !== editingSlotIndex && isSlotConfigured(m),
+    (m) => m.slotIndex !== editingSlotIndex && isSlotConfigured(m),
   );
   if (configured.length) {
-    lines.push("已設定完成的隊友（請避免姓名／職能／背景高度重複，並與之互補）：");
+    lines.push(
+      "已設定完成的隊友（請避免姓名／職能／背景高度重複，並與之互補）：",
+    );
     for (const m of configured.sort((a, b) => a.slotIndex - b.slotIndex)) {
       const who = m.controller === "player" ? "玩家" : "AI";
       const hint = m.roleHint?.trim();
@@ -112,4 +121,74 @@ export function buildPartyNarrativeDesignContext(input: {
   );
 
   return lines.join("\n");
+}
+
+/** 遊玩／開場：給 GM 的隊伍名冊（含 AI 隊友 id，供 request_companion_action） */
+export function formatPartyRosterForGm(
+  party: PartyMember[],
+  playerMemberId?: string | null,
+): string {
+  if (!party.length) return "";
+  const sorted = [...party].sort((a, b) => a.slotIndex - b.slotIndex);
+  const lines = sorted.map((m) => {
+    const isPlayer =
+      m.controller === "player" || m.id === playerMemberId;
+    const tag = isPlayer ? "PLAYER" : "AI_COMPANION";
+    const s = m.sheet;
+    const look = s.appearance?.trim()
+      ? s.appearance.trim().length > 60
+        ? `${s.appearance.trim().slice(0, 60)}…`
+        : s.appearance.trim()
+      : "";
+    const bits = [
+      `${tag} 席次${m.slotIndex + 1}`,
+      `id=${m.id}`,
+      s.name?.trim() || "未命名",
+      s.role_title?.trim() || m.roleHint?.trim() || "—",
+      s.profile_coc?.occupation?.trim() ||
+        s.profile_dnd?.class_name?.trim() ||
+        "",
+      `HP ${s.derived.hp.current}/${s.derived.hp.max}`,
+      s.derived.san
+        ? `SAN ${s.derived.san.current}/${s.derived.san.max}`
+        : "",
+      `專長：${topSkillsLine(s)}`,
+      look ? `外貌：${look}` : "",
+    ].filter(Boolean);
+    return `- ${bits.join(" · ")}`;
+  });
+  const aiCount = sorted.filter(
+    (m) => m.controller === "ai" && m.id !== playerMemberId,
+  ).length;
+  return [
+    `[PARTY ROSTER — ${sorted.length} 人同行；其中 AI 隊友 ${aiCount} 名]`,
+    "開場與場景敘事必須讓這些人在場可見（點名／同行／分工）；需要某 AI 隊友行動時呼叫 request_companion_action(companion_id=其 id)。玩家點名／指示隊友時必須喚起，勿自行代寫隊友言行。隊友是完整 PC：以其宣告為準，勿用第三人稱當 NPC 重述；結算檢定必須帶 character_id。",
+    ...lines,
+  ].join("\n");
+}
+
+/** 開場專用附加指令（有 AI 隊友時強制介紹） */
+export function buildOpeningPartyDirective(
+  party: PartyMember[],
+  playerMemberId?: string | null,
+): string {
+  const companions = party.filter(
+    (m) =>
+      m.controller === "ai" &&
+      m.id !== playerMemberId &&
+      Boolean(m.sheet.name?.trim()),
+  );
+  if (companions.length === 0) return "";
+  const names = companions
+    .map(
+      (m) =>
+        `「${m.sheet.name}」（${m.sheet.role_title || m.roleHint || "隊友"}，id=${m.id}）`,
+    )
+    .join("、");
+  return [
+    `【隊伍開場・強制】本場共 ${party.length} 人：1 名玩家 PC + ${companions.length} 名 AI 隊友。`,
+    `開場 narrate_story 必須點名介紹所有同行者（至少姓名與職稱／定位），描述他們與玩家一同在場；隊友可有靜態姿態（坐下、整理裝備），但不可替玩家 PC 決定行動／對話／意圖。`,
+    `AI 隊友：${names}`,
+    "之後場景預設他們仍同行；需要其專長／分頭行動時用 request_companion_action。",
+  ].join("\n");
 }

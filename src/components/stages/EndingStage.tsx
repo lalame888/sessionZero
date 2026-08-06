@@ -15,9 +15,7 @@ import {
   clearPartyLibraryBindingsForCampaign,
   exportLibraryCharacterJson,
   getLibraryCharacter,
-  saveCharacterToLibrary,
   saveLibraryCharacterWithAdventure,
-  writeBackLibraryCharacterSheet,
 } from "@/lib/storage";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
@@ -159,7 +157,12 @@ export function EndingStage() {
   const endingCompanionsSavedIds = useGameStore(
     (s) => s.endingCompanionsSavedIds,
   );
-  const markCompanionsSaved = useGameStore((s) => s.markCompanionsSaved);
+  const endingCompanionsResolved = useGameStore(
+    (s) => s.endingCompanionsResolved,
+  );
+  const resolveEndingCompanions = useGameStore(
+    (s) => s.resolveEndingCompanions,
+  );
   const endingCharacterSettled = useGameStore((s) => s.endingCharacterSettled);
   const applyGrowthResult = useGameStore((s) => s.applyGrowthResult);
   const appendSystem = useGameStore((s) => s.appendSystem);
@@ -189,14 +192,101 @@ export function EndingStage() {
   );
   const [synopsisGenerating, setSynopsisGenerating] = useState(false);
   const [synopsisError, setSynopsisError] = useState<string | null>(null);
-  const [companionSavePick, setCompanionSavePick] = useState<
-    Record<string, boolean>
+  const [companionDecision, setCompanionDecision] = useState<
+    Record<string, "save" | "skip">
+  >({});
+  const [companionGrowthById, setCompanionGrowthById] = useState<
+    Record<string, string[]>
   >({});
 
   const aiCompanions = useMemo(
     () => party.filter((m) => m.controller === "ai"),
     [party],
   );
+
+  const decisionFor = (id: string): "save" | "skip" =>
+    companionDecision[id] ??
+    (endingCompanionsSavedIds.includes(id) ? "save" : "skip");
+
+  /** 對指定隊員執行 CoC 成長檢定（與玩家相同規則），回傳成長紀錄。 */
+  const runCocGrowthForMember = (memberId: string): string[] => {
+    const sheet = useGameStore.getState().getSheetById(memberId);
+    if (!sheet || sheet.system_id !== "COC_7E") {
+      return sheet?.system_id === "DND_5E"
+        ? [
+            `依回合估算經驗：約 ${useGameStore.getState().turn * 50} XP（簡易結算）。`,
+          ]
+        : [];
+    }
+    const pending = [...(sheet.markedSkillsForGrowth ?? [])];
+    if (!pending.length) {
+      return ["本局沒有可成長的標記技能。"];
+    }
+    const logs: string[] = [];
+    for (const skill of pending) {
+      const current =
+        useGameStore.getState().getSheetById(memberId)?.skills[skill] ?? 0;
+      const check = rollDice("1d100");
+      if (check.total > current) {
+        const gain = rollDice("1d10").total;
+        applyGrowthResult(skill, gain, memberId);
+        logs.push(`${skill}：成長檢定 ${check.total} > ${current} → +${gain}`);
+      } else {
+        logs.push(`${skill}：成長檢定 ${check.total} ≤ ${current} → 無成長`);
+        applyGrowthResult(skill, 0, memberId);
+      }
+    }
+    return logs;
+  };
+
+  const saveCompanionToLibrary = (
+    memberId: string,
+    growthLogs: string[],
+    statsBefore: ReturnType<typeof captureStatSnapshot>,
+    statsAfter: ReturnType<typeof captureStatSnapshot>,
+  ) => {
+    const sheetRaw = useGameStore.getState().getSheetById(memberId);
+    if (!sheetRaw?.name?.trim()) return false;
+    const sheet = enrichCharacterSheetMeta(sheetRaw, characterSchema);
+    const record = buildAdventureRecord({
+      campaignId,
+      scenarioTitle: script.public_summary?.title ?? "",
+      systemId: sheet.system_id,
+      ending,
+      growthLog: growthLogs,
+      clues,
+      statsBefore,
+      statsAfter,
+    });
+    saveLibraryCharacterWithAdventure(sheet, record);
+    return true;
+  };
+
+  /** 結算一位 AI 隊友：成長檢定 → 可選寫入檔案庫（含履歷） */
+  const settleCompanionMember = (
+    memberId: string,
+    saveToLibrary: boolean,
+  ): { name: string; growthLogs: string[]; saved: boolean } | null => {
+    const beforeSheet = useGameStore.getState().getSheetById(memberId);
+    if (!beforeSheet) return null;
+    const name = beforeSheet.name?.trim() || "未命名";
+    const madnessNow = useGameStore.getState().madness;
+    const statsBefore = captureStatSnapshot(beforeSheet, madnessNow);
+    const growthLogs = runCocGrowthForMember(memberId);
+    const afterSheet =
+      useGameStore.getState().getSheetById(memberId) ?? beforeSheet;
+    const statsAfter = captureStatSnapshot(afterSheet, madnessNow);
+    let saved = false;
+    if (saveToLibrary) {
+      saved = saveCompanionToLibrary(
+        memberId,
+        growthLogs,
+        statsBefore,
+        statsAfter,
+      );
+    }
+    return { name, growthLogs, saved };
+  };
 
   // 再進入結局頁：略過結算，直接上帝視角／回放
   useEffect(() => {
@@ -325,11 +415,11 @@ export function EndingStage() {
       const check = rollDice("1d100");
       if (check.total > current) {
         const gain = rollDice("1d10").total;
-        applyGrowthResult(skill, gain);
+        applyGrowthResult(skill, gain, sheet.id);
         logs.push(`${skill}：成長檢定 ${check.total} > ${current} → +${gain}`);
       } else {
         logs.push(`${skill}：成長檢定 ${check.total} ≤ ${current} → 無成長`);
-        applyGrowthResult(skill, 0);
+        applyGrowthResult(skill, 0, sheet.id);
       }
     }
     queueMicrotask(() => finishSettlement(logs));
@@ -625,106 +715,180 @@ export function EndingStage() {
 
       {settled && aiCompanions.length > 0 ? (
         <div className="space-y-3 rounded-lg border border-border p-4">
-          <h3 className="brand-title text-sm">AI 隊友與檔案庫</h3>
-          <p className="text-xs text-muted">
-            自庫帶入者：勾選可將本場數值寫回檔案庫（占用已於結算解除）。新建者：勾選可存入檔案庫供之後帶入。
-          </p>
-          <ul className="space-y-2">
-            {aiCompanions.map((m) => {
-              const already = endingCompanionsSavedIds.includes(m.id);
-              const fromLib = Boolean(m.fromLibrary);
-              const checked = companionSavePick[m.id] ?? already;
-              return (
-                <li
-                  key={m.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/60 bg-bg/30 px-3 py-2 text-xs"
-                >
-                  <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
-                    <input
-                      type="checkbox"
-                      disabled={already}
-                      checked={checked}
-                      onChange={(e) =>
-                        setCompanionSavePick((prev) => ({
-                          ...prev,
-                          [m.id]: e.target.checked,
-                        }))
-                      }
-                    />
-                    <span className="text-ink">
-                      {m.sheet.name || "（未命名）"}
-                      <span className="text-muted">
-                        {" "}
-                        · {m.sheet.role_title || m.roleHint || "—"}
-                        {fromLib ? " · 自庫帶入" : " · 本場新建"}
-                      </span>
-                    </span>
-                  </label>
-                  {already ? (
-                    <span className="text-accent-2">
-                      {fromLib ? "已寫回" : "已存入"}
-                    </span>
-                  ) : (
-                    <span className="text-muted">
-                      {fromLib ? "寫回檔案庫" : "存入檔案庫"}
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={
-              !aiCompanions.some(
-                (m) =>
-                  (companionSavePick[m.id] ?? false) &&
-                  !endingCompanionsSavedIds.includes(m.id),
-              )
-            }
-            onClick={() => {
-              const toSave = aiCompanions.filter(
-                (m) =>
-                  (companionSavePick[m.id] ?? false) &&
-                  !endingCompanionsSavedIds.includes(m.id),
-              );
-              if (!toSave.length) return;
-              const written: string[] = [];
-              const created: string[] = [];
-              for (const m of toSave) {
-                const enriched = enrichCharacterSheetMeta(
-                  m.sheet,
-                  characterSchema,
+          <h3 className="brand-title text-sm">AI 隊友結算與檔案庫</h3>
+          {endingCompanionsResolved ? (
+            <div className="space-y-2 text-xs text-muted">
+              <p>
+                {(() => {
+                  const saved = aiCompanions.filter((m) =>
+                    endingCompanionsSavedIds.includes(m.id),
+                  );
+                  const skipped = aiCompanions.length - saved.length;
+                  if (!saved.length) return "已全部略過檔案庫寫入。";
+                  const names = saved
+                    .map((m) => `「${m.sheet.name || "未命名"}」`)
+                    .join("、");
+                  return skipped > 0
+                    ? `已寫回／存入 ${names}（含成長與履歷）；其餘 ${skipped} 位略過寫入。`
+                    : `已寫回／存入 ${names}（含成長與履歷）。`;
+                })()}
+              </p>
+              {aiCompanions.map((m) => {
+                const logs = companionGrowthById[m.id];
+                if (!logs?.length) return null;
+                return (
+                  <div key={m.id} className="rounded-md bg-bg/30 px-2 py-1.5">
+                    <div className="text-ink">
+                      {m.sheet.name || "未命名"} · 成長紀錄
+                    </div>
+                    <ul className="mt-1 list-disc pl-4">
+                      {logs.map((l, i) => (
+                        <li key={`${m.id}-g-${i}`}>{l}</li>
+                      ))}
+                    </ul>
+                  </div>
                 );
-                if (m.fromLibrary) {
-                  writeBackLibraryCharacterSheet(enriched);
-                  written.push(m.sheet.name || "未命名");
-                } else {
-                  saveCharacterToLibrary(enriched);
-                  created.push(m.sheet.name || "未命名");
-                }
-              }
-              const ids = [
-                ...endingCompanionsSavedIds,
-                ...toSave.map((m) => m.id),
-              ];
-              markCompanionsSaved(ids);
-              const parts = [
-                written.length
-                  ? `已寫回 ${written.map((n) => `「${n}」`).join("、")}`
-                  : null,
-                created.length
-                  ? `已存入 ${created.map((n) => `「${n}」`).join("、")}`
-                  : null,
-              ].filter(Boolean);
-              setSavedNotice(parts.join("；") + "。");
-              appendSystem(`結局：AI 隊友 ${parts.join("；")}。`);
-            }}
-          >
-            <Archive className="h-3.5 w-3.5" />
-            套用勾選
-          </Button>
+              })}
+            </div>
+          ) : (
+            <>
+              <p className="text-xs text-muted">
+                AI 隊友比照玩家結算：確認時會先做成長檢定（CoC）／經驗摘要（D&amp;D），再依選擇寫入檔案庫（含本場履歷）或略過寫入。
+              </p>
+              <ul className="space-y-2">
+                {aiCompanions.map((m) => {
+                  const fromLib = Boolean(m.fromLibrary);
+                  const choice = decisionFor(m.id);
+                  const saveLabel = fromLib
+                    ? "寫回檔案庫（含履歷）"
+                    : "存入檔案庫（含履歷）";
+                  const pending = m.sheet.markedSkillsForGrowth ?? [];
+                  return (
+                    <li
+                      key={m.id}
+                      className="space-y-2 rounded-md border border-border/60 bg-bg/30 px-3 py-2 text-xs"
+                    >
+                      <div className="text-ink">
+                        {m.sheet.name || "（未命名）"}
+                        <span className="text-muted">
+                          {" "}
+                          · {m.sheet.role_title || m.roleHint || "—"}
+                          {fromLib ? " · 自庫帶入" : " · 本場新建"}
+                        </span>
+                      </div>
+                      {m.sheet.system_id === "COC_7E" ? (
+                        <p className="text-muted">
+                          {pending.length
+                            ? `待成長技能：${pending.join("、")}`
+                            : "本局無可成長標記技能"}
+                        </p>
+                      ) : m.sheet.system_id === "DND_5E" ? (
+                        <p className="text-muted">將記錄簡易經驗摘要</p>
+                      ) : null}
+                      <div className="flex flex-wrap gap-3">
+                        <label className="flex cursor-pointer items-center gap-1.5 text-ink">
+                          <input
+                            type="radio"
+                            name={`companion-lib-${m.id}`}
+                            checked={choice === "save"}
+                            onChange={() =>
+                              setCompanionDecision((prev) => ({
+                                ...prev,
+                                [m.id]: "save",
+                              }))
+                            }
+                          />
+                          {saveLabel}
+                        </label>
+                        <label className="flex cursor-pointer items-center gap-1.5 text-ink">
+                          <input
+                            type="radio"
+                            name={`companion-lib-${m.id}`}
+                            checked={choice === "skip"}
+                            onChange={() =>
+                              setCompanionDecision((prev) => ({
+                                ...prev,
+                                [m.id]: "skip",
+                              }))
+                            }
+                          />
+                          略過寫入（仍會做成長結算）
+                        </label>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    const growthMap: Record<string, string[]> = {};
+                    const savedNames: string[] = [];
+                    const grownOnly: string[] = [];
+                    for (const m of aiCompanions) {
+                      const save = decisionFor(m.id) === "save";
+                      const result = settleCompanionMember(m.id, save);
+                      if (!result) continue;
+                      growthMap[m.id] = result.growthLogs;
+                      if (result.saved) savedNames.push(result.name);
+                      else grownOnly.push(result.name);
+                    }
+                    setCompanionGrowthById(growthMap);
+                    resolveEndingCompanions({
+                      savedIds: aiCompanions
+                        .filter((m) => decisionFor(m.id) === "save")
+                        .map((m) => m.id),
+                    });
+                    const parts = [
+                      savedNames.length
+                        ? `已寫入 ${savedNames.map((n) => `「${n}」`).join("、")}（含成長與履歷）`
+                        : null,
+                      grownOnly.length
+                        ? `已成長結算但未寫庫：${grownOnly.map((n) => `「${n}」`).join("、")}`
+                        : null,
+                    ].filter(Boolean);
+                    const notice =
+                      parts.length > 0
+                        ? parts.join("；") + "。"
+                        : "AI 隊友結算完成。";
+                    setSavedNotice(notice);
+                    appendSystem(`結局：AI 隊友 ${notice}`);
+                  }}
+                >
+                  <Archive className="h-3.5 w-3.5" />
+                  確認選擇（含成長）
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    const growthMap: Record<string, string[]> = {};
+                    for (const m of aiCompanions) {
+                      const result = settleCompanionMember(m.id, false);
+                      if (result) growthMap[m.id] = result.growthLogs;
+                    }
+                    setCompanionGrowthById(growthMap);
+                    setCompanionDecision(
+                      Object.fromEntries(
+                        aiCompanions.map((m) => [m.id, "skip" as const]),
+                      ),
+                    );
+                    resolveEndingCompanions({ savedIds: [] });
+                    setSavedNotice(
+                      "已為全部 AI 隊友完成成長結算，並略過檔案庫寫入。",
+                    );
+                    appendSystem(
+                      "結局：AI 隊友已成長結算，全部略過檔案庫寫入。",
+                    );
+                  }}
+                >
+                  全部略過寫入（仍成長）
+                </Button>
+              </div>
+            </>
+          )}
         </div>
       ) : null}
 

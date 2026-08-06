@@ -17,7 +17,7 @@ import {
   loadAgentPrefs,
   loadCampaign,
   loadCampaignIndex,
-  saveAgentPrefs,
+  persistAgentPrefsFromStore,
   saveCampaign,
   type CampaignMeta,
 } from "@/lib/campaignStorage";
@@ -37,7 +37,6 @@ import {
   loadPedelecSettings,
   requestPedelecOriginApproval,
 } from "@/lib/pedelec/preflight";
-import { normalizeScenarioScale } from "@/engine/scenarioScale";
 import { useGameStore } from "@/store/useGameStore";
 
 type Screen = "home" | "campaign";
@@ -115,12 +114,10 @@ export default function App() {
   // 啟動只載入偏好與清單，停留首頁
   useEffect(() => {
     const prefs = loadAgentPrefs();
-    if (prefs.selectedProvider) {
-      useGameStore
-        .getState()
-        .setProvider(prefs.selectedProvider as ProviderCode);
-    }
-    useGameStore.getState().setModel(prefs.selectedModel);
+    useGameStore
+      .getState()
+      .setProvider((prefs.selectedProvider as ProviderCode | null) ?? null);
+    useGameStore.getState().setModel(prefs.selectedModel ?? "");
     if (typeof prefs.suggestPlayerActions === "boolean") {
       useGameStore
         .getState()
@@ -160,11 +157,11 @@ export default function App() {
         s.suggestPlayerActions !== prev.suggestPlayerActions ||
         s.script.scenario_scale !== prev.script.scenario_scale
       ) {
-        saveAgentPrefs({
+        persistAgentPrefsFromStore({
           selectedProvider: s.selectedProvider,
           selectedModel: s.selectedModel,
           suggestPlayerActions: s.suggestPlayerActions,
-          scenarioScale: normalizeScenarioScale(s.script.scenario_scale),
+          scenarioScale: s.script.scenario_scale,
         });
       }
     });
@@ -504,8 +501,15 @@ export default function App() {
           if (screen === "home") {
             await resolveProvider(provider ?? null);
             // 僅儲存偏好；真正連線在進入劇本時
-            if (provider) useGameStore.getState().setProvider(provider);
-            useGameStore.getState().setModel(model ?? "");
+            const store = useGameStore.getState();
+            store.setProvider(provider ?? null);
+            store.setModel(model ?? "");
+            persistAgentPrefsFromStore({
+              selectedProvider: provider ?? null,
+              selectedModel: model ?? "",
+              suggestPlayerActions: store.suggestPlayerActions,
+              scenarioScale: store.script.scenario_scale,
+            });
             return;
           }
           await ensureSession(provider ?? null, model ?? "");

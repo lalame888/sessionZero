@@ -29,13 +29,15 @@ export function assembleCompanionAgentPrompt(input: {
   turn: number;
   reason: string;
   situation?: string;
+  preferImmediate?: boolean;
 }): string {
   const layers: string[] = [];
   layers.push(`[COMPANION AGENT TASK]
 You are ${input.companion.name || "隊友"} (${input.companion.role_title || "同伴"}).
 GM reason for inviting you: ${input.reason}
 ${input.situation ? `Situation: ${input.situation}` : ""}
-Call submit_companion_action OR pass_turn (exactly one).`);
+${input.preferImmediate ? "GM hint: prefer_immediate=true (crisis — if you attempt a physical check-worthy action, use handoff=immediate)." : "Default handoff=pause unless you must resolve a crisis attempt right now."}
+Call submit_companion_action (with handoff) OR pass_turn (exactly one).`);
 
   layers.push(`[SESSION — PUBLIC]
 Location: ${input.location || "未知"}

@@ -2,6 +2,8 @@ import type { UniversalCharacterSheet } from "@/types/game";
 
 export type CheckDifficulty = "regular" | "hard" | "extreme";
 
+export type ResolvedCheckKind = "skill" | "sanity" | "attribute" | "custom";
+
 /** 統一全形／異體字，方便「神秘學」對上「神祕學」 */
 export function normalizeSkillKey(name: string): string {
   return name
@@ -11,6 +13,71 @@ export function normalizeSkillKey(name: string): string {
     .replace(/[（(].*?[）)]/g, "") // 去掉括號註記，如 Knowledge (Occult)
     .replace(/祕/g, "秘")
     .replace(/[\s\-_/·・]/g, "");
+}
+
+const SANITY_CHECK_KEYS = new Set(
+  ["理智", "san", "sanity", "san值", "理智檢定", "理智检定", "理智值"].map(
+    normalizeSkillKey,
+  ),
+);
+
+/** CoC 理智檢定名稱（非技能欄；門檻＝當前 SAN） */
+export function isSanityCheckName(checkName: string): boolean {
+  const key = normalizeSkillKey(checkName);
+  return SANITY_CHECK_KEYS.has(key);
+}
+
+/** 從角色卡取當前 SAN 作為理智檢定門檻 */
+export function resolveSanityCheckFromSheet(
+  sheet: UniversalCharacterSheet | null | undefined,
+): { target_value: number; skill_value: number } | null {
+  const san = sheet?.derived?.san?.current;
+  if (san == null || !Number.isFinite(san)) return null;
+  const v = Math.max(0, Math.floor(san));
+  return { target_value: v, skill_value: v };
+}
+
+const COC_ATTRIBUTE_ALIASES: Record<string, string> = {
+  // CoC 屬性 key
+  str: "STR",
+  con: "CON",
+  siz: "SIZ",
+  dex: "DEX",
+  app: "APP",
+  int: "INT",
+  pow: "POW",
+  edu: "EDU",
+
+  // CoC 繁中屬性標籤
+  力量: "STR",
+  體質: "CON",
+  體型: "SIZ",
+  體格: "SIZ",
+  敏捷: "DEX",
+  外貌: "APP",
+  智力: "INT",
+  意志: "POW",
+  教育: "EDU",
+};
+
+export function resolveCocAttributeKeyFromCheckName(
+  checkName: string,
+): string | null {
+  const normalized = normalizeSkillKey(checkName);
+  return COC_ATTRIBUTE_ALIASES[normalized] ?? null;
+}
+
+/** 從角色卡取當前屬性數值（作為 d100 門檻用） */
+export function resolveCocAttributeValueFromSheet(
+  sheet: UniversalCharacterSheet | null | undefined,
+  checkName: string,
+): number | null {
+  if (!sheet) return null;
+  const key = resolveCocAttributeKeyFromCheckName(checkName);
+  if (!key) return null;
+  const v = sheet.attributes?.[key];
+  if (v == null || !Number.isFinite(v)) return null;
+  return Math.max(0, Math.floor(v));
 }
 
 const SKILL_ALIASES: Record<string, string[]> = {

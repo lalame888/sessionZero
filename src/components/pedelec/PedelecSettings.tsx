@@ -3,6 +3,7 @@ import type { ProviderCode, ProviderInfo } from "@kaoruisaac/pedelec";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
+import { persistAgentPrefsFromStore } from "@/lib/campaignStorage";
 import { listProviderOptions, loadPedelecSettings } from "@/lib/pedelec/preflight";
 import { useGameStore } from "@/store/useGameStore";
 
@@ -33,6 +34,8 @@ export function PedelecSettingsPanel({
   const [modelDraft, setModelDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [savedProviderUnavailable, setSavedProviderUnavailable] =
+    useState(false);
 
   const availableProviders = useMemo(
     () => providers.filter((p) => p.available),
@@ -71,18 +74,23 @@ export function PedelecSettingsPanel({
       });
 
       const available = list.filter((p) => p.available);
-      const savedOk =
+      const savedInList =
         savedProvider &&
         available.some((p) => p.code === savedProvider);
+      const unavailable = Boolean(savedProvider && !savedInList);
 
       // 空字串 = 使用 Desktop 預設（與 ai-playlist 相同）
-      setProviderDraft(savedOk ? savedProvider : "");
+      setProviderDraft(
+        savedProvider && (savedInList || unavailable) ? savedProvider : "",
+      );
       setModelDraft(savedModel);
+      setSavedProviderUnavailable(unavailable);
     })();
   }, [open, savedModel, savedProvider]);
 
   const canSave = providerDraft
-    ? availableProviders.some((p) => p.code === providerDraft)
+    ? availableProviders.some((p) => p.code === providerDraft) ||
+      (savedProviderUnavailable && providerDraft === savedProvider)
     : Boolean(desktopDefault);
 
   return (
@@ -116,10 +124,21 @@ export function PedelecSettingsPanel({
                 {p.name}
               </option>
             ))}
+            {savedProviderUnavailable && savedProvider ? (
+              <option value={savedProvider}>
+                {savedProvider}（已儲存，目前不可用）
+              </option>
+            ) : null}
           </select>
           {providers.length > 0 && availableProviders.length === 0 ? (
             <p className="text-xs text-danger">
               目前沒有偵測到可用的 Provider，請先在 Pedelec Desktop 完成設定。
+            </p>
+          ) : null}
+          {savedProviderUnavailable && savedProvider ? (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              已儲存的 Provider「{savedProvider}」目前不可用，請重新選擇或確認
+              Pedelec Desktop 設定。
             </p>
           ) : null}
         </div>
@@ -158,6 +177,14 @@ export function PedelecSettingsPanel({
                 // store：空覆寫記成 null / ""，實際建立用 resolved
                 setProvider(overrideProvider ?? null);
                 setModel(overrideModel ?? "");
+                persistAgentPrefsFromStore({
+                  selectedProvider: overrideProvider ?? null,
+                  selectedModel: overrideModel ?? "",
+                  suggestPlayerActions:
+                    useGameStore.getState().suggestPlayerActions,
+                  scenarioScale:
+                    useGameStore.getState().script.scenario_scale,
+                });
 
                 await onApply(overrideProvider, overrideModel);
                 setOpen(false);

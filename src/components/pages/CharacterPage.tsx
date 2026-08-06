@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Library, Sparkles, UserPlus } from "lucide-react";
+import { Library, Play, Sparkles, UserPlus } from "lucide-react";
 import { PartySlotsBar } from "@/components/character/PartySlotsBar";
 import { CharacterStage } from "@/components/stages/CharacterStage";
 import { ReturningCharacterConfirm } from "@/components/stages/ReturningCharacterConfirm";
@@ -27,7 +27,12 @@ export function CharacterPage() {
     (s) => s.clearPartyMemberByCharacterId,
   );
   const movePartyMemberToSlot = useGameStore((s) => s.movePartyMemberToSlot);
+  const confirmCharacterAndPlay = useGameStore(
+    (s) => s.confirmCharacterAndPlay,
+  );
   const appendSystem = useGameStore((s) => s.appendSystem);
+  const sessionStatus = useGameStore((s) => s.sessionStatus);
+  const isTyping = useGameStore((s) => s.isTyping);
   const systemId = script.system_id;
 
   const [path, setPath] = useState<Path>("gate");
@@ -78,6 +83,17 @@ export function CharacterPage() {
 
   const multiParty = partySize > 1;
 
+  const partyFullyReady = useMemo(() => {
+    if (!multiParty) return false;
+    const allSlots = Array.from({ length: partySize }, (_, i) => i).every(
+      (i) => party.some((m) => m.slotIndex === i && m.creationComplete),
+    );
+    return allSlots && party.some((m) => m.controller === "player");
+  }, [multiParty, partySize, party]);
+
+  const canStartAdventure =
+    partyFullyReady && sessionStatus === "idle" && !isTyping;
+
   if (path === "new") {
     return (
       <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col overflow-hidden rounded-lg border border-border bg-surface/70 p-4">
@@ -110,7 +126,7 @@ export function CharacterPage() {
                 (_, i) => i,
               ).find((i) => {
                 const m = st.party.find((p) => p.slotIndex === i);
-                return !(m?.creationComplete || m?.sheet.name?.trim());
+                return !(m?.creationComplete);
               });
               if (next != null) setEditingPartySlotIndex(next);
               setPath("gate");
@@ -150,7 +166,7 @@ export function CharacterPage() {
                 (_, i) => i,
               ).find((i) => {
                 const m = st.party.find((p) => p.slotIndex === i);
-                return !(m?.creationComplete || m?.sheet.name?.trim());
+                return !(m?.creationComplete);
               });
               if (next != null) setEditingPartySlotIndex(next);
               setSelected(null);
@@ -181,6 +197,38 @@ export function CharacterPage() {
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto">
         {multiParty ? <PartySlotsBar /> : null}
+
+        {partyFullyReady ? (
+          <div className="space-y-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4">
+            <p className="text-sm text-ink">
+              隊伍 {partySize}/{partySize} 已就緒
+              {script.public_summary?.title
+                ? `，可以開始《${script.public_summary.title}》`
+                : "，可以開始冒險"}
+              。若皆以帶入角色卡完成，直接由此出發即可。
+            </p>
+            <Button
+              className="w-full"
+              size="lg"
+              disabled={!canStartAdventure}
+              onClick={() => confirmCharacterAndPlay()}
+            >
+              <Play className="h-5 w-5" />
+              {script.public_summary?.title
+                ? `隊伍就緒，開始《${script.public_summary.title}》`
+                : "隊伍就緒，開始冒險"}
+            </Button>
+            {!canStartAdventure ? (
+              <p className="text-xs text-muted">
+                Session 忙碌中，請稍候再開始。
+              </p>
+            ) : null}
+          </div>
+        ) : multiParty ? (
+          <p className="text-xs text-muted">
+            請為每一席次完成創建或帶入角色卡；全部就緒後將出現「開始冒險」。
+          </p>
+        ) : null}
 
         <button
           type="button"

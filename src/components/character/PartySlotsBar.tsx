@@ -24,9 +24,7 @@ export function PartySlotsBar() {
   const systemId =
     script.system_id === "DND_5E" ? "DND_5E" : "COC_7E";
 
-  const readyCount = party.filter(
-    (m) => m.creationComplete || Boolean(m.sheet.name?.trim()),
-  ).length;
+  const readyCount = party.filter((m) => m.creationComplete).length;
 
   return (
     <div className="mb-4 space-y-2 rounded-lg border border-border bg-surface/80 p-3">
@@ -47,9 +45,7 @@ export function PartySlotsBar() {
               playerMemberId == null &&
               slot === 0 &&
               !party.some((m) => m.controller === "player"));
-          const done = Boolean(
-            member?.creationComplete || member?.sheet.name?.trim(),
-          );
+          const done = Boolean(member?.creationComplete);
           const hint =
             member?.roleHint ||
             hints[slot]?.role_title ||
@@ -108,22 +104,26 @@ export function PartySlotsBar() {
                   )}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-ink">
-                      席次 {slot + 1}
-                      {done ? ` · ${member!.sheet.name}` : " · 尚未建角"}
-                    </span>
-                    <span
-                      className={cn(
-                        "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
-                        done
-                          ? "bg-emerald-500/20 text-emerald-300"
-                          : "bg-surface-2 text-muted",
-                      )}
-                    >
-                      {done ? "已就緒" : "待建立"}
-                    </span>
-                  </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-ink">
+                        席次 {slot + 1}
+                        {done
+                          ? ` · ${member!.sheet.name}`
+                          : member?.sheet.name?.trim()
+                            ? ` · ${member.sheet.name}（未完成配點）`
+                            : " · 尚未建角"}
+                      </span>
+                      <span
+                        className={cn(
+                          "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                          done
+                            ? "bg-emerald-500/20 text-emerald-300"
+                            : "bg-surface-2 text-muted",
+                        )}
+                      >
+                        {done ? "已就緒" : "待完成"}
+                      </span>
+                    </div>
                   <div className="mt-1 flex flex-wrap items-center gap-1.5">
                     <span
                       className={cn(
@@ -147,6 +147,10 @@ export function PartySlotsBar() {
                   {done ? (
                     <p className="mt-1 text-[10px] text-emerald-400/90">
                       角色設定已保存（含屬性／技能配點）
+                    </p>
+                  ) : member?.sheet.name?.trim() ? (
+                    <p className="mt-1 text-[10px] text-amber-400/90">
+                      敘事可能已有，但尚未完成配點與確認
                     </p>
                   ) : null}
                 </div>

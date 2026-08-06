@@ -1,17 +1,19 @@
 import { useState } from "react";
-import { Redo2, Send, Undo2 } from "lucide-react";
+import { Redo2, Send, Undo2, Users } from "lucide-react";
 import { DiceCheckPanel } from "@/components/game/DiceModal";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { useAiPlayerStore } from "@/lib/aiPlayer";
-import { sendPlayerAction } from "@/lib/pedelec/createGameSession";
+import {
+  resolvePendingCompanionHandoff,
+  sendPlayerAction,
+} from "@/lib/pedelec/createGameSession";
 import { useGameStore } from "@/store/useGameStore";
 
 const QUICK = [
   "我仔細觀察四周。",
   "我嘗試與對方交涉。",
   "我準備戰鬥姿態。",
-  "我檢查背包物品。",
 ];
 
 function composerPlaceholder(opts: {
@@ -21,6 +23,7 @@ function composerPlaceholder(opts: {
   preflightReady: boolean;
   sessionStatus: string;
   aiPlayerEnabled: boolean;
+  pendingCompanion: boolean;
 }): string {
   const {
     disabled,
@@ -29,6 +32,7 @@ function composerPlaceholder(opts: {
     preflightReady,
     sessionStatus,
     aiPlayerEnabled,
+    pendingCompanion,
   } = opts;
 
   if (aiPlayerEnabled) {
@@ -55,6 +59,10 @@ function composerPlaceholder(opts: {
     return "正在連線 Session，請稍候…";
   }
 
+  if (pendingCompanion) {
+    return "可插話／一起行動，或按「讓 GM 結算」…";
+  }
+
   if (phase === "SESSION_0") {
     return "描述故事想法、氛圍或想玩的系統（預設單人一位主角）…";
   }
@@ -74,6 +82,9 @@ export function Composer({
   const undoLastTurn = useGameStore((s) => s.undoLastTurn);
   const phase = useGameStore((s) => s.phase);
   const pendingDice = useGameStore((s) => s.pendingDice);
+  const pendingCompanionHandoff = useGameStore(
+    (s) => s.pendingCompanionHandoff,
+  );
   const preflightReady = useGameStore((s) => s.preflight.ready);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
   const aiPlayerEnabled = useAiPlayerStore((s) => s.enabled);
@@ -81,6 +92,7 @@ export function Composer({
 
   const awaitingPublicDice = Boolean(pendingDice && !pendingDice.isSecret);
   const inputLocked = disabled || sending || aiPlayerEnabled;
+  const pendingCompanion = Boolean(pendingCompanionHandoff);
   const placeholder = composerPlaceholder({
     disabled,
     sending,
@@ -88,6 +100,7 @@ export function Composer({
     preflightReady,
     sessionStatus,
     aiPlayerEnabled,
+    pendingCompanion,
   });
 
   const submit = async (text: string) => {
@@ -98,7 +111,11 @@ export function Composer({
     setSending(true);
     try {
       setDraft("");
-      await sendPlayerAction(value);
+      if (useGameStore.getState().pendingCompanionHandoff) {
+        await resolvePendingCompanionHandoff({ playerSupplement: value });
+      } else {
+        await sendPlayerAction(value);
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "未知錯誤";
@@ -119,9 +136,39 @@ export function Composer({
         store.setSessionError({ code, message });
         store.appendSystem(
           preSend
-            ? `送出失敗：${code} — ${message}（草稿已保留）`
-            : `送出失敗：${code} — ${message}（可按重試）`,
+            ? `送出前失敗（${code}）。草稿已保留，可點重試。`
+            : `行動處理失敗（${code}）。可點重試或改寫後再送。`,
         );
+      }
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const continueCompanion = async () => {
+    if (
+      disabled ||
+      sending ||
+      awaitingPublicDice ||
+      aiPlayerEnabled ||
+      !useGameStore.getState().pendingCompanionHandoff
+    ) {
+      return;
+    }
+    setSending(true);
+    try {
+      await resolvePendingCompanionHandoff();
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "未知錯誤";
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? String((err as { code: unknown }).code)
+          : message;
+      const store = useGameStore.getState();
+      if (!store.sessionError) {
+        store.setSessionError({ code, message });
+        store.appendSystem(`隊友結算失敗（${code}）。可稍後再按「讓 GM 結算」。`);
       }
     } finally {
       setSending(false);
@@ -134,6 +181,23 @@ export function Composer({
 
   return (
     <div className="space-y-2 border-t border-border pt-3">
+      {pendingCompanionHandoff ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/70 bg-surface-2/60 px-3 py-2 text-xs text-ink">
+          <Users className="h-3.5 w-3.5 shrink-0 text-accent" />
+          <span className="min-w-0 flex-1">
+            「{pendingCompanionHandoff.companionName}」已宣告行動。可先插話，或讓
+            GM 結算結果。
+          </span>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={inputLocked}
+            onClick={() => void continueCompanion()}
+          >
+            讓 GM 結算
+          </Button>
+        </div>
+      ) : null}
       {phase === "PLAYING" ? (
         <div className="flex flex-wrap gap-2">
           {QUICK.map((q) => (

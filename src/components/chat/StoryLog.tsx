@@ -62,11 +62,15 @@ export function StoryLog({
     .reverse()
     .find((m) => m.role === "agent")?.id;
 
+  /** 僅在接近底部時跟隨新訊息；避免反白選字／toolbar 重渲染時跳到底 */
+  const stickToBottomRef = useRef(true);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    if (!stickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [visibleMessages, isTyping]);
+  }, [messages, isTyping]);
 
   const clearToolbar = useCallback(() => setToolbar(null), []);
 
@@ -114,7 +118,12 @@ export function StoryLog({
     const onMouseUp = () => {
       window.setTimeout(updateSelectionToolbar, 0);
     };
-    const onScroll = () => clearToolbar();
+    const onScroll = () => {
+      const dist =
+        root.scrollHeight - root.scrollTop - root.clientHeight;
+      stickToBottomRef.current = dist < 96;
+      clearToolbar();
+    };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === "Escape") clearToolbar();
       else updateSelectionToolbar();
@@ -180,61 +189,80 @@ export function StoryLog({
           歡迎來到 SessionZero。描述你想玩的故事氛圍，GM 會與你討論劇本、系統與房規。
         </p>
       ) : null}
-      {visibleMessages.map((m) => (
-        <div
-          key={m.id}
-          className={cn(
-            "max-w-[92%] shrink-0 rounded-lg px-3 py-2 text-sm",
-            m.role === "user" && "ml-auto bg-accent/20 text-ink",
-            m.role === "agent" && "mr-auto bg-surface-2 story-text text-ink",
-            m.role === "system" &&
-              "mx-auto max-w-full border border-border bg-bg/60 text-xs text-muted",
-          )}
-        >
-          {m.role !== "system" ? (
-            <div className="mb-1 text-[10px] uppercase tracking-wide text-muted">
-              {m.role === "user" ? "你" : "GM"}
-            </div>
-          ) : (
-            <div className="mb-1 text-[10px] uppercase tracking-wide text-accent-2">
-              系統
-            </div>
-          )}
-          {m.role === "agent" ? (
-            <MarkdownContent content={m.content} />
-          ) : (
-            <div className="whitespace-pre-wrap">{m.content}</div>
-          )}
-          {narrativeControls &&
-          m.role === "agent" &&
-          m.id === lastAgentId ? (
-            <div className="mt-2 flex flex-wrap gap-1.5 border-t border-border/50 pt-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                className="h-7 gap-1 px-2 text-[11px]"
-                disabled={controlsLocked}
-                onClick={() => void runRegen()}
-              >
-                <RefreshCw className="h-3 w-3" />
-                {busy === "regen" ? "重抽中…" : "重新生成"}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                className="h-7 gap-1 px-2 text-[11px]"
-                disabled={controlsLocked}
-                onClick={() => void runContinue()}
-              >
-                <CornerDownRight className="h-3 w-3" />
-                {busy === "continue" ? "續寫中…" : "續寫"}
-              </Button>
-            </div>
-          ) : null}
-        </div>
-      ))}
+      {visibleMessages.map((m) => {
+        const isCompanion =
+          m.role === "user" && m.content.startsWith("【隊友·");
+        const companionName = isCompanion
+          ? m.content.match(/^【隊友·([^】]+)】/)?.[1]
+          : null;
+        return (
+          <div
+            key={m.id}
+            className={cn(
+              "max-w-[92%] shrink-0 rounded-lg px-3 py-2 text-sm",
+              m.role === "user" &&
+                !isCompanion &&
+                "ml-auto bg-accent/20 text-ink",
+              isCompanion &&
+                "mr-auto border border-accent/30 bg-accent/10 text-ink",
+              m.role === "agent" && "mr-auto bg-surface-2 story-text text-ink",
+              m.role === "system" &&
+                "mx-auto max-w-full border border-border bg-bg/60 text-xs text-muted",
+            )}
+          >
+            {m.role !== "system" ? (
+              <div className="mb-1 text-[10px] uppercase tracking-wide text-muted">
+                {isCompanion
+                  ? `隊友 · ${companionName || ""}`
+                  : m.role === "user"
+                    ? "你"
+                    : "GM"}
+              </div>
+            ) : (
+              <div className="mb-1 text-[10px] uppercase tracking-wide text-accent-2">
+                系統
+              </div>
+            )}
+            {m.role === "agent" ? (
+              <MarkdownContent content={m.content} />
+            ) : (
+              <div className="whitespace-pre-wrap">
+                {isCompanion
+                  ? m.content.replace(/^【隊友·[^】]+】/, "").trimStart()
+                  : m.content}
+              </div>
+            )}
+            {narrativeControls &&
+            m.role === "agent" &&
+            m.id === lastAgentId ? (
+              <div className="mt-2 flex flex-wrap gap-1.5 border-t border-border/50 pt-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="h-7 gap-1 px-2 text-[11px]"
+                  disabled={controlsLocked}
+                  onClick={() => void runRegen()}
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  {busy === "regen" ? "重抽中…" : "重新生成"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="h-7 gap-1 px-2 text-[11px]"
+                  disabled={controlsLocked}
+                  onClick={() => void runContinue()}
+                >
+                  <CornerDownRight className="h-3 w-3" />
+                  {busy === "continue" ? "續寫中…" : "續寫"}
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
       <TypingIndicator />
 
       {toolbar && onAddSelectionToNote ? (

@@ -6,9 +6,21 @@ import { resolveAvailableProvider } from "@/lib/pedelec/resolveProvider";
 import { pedelec } from "@/lib/pedelec/client";
 import { useGameStore } from "@/store/useGameStore";
 
+export type CompanionHandoff = "pause" | "immediate";
+
 export type CompanionDecision =
   | { acted: false }
-  | { acted: true; action: string; companionName: string; companionId: string };
+  | {
+      acted: true;
+      action: string;
+      companionName: string;
+      companionId: string;
+      handoff: CompanionHandoff;
+    };
+
+function parseHandoff(raw: unknown): CompanionHandoff {
+  return raw === "immediate" ? "immediate" : "pause";
+}
 
 /**
  * 短命 session：請 AI 隊友決定行動或靜默 pass。
@@ -17,6 +29,7 @@ export async function requestCompanionDecision(options: {
   companionId: string;
   reason: string;
   situation?: string;
+  preferImmediate?: boolean;
   provider?: ProviderCode;
   model?: string;
   signal?: AbortSignal;
@@ -53,6 +66,7 @@ export async function requestCompanionDecision(options: {
     turn: store.turn,
     reason: options.reason,
     situation: options.situation,
+    preferImmediate: options.preferImmediate,
   });
 
   const session = await pedelec.createSession({
@@ -74,7 +88,7 @@ export async function requestCompanionDecision(options: {
 
   const offAct = session.onTool(
     "submit_companion_action",
-    (args: { action?: string }) => {
+    (args: { action?: string; handoff?: string }) => {
       const action = String(args?.action ?? "").trim();
       if (action) {
         decision = {
@@ -82,6 +96,7 @@ export async function requestCompanionDecision(options: {
           action,
           companionName: member.sheet.name || "隊友",
           companionId: member.id,
+          handoff: parseHandoff(args?.handoff),
         };
       }
       return { ok: true };

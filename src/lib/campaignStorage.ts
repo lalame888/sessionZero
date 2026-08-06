@@ -18,7 +18,7 @@ import type {
   ThemeId,
   UniversalCharacterSheet,
 } from "@/types/game";
-import type { PartyMember } from "@/types/party";
+import type { PartyMember, PendingCompanionHandoff } from "@/types/party";
 import { normalizeScenarioScale } from "@/engine/scenarioScale";
 import { clearPartyLibraryBindingsForCampaign } from "@/lib/storage";
 
@@ -90,6 +90,10 @@ export interface CampaignPersist {
   editingPartySlotIndex?: number;
   /** 結局已選擇存入角色庫的 AI 隊友 id */
   endingCompanionsSavedIds?: string[];
+  /** 結局已處理完 AI 隊友檔案庫選擇（含全部略過） */
+  endingCompanionsResolved?: boolean;
+  /** 隊友宣告後軟停手遞（重整後可繼續） */
+  pendingCompanionHandoff?: PendingCompanionHandoff | null;
   /** 側欄目前檢視的隊伍成員 id（預設玩家） */
   viewedPartyMemberId?: string | null;
 }
@@ -237,6 +241,21 @@ export function saveAgentPrefs(prefs: AgentPrefs) {
   localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
 }
 
+/** 從 Zustand 當前狀態寫入 agent 偏好（Provider／Model 等） */
+export function persistAgentPrefsFromStore(input: {
+  selectedProvider: string | null;
+  selectedModel: string;
+  suggestPlayerActions: boolean;
+  scenarioScale?: ScenarioScale | string | null;
+}) {
+  saveAgentPrefs({
+    selectedProvider: input.selectedProvider,
+    selectedModel: input.selectedModel,
+    suggestPlayerActions: input.suggestPlayerActions,
+    scenarioScale: normalizeScenarioScale(input.scenarioScale),
+  });
+}
+
 export function campaignTitleFromState(script: ScriptState, messages: ChatMessage[]): string {
   if (script.public_summary?.title?.trim()) return script.public_summary.title.trim();
   const firstUser = messages.find((m) => m.role === "user")?.content.trim();
@@ -371,6 +390,8 @@ export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPe
     playerMemberId: null,
     editingPartySlotIndex: 0,
     endingCompanionsSavedIds: [],
+    endingCompanionsResolved: false,
+    pendingCompanionHandoff: null,
     viewedPartyMemberId: null,
   };
 }

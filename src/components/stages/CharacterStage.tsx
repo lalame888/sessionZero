@@ -43,6 +43,7 @@ import {
   saveCharacterToLibrary,
 } from "@/lib/storage";
 import { useGameStore } from "@/store/useGameStore";
+import { cn } from "@/lib/utils";
 
 export function CharacterStage({
   allowLibrarySave = true,
@@ -100,6 +101,8 @@ export function CharacterStage({
   /** 玩家自行加入的技能（不在藍圖列表內） */
   const [extraSkills, setExtraSkills] = useState<RecommendedSkill[]>([]);
   const [addSkillPick, setAddSkillPick] = useState("");
+  /** ARRAY：手中點選的陣列索引（點屬性列放入） */
+  const [pickedArrayIdx, setPickedArrayIdx] = useState<number | null>(null);
 
   const occOverridesRef = useRef(occOverrides);
   occOverridesRef.current = occOverrides;
@@ -153,6 +156,7 @@ export function CharacterStage({
     setRollLog([]);
     setHighSkillWarned(new Set());
     setAddSkillPick("");
+    setPickedArrayIdx(null);
   };
 
   /** 換席／換角色卡：先把上一席配點草稿寫回 party，再還原目前席 */
@@ -602,23 +606,64 @@ export function CharacterStage({
     );
   };
 
-  /** ARRAY：選擇時即時套用，互斥 */
-  const setArrayAssignment = (key: string, idxOrEmpty: number | "") => {
-    const nextAssign = { ...assignments, [key]: idxOrEmpty };
+  /** ARRAY：指派分數索引到屬性（互斥）；未指派者屬性清 0 */
+  const commitArrayAssignments = (
+    nextAssign: Record<string, number | "">,
+  ) => {
     setAssignments(nextAssign);
     const next: Record<string, number> = {};
-    let complete = true;
     for (const k of attrKeys) {
       const v = nextAssign[k];
-      if (v === "" || v == null) {
-        complete = false;
-        continue;
+      if (v === "" || v == null) next[k] = 0;
+      else next[k] = arrayValues[Number(v)] ?? 0;
+    }
+    applyAttributes(next);
+  };
+
+  const setArrayAssignment = (key: string, idxOrEmpty: number | "") => {
+    commitArrayAssignments({ ...assignments, [key]: idxOrEmpty });
+  };
+
+  /** 點陣列池中的分數：拿起／放下 */
+  const pickArrayScore = (idx: number) => {
+    if (usedArrayIndices.has(idx)) return;
+    setPickedArrayIdx((cur) => (cur === idx ? null : idx));
+  };
+
+  /** 點屬性列：放入手中分數，或拿起／交換已指派分數 */
+  const onArrayAttrClick = (key: string) => {
+    const cur = assignments[key];
+    const curIdx = cur === "" || cur == null ? null : Number(cur);
+
+    if (pickedArrayIdx != null) {
+      const next: Record<string, number | ""> = { ...assignments };
+      // 若其他屬性誤持同一索引則清掉
+      for (const k of attrKeys) {
+        if (k !== key && next[k] === pickedArrayIdx) next[k] = "";
       }
-      next[k] = arrayValues[Number(v)] ?? 0;
+      next[key] = pickedArrayIdx;
+      commitArrayAssignments(next);
+      // 原本在此列的分數回到手中（交換）
+      if (curIdx != null && curIdx !== pickedArrayIdx) {
+        setPickedArrayIdx(curIdx);
+      } else {
+        setPickedArrayIdx(null);
+      }
+      return;
     }
-    if (complete && Object.keys(next).length === attrKeys.length) {
-      applyAttributes(next);
+
+    if (curIdx != null) {
+      setPickedArrayIdx(curIdx);
+      setArrayAssignment(key, "");
     }
+  };
+
+  const clearAllArrayAssignments = () => {
+    const empty = Object.fromEntries(
+      attrKeys.map((k) => [k, "" as const]),
+    ) as Record<string, number | "">;
+    commitArrayAssignments(empty);
+    setPickedArrayIdx(null);
   };
 
   const canPointBuyAdjust = (key: string, newScore: number) => {
@@ -782,20 +827,40 @@ export function CharacterStage({
     appendSystem(`已加入「${cat.name}」並標為職業技能，可用職業點分配。`);
   };
 
+  /** CoC 無論屬性模式為何，創角後都應可分配職業／興趣技能點 */
+  const showSkillAlloc = Boolean(
+    schema && attrsReady && (mode === "SKILL_ALLOC" || isCoc),
+  );
+
+  /** 技能點：不可超支，且須用完（若職業點因上限花不完則須花到吸滿） */
+  const skillsAllocationReady = useMemo(() => {
+    if (!showSkillAlloc) return true;
+    if (occUsed > occBudget || interestUsed > interestBudget) return false;
+    const occDone =
+      occUsed === occBudget || (occRemaining > 0 && occRoomLeft === 0);
+    const interestDone = interestUsed === interestBudget;
+    return occDone && interestDone;
+  }, [
+    showSkillAlloc,
+    occUsed,
+    occBudget,
+    interestUsed,
+    interestBudget,
+    occRemaining,
+    occRoomLeft,
+  ]);
+
+  const pointBuyReady =
+    mode !== "POINT_BUY" ||
+    (pointBuy != null && spentPoints === pointBuy.budget);
+
   const canConfirm =
     Boolean(character.name.trim()) &&
     Boolean(character.role_title.trim()) &&
     attrsReady &&
     hooksReady &&
-    (mode !== "POINT_BUY" ||
-      (pointBuy != null && spentPoints <= pointBuy.budget)) &&
-    ((mode !== "SKILL_ALLOC" && !isCoc) ||
-      (occUsed <= occBudget && interestUsed <= interestBudget));
-
-  /** CoC 無論屬性模式為何，創角後都應可分配職業／興趣技能點 */
-  const showSkillAlloc = Boolean(
-    schema && attrsReady && (mode === "SKILL_ALLOC" || isCoc),
-  );
+    pointBuyReady &&
+    skillsAllocationReady;
 
   const creationWarnings = useMemo(() => {
     if (!character) return [] as string[];
@@ -812,9 +877,40 @@ export function CharacterStage({
           `教育（EDU ${edu}）偏低，與「${character.role_title || "調查員／學者"}」敘事不太相符；建議提高 EDU 或調整職稱。`,
         );
       }
-      if (showSkillAlloc && occBudget > 0 && occUsed < occBudget * 0.5) {
+      if (showSkillAlloc && occUsed > occBudget) {
         warns.push(
-          `職業技能點尚餘 ${occBudget - occUsed}（預算 ${occBudget}），建議多配置職業技能。`,
+          `職業技能點超支（${occUsed}/${occBudget}），請減少配點。`,
+        );
+      } else if (
+        showSkillAlloc &&
+        occBudget > 0 &&
+        occUsed < occBudget &&
+        occRoomLeft > 0
+      ) {
+        warns.push(
+          `職業技能點尚餘 ${occBudget - occUsed}（預算 ${occBudget}），請用完再確認席次。`,
+        );
+      } else if (
+        showSkillAlloc &&
+        occBudget > 0 &&
+        occUsed < occBudget &&
+        occRoomLeft === 0
+      ) {
+        warns.push(
+          `職業點還剩 ${occBudget - occUsed} 但已達技能上限吸滿；可新增／標更多職業技能再花，或維持現況。`,
+        );
+      }
+      if (showSkillAlloc && interestUsed > interestBudget) {
+        warns.push(
+          `興趣技能點超支（${interestUsed}/${interestBudget}），請減少配點。`,
+        );
+      } else if (
+        showSkillAlloc &&
+        interestBudget > 0 &&
+        interestUsed < interestBudget
+      ) {
+        warns.push(
+          `興趣技能點尚餘 ${interestBudget - interestUsed}（預算 ${interestBudget}），請用完再確認席次。`,
         );
       }
       for (const [name, val] of Object.entries(character.skills)) {
@@ -826,8 +922,31 @@ export function CharacterStage({
         }
       }
     }
+    if (
+      mode === "POINT_BUY" &&
+      pointBuy &&
+      spentPoints !== pointBuy.budget
+    ) {
+      warns.push(
+        spentPoints > pointBuy.budget
+          ? `購點超支（${spentPoints}/${pointBuy.budget}）。`
+          : `購點尚未用完（${spentPoints}/${pointBuy.budget}），請用完再確認。`,
+      );
+    }
     return warns;
-  }, [character, isCoc, showSkillAlloc, occBudget, occUsed]);
+  }, [
+    character,
+    isCoc,
+    showSkillAlloc,
+    occBudget,
+    occUsed,
+    occRoomLeft,
+    interestBudget,
+    interestUsed,
+    mode,
+    pointBuy,
+    spentPoints,
+  ]);
 
   const adventureCta = (() => {
     if (partySize > 1) {
@@ -1313,10 +1432,21 @@ export function CharacterStage({
           ) : null}
 
           {schema && mode === "ARRAY" ? (
-            <div className="space-y-2 rounded border border-border/70 bg-bg/20 p-2">
-              <Label className="text-xs">
-                標準陣列（互斥）[{arrayValues.join(", ")}]
-              </Label>
+            <div className="space-y-3 rounded border border-border/70 bg-bg/20 p-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label className="text-xs">
+                  標準陣列（點選分數 → 點屬性放入；再點屬性可拿起／交換）
+                </Label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-[10px]"
+                  onClick={clearAllArrayAssignments}
+                >
+                  清空重配
+                </Button>
+              </div>
               {(resolvedArray.source === "corrected" ||
                 schema.standard_array_source === "corrected") && (
                 <p className="text-xs text-accent-2">
@@ -1327,45 +1457,88 @@ export function CharacterStage({
                   ）。
                 </p>
               )}
-              <div className="grid gap-2">
-                {defs.map((d) => (
-                  <div key={d.key} className="flex items-center gap-2">
-                    <HoverTooltip header={d.label} content={attrTip(d)}>
-                      <span className="w-14 shrink-0 text-xs underline decoration-dotted decoration-muted underline-offset-2">
-                        {d.label}
-                      </span>
-                    </HoverTooltip>
-                    <select
-                      className="h-9 flex-1 rounded-md border border-border bg-surface px-2 text-xs"
-                      value={assignments[d.key] ?? ""}
-                      onChange={(e) =>
-                        setArrayAssignment(
-                          d.key,
-                          e.target.value === ""
-                            ? ""
-                            : Number(e.target.value),
-                        )
-                      }
+              <div>
+                <p className="mb-1.5 text-[11px] text-muted">
+                  可用分數
+                  {pickedArrayIdx != null
+                    ? ` · 手中：${arrayValues[pickedArrayIdx]}（點屬性放入）`
+                    : " · 先點一顆分數"}
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {arrayValues.map((v, idx) => {
+                    const used = usedArrayIndices.has(idx);
+                    const picked = pickedArrayIdx === idx;
+                    if (used) return null;
+                    return (
+                      <button
+                        key={`pool-${idx}`}
+                        type="button"
+                        onClick={() => pickArrayScore(idx)}
+                        className={cn(
+                          "min-w-[2.5rem] cursor-pointer rounded-md border px-2.5 py-1.5 text-sm font-medium transition-colors",
+                          picked
+                            ? "border-accent bg-accent/20 text-accent-2 ring-1 ring-accent/40"
+                            : "border-border bg-surface text-ink hover:border-accent/50 hover:bg-accent/10",
+                        )}
+                      >
+                        {v}
+                      </button>
+                    );
+                  })}
+                  {arrayValues.every((_, idx) => usedArrayIndices.has(idx)) ? (
+                    <span className="text-[11px] text-muted">
+                      分數已全部分配
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              <div className="grid gap-1.5 sm:grid-cols-2">
+                {defs.map((d) => {
+                  const assigned = assignments[d.key];
+                  const has =
+                    assigned !== "" &&
+                    assigned != null &&
+                    Number.isFinite(Number(assigned));
+                  const score = has
+                    ? (arrayValues[Number(assigned)] ?? 0)
+                    : 0;
+                  const waiting = pickedArrayIdx != null;
+                  return (
+                    <button
+                      key={d.key}
+                      type="button"
+                      onClick={() => onArrayAttrClick(d.key)}
+                      className={cn(
+                        "flex cursor-pointer items-center justify-between gap-2 rounded-md border px-2.5 py-2 text-left transition-colors",
+                        has
+                          ? "border-border bg-surface/80 hover:border-accent/40"
+                          : waiting
+                            ? "border-dashed border-accent/45 bg-accent/5 hover:bg-accent/10"
+                            : "border-dashed border-border/80 bg-bg/40 hover:border-border",
+                      )}
                     >
-                      <option value="">選擇分數</option>
-                      {arrayValues.map((v, idx) => {
-                        const taken =
-                          usedArrayIndices.has(idx) &&
-                          assignments[d.key] !== idx;
-                        return (
-                          <option
-                            key={`${d.key}-${idx}`}
-                            value={idx}
-                            disabled={taken}
-                          >
-                            {v}
-                            {taken ? "（已用）" : ""}
-                          </option>
-                        );
-                      })}
-                    </select>
-                  </div>
-                ))}
+                      <HoverTooltip header={d.label} content={attrTip(d)}>
+                        <span className="text-xs text-muted underline decoration-dotted decoration-muted underline-offset-2">
+                          {d.label}
+                        </span>
+                      </HoverTooltip>
+                      <span
+                        className={cn(
+                          "text-sm font-semibold tabular-nums",
+                          has ? "text-ink" : "text-muted",
+                        )}
+                      >
+                        {has ? score : waiting ? "放入…" : "—"}
+                        {has &&
+                        isDnd &&
+                        character.attribute_modifiers?.[`${d.key}_MOD`] !=
+                          null
+                          ? `（${(character.attribute_modifiers[`${d.key}_MOD`] ?? 0) >= 0 ? "+" : ""}${character.attribute_modifiers[`${d.key}_MOD`]}）`
+                          : ""}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           ) : null}
@@ -1752,11 +1925,7 @@ export function CharacterStage({
           const allSlotsReady = Array.from(
             { length: st.partySize },
             (_, i) => st.party.find((m) => m.slotIndex === i),
-          ).every(
-            (m) =>
-              Boolean(m?.creationComplete) ||
-              Boolean(m?.sheet.name?.trim()),
-          );
+          ).every((m) => Boolean(m?.creationComplete));
           const ready =
             st.party.length >= st.partySize &&
             allSlotsReady &&
@@ -1778,8 +1947,9 @@ export function CharacterStage({
         <p className="text-xs text-muted">
           需填寫姓名／職稱、完成屬性規則，並寫完所有劇情鉤子
           {isCoc || mode === "SKILL_ALLOC"
-            ? "（技能點不可超支）"
+            ? "；技能點不可超支且須用完（職業點若因上限花不完除外）"
             : ""}
+          {mode === "POINT_BUY" ? "；購點須用完預算" : ""}
           。
         </p>
       ) : null}

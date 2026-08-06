@@ -73,6 +73,7 @@ import {
   replacePartySlot,
   syncPartySheet,
   type PartyMember,
+  type PendingCompanionHandoff,
 } from "@/types/party";
 
 function snapshotOf(state: {
@@ -138,6 +139,10 @@ interface GameStore {
   playerMemberId: string | null;
   editingPartySlotIndex: number;
   endingCompanionsSavedIds: string[];
+  /** 結局已處理完 AI 隊友檔案庫選擇（存入或略過） */
+  endingCompanionsResolved: boolean;
+  /** 隊友宣告後軟停：等玩家插話或「讓 GM 結算」 */
+  pendingCompanionHandoff: PendingCompanionHandoff | null;
   /** 側欄／檢定目標目前檢視的成員 */
   viewedPartyMemberId: string | null;
   clues: ClueItem[];
@@ -229,7 +234,9 @@ interface GameStore {
     opts?: { controller?: "player" | "ai" },
   ) => void;
   setViewedPartyMemberId: (id: string | null) => void;
+  setPendingCompanionHandoff: (h: PendingCompanionHandoff | null) => void;
   markCompanionsSaved: (ids: string[]) => void;
+  resolveEndingCompanions: (opts?: { savedIds?: string[] }) => void;
   /** 依 character_id 取 sheet；缺省為玩家 */
   getSheetById: (characterId?: string | null) => UniversalCharacterSheet | null;
   updateSheetById: (
@@ -314,7 +321,11 @@ interface GameStore {
   confirmCharacterAndPlay: () => void;
   advanceToCharacterPhase: () => void;
   setLastPlayerAction: (action: string) => void;
-  applyGrowthResult: (skill: string, gained: number) => void;
+  applyGrowthResult: (
+    skill: string,
+    gained: number,
+    characterId?: string | null,
+  ) => void;
 
   toPersist: () => CampaignPersist;
   hydrateCampaign: (data: CampaignPersist) => void;
@@ -358,6 +369,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   playerMemberId: null,
   editingPartySlotIndex: 0,
   endingCompanionsSavedIds: [],
+  endingCompanionsResolved: false,
+  pendingCompanionHandoff: null,
   viewedPartyMemberId: null,
   clues: [],
   playerNotes: [],
@@ -476,6 +489,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       editingPartySlotIndex: 0,
       viewedPartyMemberId: null,
       endingCompanionsSavedIds: [],
+      endingCompanionsResolved: false,
+      pendingCompanionHandoff: null,
       sceneDirector: {
         currentSceneId: null,
         sceneGoal: args.public_summary?.player_hook ?? "",
@@ -696,8 +711,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setViewedPartyMemberId: (id) => set({ viewedPartyMemberId: id }),
 
+  setPendingCompanionHandoff: (h) => set({ pendingCompanionHandoff: h }),
+
   markCompanionsSaved: (ids) =>
     set({ endingCompanionsSavedIds: [...new Set(ids)] }),
+
+  resolveEndingCompanions: (opts) =>
+    set((s) => ({
+      endingCompanionsResolved: true,
+      endingCompanionsSavedIds: [
+        ...new Set([
+          ...s.endingCompanionsSavedIds,
+          ...(opts?.savedIds ?? []),
+        ]),
+      ],
+    })),
 
   getSheetById: (characterId) => {
     const s = get();
@@ -1096,12 +1124,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
   markSkillSuccess: (skill_name, character_id = null) => {
     const sheet = get().getSheetById(character_id);
     if (!sheet) return;
+    let newlyMarked = false;
     get().updateSheetById(character_id ?? sheet.id, (base) => {
       const marked = new Set(base.markedSkillsForGrowth ?? []);
+      newlyMarked = !marked.has(skill_name);
       marked.add(skill_name);
       return { ...base, markedSkillsForGrowth: [...marked] };
     });
-    get().appendSystem(`已標記技能成功（成長）：${skill_name}`);
+    if (newlyMarked) {
+      const who = sheet.name?.trim() || "角色";
+      get().appendSystem(`已標記技能成功（成長）「${who}」：${skill_name}`);
+    }
   },
 
   recordClue: (clue) => {
@@ -1319,6 +1352,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set((s) => ({
       ending,
       phase: "ENDING",
+      pendingCompanionHandoff: null,
       pendingManualEnding: null,
       script: { ...s.script, revealed: true },
       timelineIndex: s.history.length ? s.history.length - 1 : null,
@@ -1398,10 +1432,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
       get().appendSystem("請指定「我扮演」的角色席次。");
       return;
     }
-    const incomplete = s0.party.filter((m) => !m.sheet.name?.trim());
+    const incomplete = Array.from({ length: s0.partySize }, (_, i) => i).filter(
+      (i) => !s0.party.some((m) => m.slotIndex === i && m.creationComplete),
+    );
     if (incomplete.length) {
       get().appendSystem(
-        `尚有未命名角色（席次 ${incomplete.map((m) => m.slotIndex + 1).join("、")}）。`,
+        `尚有未完成創角的席次（${incomplete.map((i) => i + 1).join("、")}）：需完成屬性／技能配點並確認席次。`,
       );
       return;
     }
@@ -1551,8 +1587,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     );
   },
 
-  applyGrowthResult: (skill, gained) => {
-    get().updateSheetById(get().playerMemberId, (sheet) => ({
+  applyGrowthResult: (skill, gained, characterId = null) => {
+    const targetId = characterId ?? get().playerMemberId;
+    get().updateSheetById(targetId, (sheet) => ({
       ...sheet,
       skills: {
         ...sheet.skills,
@@ -1602,6 +1639,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       playerMemberId: s.playerMemberId,
       editingPartySlotIndex: s.editingPartySlotIndex,
       endingCompanionsSavedIds: s.endingCompanionsSavedIds,
+      endingCompanionsResolved: s.endingCompanionsResolved,
+      pendingCompanionHandoff: s.pendingCompanionHandoff,
       viewedPartyMemberId: s.viewedPartyMemberId,
     };
   },
@@ -1663,6 +1702,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
       playerMemberId,
       editingPartySlotIndex: data.editingPartySlotIndex ?? 0,
       endingCompanionsSavedIds: data.endingCompanionsSavedIds ?? [],
+      endingCompanionsResolved: Boolean(
+        data.endingCompanionsResolved ??
+          (data.endingCompanionsSavedIds?.length ?? 0) > 0,
+      ),
+      pendingCompanionHandoff: data.pendingCompanionHandoff ?? null,
       viewedPartyMemberId:
         data.viewedPartyMemberId ?? playerMemberId ?? null,
       clues: data.clues,

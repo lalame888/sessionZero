@@ -33,6 +33,14 @@ export interface PartyMember {
   fromLibrary?: boolean;
 }
 
+/** 隊友宣告後等待玩家插話／按繼續（軟停） */
+export interface PendingCompanionHandoff {
+  companionId: string;
+  companionName: string;
+  action: string;
+  handoff: "pause" | "immediate";
+}
+
 export const MIN_PARTY_SIZE = 1;
 export const MAX_PARTY_SIZE = 4;
 

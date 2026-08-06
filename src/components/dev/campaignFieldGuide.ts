@@ -351,6 +351,18 @@ export const CAMPAIGN_FIELD_GROUPS: FieldGuideGroup[] = [
         meaning: "結局勾選存入角色庫的 AI 隊友 id 列表。",
         getValue: (c) => c.endingCompanionsSavedIds,
       },
+      {
+        path: "endingCompanionsResolved",
+        label: "AI 隊友檔案庫已處理",
+        meaning: "結局是否已確認 AI 隊友存入／略過（含全部略過）。",
+        getValue: (c) => c.endingCompanionsResolved,
+      },
+      {
+        path: "pendingCompanionHandoff",
+        label: "隊友軟停手遞",
+        meaning: "AI 隊友已宣告、等待玩家插話或「讓 GM 結算」時的暫存。",
+        getValue: (c) => c.pendingCompanionHandoff,
+      },
     ],
   },
 ];

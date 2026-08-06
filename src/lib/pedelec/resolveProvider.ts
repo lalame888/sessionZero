@@ -57,11 +57,5 @@ export async function resolveAvailableProvider(options?: {
         settings.defaultModels?.[provider] ||
         undefined;
 
-  // 回填 store，避免結局頁等畫面誤判「未連線」
-  useGameStore.getState().setProvider(provider);
-  if (model && !game.selectedModel) {
-    useGameStore.getState().setModel(model);
-  }
-
   return { provider, model };
 }

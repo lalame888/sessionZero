@@ -341,12 +341,7 @@ function CharacterPanel() {
         </div>
       ) : null}
 
-      <CharacterDetailModal
-        open={detailOpen}
-        onOpenChange={setDetailOpen}
-        character={character}
-        madness={madness}
-      />
+      <CharacterDetailModal open={detailOpen} onOpenChange={setDetailOpen} />
     </div>
   );
 }
