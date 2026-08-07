@@ -353,6 +353,9 @@ export function ScriptPage({
                       {script.hidden_full_script.scenes?.length ?? 0} · NPC{" "}
                       {script.hidden_full_script.npcs?.length ?? 0} · 時間線{" "}
                       {script.hidden_full_script.timeline?.length ?? 0}
+                      {script.hidden_full_script.creatures?.length
+                        ? ` · 敵人 ${script.hidden_full_script.creatures.length}`
+                        : ""}
                       {script.hidden_full_script.factions?.length
                         ? ` · 勢力 ${script.hidden_full_script.factions.length}`
                         : ""}

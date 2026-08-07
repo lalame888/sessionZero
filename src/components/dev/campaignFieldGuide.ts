@@ -363,6 +363,13 @@ export const CAMPAIGN_FIELD_GROUPS: FieldGuideGroup[] = [
         meaning: "AI 隊友已宣告、等待玩家插話或「讓 GM 結算」時的暫存。",
         getValue: (c) => c.pendingCompanionHandoff,
       },
+      {
+        path: "continuityBridge",
+        label: "幕間銜接",
+        meaning:
+          "自角色庫帶入時的連場／幕間／全新起點與恢復摘要；開場注入 GM 前提。",
+        getValue: (c) => c.continuityBridge,
+      },
     ],
   },
 ];
@@ -425,6 +432,11 @@ export const NESTED_FIELD_HINTS: Record<string, { label: string; meaning: string
     "script.hidden_full_script.npcs": {
       label: "劇本 NPC 備註",
       meaning: "隱藏劇本中的 NPC 動機、知情與對 PC 態度。",
+    },
+    "script.hidden_full_script.creatures": {
+      label: "敵人／怪物戰鬥數值",
+      meaning:
+        "Keeper SSOT：HP、護甲、攻擊技能％與傷害骰、目擊 SAN、特殊能力。有戰鬥威脅時應填寫。",
     },
     "script.hidden_full_script.factions": {
       label: "勢力",

@@ -22,11 +22,20 @@ import {
   resolveSkillBaseValue,
   resolveStandardArray,
 } from "@/engine/creation";
+import { resolveCocAttributeKeyFromCheckName } from "@/engine/skillCheck";
 import {
   campaignTitleFromState,
   createEmptyCampaignPersist,
   type CampaignPersist,
 } from "@/lib/campaignStorage";
+import { evaluateCombatStatAftermath } from "@/engine/combatAftermath";
+import type { ContinuityBridgeState } from "@/engine/continuityBridge";
+import {
+  applyContinuityRecovery,
+  buildContinuityBridgeState,
+  normalizeContinuityChoice,
+  type ContinuityBridgeChoice,
+} from "@/engine/continuityBridge";
 import { isBlockedSocialSanLoss } from "@/lib/historyHygiene";
 import { areDuplicateNarratives } from "@/lib/narrativeDedupe";
 import type {
@@ -143,6 +152,11 @@ interface GameStore {
   endingCompanionsResolved: boolean;
   /** 隊友宣告後軟停：等玩家插話或「讓 GM 結算」 */
   pendingCompanionHandoff: PendingCompanionHandoff | null;
+  /**
+   * 自角色庫帶入時的幕間銜接（全隊共用）。
+   * 僅有 fromLibrary 成員時會套用；開場注入 premiseZh。
+   */
+  continuityBridge: ContinuityBridgeState | null;
   /** 側欄／檢定目標目前檢視的成員 */
   viewedPartyMemberId: string | null;
   clues: ClueItem[];
@@ -163,6 +177,8 @@ interface GameStore {
   pendingManualEnding: {
     title: string;
     narrative: string;
+    /** 建議結局類型；死亡／崩潰路徑應為 BAD_ENDING */
+    ending_type?: string;
   } | null;
   /** 結局頁已完成成長／儲存（再進入略過結算） */
   endingCharacterSettled: boolean;
@@ -235,6 +251,15 @@ interface GameStore {
   ) => void;
   setViewedPartyMemberId: (id: string | null) => void;
   setPendingCompanionHandoff: (h: PendingCompanionHandoff | null) => void;
+  setContinuityBridge: (b: ContinuityBridgeState | null) => void;
+  /**
+   * 對檔案庫角色套用全隊銜接恢復，並更新 continuityBridge 摘要。
+   * 回傳恢復後的 sheet。
+   */
+  applyContinuityToLibrarySheet: (
+    sheet: UniversalCharacterSheet,
+    choice: ContinuityBridgeChoice,
+  ) => UniversalCharacterSheet;
   markCompanionsSaved: (ids: string[]) => void;
   resolveEndingCompanions: (opts?: { savedIds?: string[] }) => void;
   /** 依 character_id 取 sheet；缺省為玩家 */
@@ -306,7 +331,11 @@ interface GameStore {
   /** 玩家尚未行動時，清掉不完整開場敘事（供首次／重試開場） */
   clearIncompleteOpening: (mode?: "first" | "retry") => void;
   endGame: (ending: EndingState) => void;
-  offerManualEnding: (offer: { title: string; narrative: string }) => void;
+  offerManualEnding: (offer: {
+    title: string;
+    narrative: string;
+    ending_type?: string;
+  }) => void;
   clearManualEndingOffer: () => void;
   /** 玩家確認：依待進入結算的結局敘事（或傳入）進入 ENDING */
   confirmManualEnding: (override?: {
@@ -371,6 +400,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   endingCompanionsSavedIds: [],
   endingCompanionsResolved: false,
   pendingCompanionHandoff: null,
+  continuityBridge: null,
   viewedPartyMemberId: null,
   clues: [],
   playerNotes: [],
@@ -491,6 +521,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       endingCompanionsSavedIds: [],
       endingCompanionsResolved: false,
       pendingCompanionHandoff: null,
+      continuityBridge: null,
       sceneDirector: {
         currentSceneId: null,
         sceneGoal: args.public_summary?.player_hook ?? "",
@@ -713,6 +744,35 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setPendingCompanionHandoff: (h) => set({ pendingCompanionHandoff: h }),
 
+  setContinuityBridge: (b) => set({ continuityBridge: b }),
+
+  applyContinuityToLibrarySheet: (sheet, choice) => {
+    const normalized = normalizeContinuityChoice(choice);
+    const { sheet: recovered, lines } = applyContinuityRecovery(
+      sheet,
+      normalized,
+    );
+    const prev = get().continuityBridge;
+    const summaries = [
+      ...(prev?.appliedSummaries ?? []).filter(
+        (s) => s.characterId !== recovered.id,
+      ),
+      {
+        characterId: recovered.id,
+        name: recovered.name?.trim() || "角色",
+        lines,
+      },
+    ];
+    set({
+      continuityBridge: buildContinuityBridgeState(
+        normalized,
+        recovered.system_id ?? get().script.system_id,
+        summaries,
+      ),
+    });
+    return recovered;
+  },
+
   markCompanionsSaved: (ids) =>
     set({ endingCompanionsSavedIds: [...new Set(ids)] }),
 
@@ -819,7 +879,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
       standard_array: resolvedArray.array,
       point_buy,
       skill_points: schema.skill_points,
-      recommended_skills: (schema.recommended_skills ?? []).map((sk) => ({
+      recommended_skills: (schema.recommended_skills ?? [])
+        .filter((sk) => {
+          if (systemId !== "COC_7E") return true;
+          // 屬性名不可當技能（避免「敏捷:5」蓋掉 DEX 檢定）
+          return !resolveCocAttributeKeyFromCheckName(sk.name);
+        })
+        .map((sk) => ({
         ...sk,
         base_value: resolveSkillBaseValue(
           systemId,
@@ -1069,7 +1135,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!allowed.length && !inventory_add.length && !inventory_remove.length) {
       return;
     }
-    get().updateSheetById(character_id ?? sheet.id, (base) => {
+    const targetId = character_id ?? sheet.id;
+    const hpBefore = sheet.derived.hp.current;
+    const hpMax = sheet.derived.hp.max;
+    const sanBefore = sheet.derived.san?.current ?? null;
+
+    get().updateSheetById(targetId, (base) => {
       const next = structuredClone(base);
       for (const ch of allowed) {
         const key = ch.key;
@@ -1114,10 +1185,31 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
     if (allowed.length) {
       const who =
-        get().getSheetById(character_id ?? sheet.id)?.name?.trim() || "角色";
+        get().getSheetById(targetId)?.name?.trim() || "角色";
       get().appendSystem(
         `狀態更新（${who}）：${allowed.map((c) => `${c.key}${c.change_amount >= 0 ? "+" : ""}${c.change_amount}（${c.reason}）`).join("；")}`,
       );
+    }
+
+    const after = get().getSheetById(targetId);
+    if (!after) return;
+    const isPlayerPc =
+      targetId === get().playerMemberId ||
+      (!get().playerMemberId && targetId === get().character?.id);
+    const aftermath = evaluateCombatStatAftermath({
+      name: after.name,
+      isPlayerPc,
+      hpBefore,
+      hpAfter: after.derived.hp.current,
+      hpMax,
+      sanBefore,
+      sanAfter: after.derived.san?.current ?? null,
+    });
+    for (const n of aftermath.notices) {
+      get().appendSystem(n.message);
+    }
+    if (aftermath.offerBadEnding && get().phase === "PLAYING") {
+      get().offerManualEnding(aftermath.offerBadEnding);
     }
   },
 
@@ -1386,7 +1478,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       get().script.public_summary?.title ||
       "結局";
     get().endGame({
-      ending_type: override?.ending_type?.trim() || "TRUE_ENDING",
+      ending_type:
+        override?.ending_type?.trim() ||
+        pending?.ending_type?.trim() ||
+        "TRUE_ENDING",
       ending_title: title,
       ending_narrative: narrative,
       achievements: [],
@@ -1455,10 +1550,76 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
 
       const campaignId = get().campaignId;
-      const sheet = player.sheet;
+      const bridgeChoice = get().continuityBridge
+        ? normalizeContinuityChoice({
+            mode: get().continuityBridge!.mode,
+            duration: get().continuityBridge!.duration,
+          })
+        : null;
+
+      // 自庫帶入：以檔案庫原數值為底重新套用全隊同一銜接（避免重複恢復／模式不一致）
+      const continuitySummaries: ContinuityBridgeState["appliedSummaries"] = [];
+      let workingParty = get().party.map((m) => {
+        if (!m.fromLibrary) return m;
+        const lib = getLibraryCharacter(m.sheet.id);
+        const base = lib?.sheet ?? m.sheet;
+        if (!bridgeChoice) {
+          return {
+            ...m,
+            sheet: {
+              ...m.sheet,
+              derived: structuredClone(base.derived),
+              attributes: { ...base.attributes },
+              skills: { ...base.skills },
+              appearance: m.sheet.appearance,
+              personal_bio: m.sheet.personal_bio,
+              inventory: [...m.sheet.inventory],
+            },
+          };
+        }
+        const { sheet: recovered, lines } = applyContinuityRecovery(
+          base,
+          bridgeChoice,
+        );
+        continuitySummaries.push({
+          characterId: recovered.id,
+          name: m.sheet.name?.trim() || recovered.name || "角色",
+          lines,
+        });
+        return {
+          ...m,
+          sheet: {
+            ...recovered,
+            name: m.sheet.name,
+            role_title: m.sheet.role_title,
+            appearance: m.sheet.appearance,
+            personal_bio: m.sheet.personal_bio,
+            inventory: [...m.sheet.inventory],
+          },
+        };
+      });
+
+      if (bridgeChoice && continuitySummaries.length) {
+        set({
+          continuityBridge: buildContinuityBridgeState(
+            bridgeChoice,
+            get().script.system_id,
+            continuitySummaries,
+          ),
+          party: workingParty,
+        });
+      } else {
+        set({ party: workingParty });
+      }
+      workingParty = get().party;
+
+      const sheet =
+        workingParty.find((m) => m.controller === "player")?.sheet ??
+        workingParty.find((m) => m.id === player.id)?.sheet ??
+        player.sheet;
 
       // 玩家 + 自檔案庫帶入的 AI 隊友皆佔用角色卡（同時僅一場）
-      const toBind = get().party.filter(
+      const toBind = workingParty.filter(
         (m) =>
           m.controller === "player" ||
           m.id === player.id ||
@@ -1485,7 +1646,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       );
       bindCharacterToCampaign(enriched, campaignId);
 
-      const party = get().party.map((m) => {
+      const party = workingParty.map((m) => {
         if (m.id === player.id || m.controller === "player") {
           return {
             ...m,
@@ -1509,6 +1670,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
         }
         return { ...m, controller: "ai" as const };
       });
+
+      const bridgeNote =
+        get().continuityBridge?.appliedSummaries
+          ?.map((s) => `${s.name}（${s.lines.join("；")}）`)
+          .join("；") ?? null;
 
       set({
         phase: "PLAYING",
@@ -1538,6 +1704,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
         },
         retryAction: { kind: "opening", label: "述說開場敘事" },
       });
+
+      if (bridgeNote) {
+        get().appendSystem(`幕間銜接已套用：${bridgeNote}`);
+      }
 
       const libAi = party.filter((m) => m.controller === "ai" && m.fromLibrary);
       const newAi = party.filter((m) => m.controller === "ai" && !m.fromLibrary);
@@ -1579,11 +1749,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
       get().appendSystem("請先與 GM 完成劇本設定（setup_script），再進入創角。");
       return;
     }
-    set({ phase: "CHARACTER", editingPartySlotIndex: 0 });
+    set({
+      phase: "CHARACTER",
+      editingPartySlotIndex: 0,
+      continuityBridge: null,
+    });
     get().appendSystem(
       partySize > 1
-        ? `已確認劇本與房規，進入創角（隊伍 ${partySize} 人）。請為每位完成完整角色卡；各席次均可新建或帶入檔案庫（帶入會佔用該卡，一角同時僅一場；結局可選寫回）。僅「我扮演」席次冒險中會自動結算寫回。`
-        : "已確認劇本與房規，進入創角階段。可創建新角色，或帶入檔案庫中同系統的角色卡。",
+        ? `已確認劇本與房規，進入創角（隊伍 ${partySize} 人）。請為每位完成完整角色卡；各席次均可新建或帶入檔案庫（帶入會佔用該卡，一角同時僅一場；結局可選寫回）。自庫帶入時可設定幕間銜接。僅「我扮演」席次冒險中會自動結算寫回。`
+        : "已確認劇本與房規，進入創角階段。可創建新角色，或帶入檔案庫中同系統的角色卡（帶入時可選擇幕間銜接／連續冒險／全新起點）。",
     );
   },
 
@@ -1641,6 +1815,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       endingCompanionsSavedIds: s.endingCompanionsSavedIds,
       endingCompanionsResolved: s.endingCompanionsResolved,
       pendingCompanionHandoff: s.pendingCompanionHandoff,
+      continuityBridge: s.continuityBridge,
       viewedPartyMemberId: s.viewedPartyMemberId,
     };
   },
@@ -1707,6 +1882,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
           (data.endingCompanionsSavedIds?.length ?? 0) > 0,
       ),
       pendingCompanionHandoff: data.pendingCompanionHandoff ?? null,
+      continuityBridge: data.continuityBridge ?? null,
       viewedPartyMemberId:
         data.viewedPartyMemberId ?? playerMemberId ?? null,
       clues: data.clues,

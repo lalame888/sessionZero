@@ -7,12 +7,22 @@
   {
     "keyword": "理智",
     "aliases": ["SAN", "Sanity", "理智檢定"],
-    "text": "面對超自然威脅時進行理智檢定。失敗失去 SAN；歸零可能導致永久瘋狂。"
+    "text": "面對超自然威脅時進行理智檢定（閾值＝當前 SAN，非技能）。成功扣較少、失敗扣較多（如 0/1D4）。SAN 歸零可能永久瘋狂／崩潰結局。"
+  },
+  {
+    "keyword": "魔力點",
+    "aliases": ["MP", "Magic Points", "魔力"],
+    "text": "MP = floor(POW/5)。施法、儀式、部分神話力量須消耗 MP；不足則無法完成效應。用 update_game_stats 扣 MP。"
   },
   {
     "keyword": "極限成功",
-    "aliases": ["Extreme Success"],
-    "text": "骰出 ≤ 技能值/5 為極限成功；≤ 技能值/2 為困難成功；≤ 技能值為普通成功。"
+    "aliases": ["Extreme Success", "極限級成功", "困難成功", "困難級成功", "普通成功"],
+    "text": "成功品質（骰完後）：≤技能／5＝極限級成功；≤技能／2＝困難級成功；≤技能＝普通成功。與「檢定難度」（一般／困難／極限難度＝門檻要用全值／半值／⅕）分開理解。"
+  },
+  {
+    "keyword": "檢定難度",
+    "aliases": ["Difficulty", "困難難度", "極限難度", "一般難度"],
+    "text": "KP 事先要求的門檻等級：一般難度需≤技能；困難難度需≤半值；極限難度需≤⅕。過關後仍可依骰值判定更高的成功品質。"
   },
   {
     "keyword": "大失敗",
@@ -20,13 +30,38 @@
     "text": "技能 ≥ 50 時骰出 100 為大失敗；技能 < 50 時 96–100 為大失敗。須給予實質負面代價。"
   },
   {
+    "keyword": "孤注一擲",
+    "aliases": ["Push", "Push Roll", "推進"],
+    "text": "失敗後若允許孤注一擲，再次失敗必須帶來更嚴重後果（受傷、暴露、失去線索、時間壓力），不可軟著陸。"
+  },
+  {
     "keyword": "偵查",
     "aliases": ["Spot Hidden", "調查"],
-    "text": "偵查用於發現隱藏線索、足跡或異常細節。成功才可揭露對應 key_clue。"
+    "text": "偵查用於發現隱藏線索、足跡或異常細節。成功才可揭露對應 key_clue。不可當作攻擊或閃避替代。"
   },
   {
     "keyword": "戰鬥",
-    "aliases": ["Fighting", "近戰"],
-    "text": "近戰攻擊以戰鬥技能對抗；傷害依武器並可受體型修正影響。"
+    "aliases": ["Fighting", "近戰", "格鬥"],
+    "text": "近戰以格鬥對抗格鬥或閃避；優先用角色卡上的格鬥／射擊／閃避／投擲。傷害先扣護甲再扣 HP。"
+  },
+  {
+    "keyword": "護甲",
+    "aliases": ["Armor", "裝甲"],
+    "text": "命中後傷害先減去 Armor 點數，剩餘再套用到 HP。creature bible 的 armor 為 SSOT。"
+  },
+  {
+    "keyword": "重傷",
+    "aliases": ["Major Wound", "重大創傷"],
+    "text": "單次傷害 ≥ 最大 HP 的一半為重傷：須進行體質（CON）檢定；失敗則昏迷／失去行動。"
+  },
+  {
+    "keyword": "瀕死",
+    "aliases": ["Dying", "死亡", "HP歸零"],
+    "text": "HP≤0 該角色失去行動。玩家 PC 歸零應走向 BAD_ENDING（死亡或永久失能），禁止硬拗 TRUE_ENDING。"
+  },
+  {
+    "keyword": "目擊SAN",
+    "aliases": ["SAN loss", "san_loss_on_sight", "目擊"],
+    "text": "目擊怪物／神話存在依 creatures[].san_loss_on_sight（如 0/1D6）：理智檢定成功扣少、失敗扣多。"
   }
 ]

@@ -7,7 +7,9 @@ import {
   regenerateLastNarrative,
 } from "@/lib/pedelec/createGameSession";
 import { isCorruptedNarrativeFragment } from "@/lib/narrativeDedupe";
+import { parseHistoryActorInput } from "@/lib/historySpeaker";
 import { looksLikeLeakedToolCall } from "@/lib/pedelec/leakedToolCall";
+import { isGmMetaOnlyNarrative, stripGmMetaPrompts } from "@/lib/stripGmMetaPrompts";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
 
@@ -54,7 +56,8 @@ export function StoryLog({
       !(
         m.role === "agent" &&
         (looksLikeLeakedToolCall(m.content) ||
-          isCorruptedNarrativeFragment(m.content))
+          isCorruptedNarrativeFragment(m.content) ||
+          isGmMetaOnlyNarrative(m.content))
       ),
   );
 
@@ -190,11 +193,11 @@ export function StoryLog({
         </p>
       ) : null}
       {visibleMessages.map((m) => {
-        const isCompanion =
-          m.role === "user" && m.content.startsWith("【隊友·");
-        const companionName = isCompanion
-          ? m.content.match(/^【隊友·([^】]+)】/)?.[1]
-          : null;
+        const companionParsed =
+          m.role === "user" && m.content.startsWith("【隊友")
+            ? parseHistoryActorInput(m.content)
+            : null;
+        const isCompanion = companionParsed?.kind === "companion";
         return (
           <div
             key={m.id}
@@ -213,7 +216,7 @@ export function StoryLog({
             {m.role !== "system" ? (
               <div className="mb-1 text-[10px] uppercase tracking-wide text-muted">
                 {isCompanion
-                  ? `隊友 · ${companionName || ""}`
+                  ? companionParsed!.label
                   : m.role === "user"
                     ? "你"
                     : "GM"}
@@ -224,12 +227,10 @@ export function StoryLog({
               </div>
             )}
             {m.role === "agent" ? (
-              <MarkdownContent content={m.content} />
+              <MarkdownContent content={stripGmMetaPrompts(m.content)} />
             ) : (
               <div className="whitespace-pre-wrap">
-                {isCompanion
-                  ? m.content.replace(/^【隊友·[^】]+】/, "").trimStart()
-                  : m.content}
+                {isCompanion ? companionParsed!.body : m.content}
               </div>
             )}
             {narrativeControls &&

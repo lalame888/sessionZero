@@ -5,9 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { useAiPlayerStore } from "@/lib/aiPlayer";
 import {
+  acceptCompanionHandoffWithoutResolve,
   resolvePendingCompanionHandoff,
   sendPlayerAction,
 } from "@/lib/pedelec/createGameSession";
+import { isCompanionSpeechOnly } from "@/lib/stripGmMetaPrompts";
 import { useGameStore } from "@/store/useGameStore";
 
 const QUICK = [
@@ -60,7 +62,7 @@ function composerPlaceholder(opts: {
   }
 
   if (pendingCompanion) {
-    return "可插話／一起行動，或按「讓 GM 結算」…";
+    return "可插話／一起行動，或按「收下發言／請 GM 結算」…";
   }
 
   if (phase === "SESSION_0") {
@@ -111,8 +113,15 @@ export function Composer({
     setSending(true);
     try {
       setDraft("");
-      if (useGameStore.getState().pendingCompanionHandoff) {
-        await resolvePendingCompanionHandoff({ playerSupplement: value });
+      const handoff = useGameStore.getState().pendingCompanionHandoff;
+      if (handoff) {
+        // 純發言：直接收下後走玩家行動，避免 GM 再複述隊友
+        if (isCompanionSpeechOnly(handoff.action)) {
+          acceptCompanionHandoffWithoutResolve();
+          await sendPlayerAction(value);
+        } else {
+          await resolvePendingCompanionHandoff({ playerSupplement: value });
+        }
       } else {
         await sendPlayerAction(value);
       }
@@ -168,16 +177,33 @@ export function Composer({
       const store = useGameStore.getState();
       if (!store.sessionError) {
         store.setSessionError({ code, message });
-        store.appendSystem(`隊友結算失敗（${code}）。可稍後再按「讓 GM 結算」。`);
+        store.appendSystem(`隊友結算失敗（${code}）。可稍後再按「請 GM 結算」。`);
       }
     } finally {
       setSending(false);
     }
   };
 
+  const acceptCompanionSpeech = () => {
+    if (
+      disabled ||
+      sending ||
+      awaitingPublicDice ||
+      aiPlayerEnabled ||
+      !useGameStore.getState().pendingCompanionHandoff
+    ) {
+      return;
+    }
+    acceptCompanionHandoffWithoutResolve();
+  };
+
   if (awaitingPublicDice) {
     return <DiceCheckPanel />;
   }
+
+  const speechOnlyPending = pendingCompanionHandoff
+    ? isCompanionSpeechOnly(pendingCompanionHandoff.action)
+    : false;
 
   return (
     <div className="space-y-2 border-t border-border pt-3">
@@ -185,17 +211,38 @@ export function Composer({
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/70 bg-surface-2/60 px-3 py-2 text-xs text-ink">
           <Users className="h-3.5 w-3.5 shrink-0 text-accent" />
           <span className="min-w-0 flex-1">
-            「{pendingCompanionHandoff.companionName}」已宣告行動。可先插話，或讓
-            GM 結算結果。
+            {aiPlayerEnabled
+              ? speechOnlyPending
+                ? `「${pendingCompanionHandoff.companionName}」已發言；AI 代打會直接收下，不會再請 GM 複述。`
+                : `「${pendingCompanionHandoff.companionName}」已宣告行動；AI 代打會請 GM 結算結果（不複述台詞）。`
+              : pendingCompanionHandoff.autoResume
+                ? `「${pendingCompanionHandoff.companionName}」的行動已排隊；GM 空閒後會自動結算，也可手動按下方按鈕。`
+                : speechOnlyPending
+                  ? `「${pendingCompanionHandoff.companionName}」已發言。可直接收下輪到你，或在需要擲骰／世界反應時再請 GM 結算。`
+                  : `「${pendingCompanionHandoff.companionName}」已宣告行動。可先插話，或請 GM 結算結果（不會再複讀隊友台詞）。`}
           </span>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={inputLocked}
-            onClick={() => void continueCompanion()}
-          >
-            讓 GM 結算
-          </Button>
+          {!aiPlayerEnabled ? (
+            <>
+              {speechOnlyPending ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={inputLocked}
+                  onClick={acceptCompanionSpeech}
+                >
+                  收下發言
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant={speechOnlyPending ? "ghost" : "secondary"}
+                disabled={inputLocked}
+                onClick={() => void continueCompanion()}
+              >
+                請 GM 結算
+              </Button>
+            </>
+          ) : null}
         </div>
       ) : null}
       {phase === "PLAYING" ? (

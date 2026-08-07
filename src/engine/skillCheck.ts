@@ -147,8 +147,63 @@ export function cocSuccessThreshold(
   return s;
 }
 
+/** 檢定難度（KP 事先要求的門檻等級） */
 export function difficultyLabel(d: CheckDifficulty): string {
-  if (d === "hard") return "困難";
-  if (d === "extreme") return "極限";
-  return "一般";
+  if (d === "hard") return "困難難度";
+  if (d === "extreme") return "極限難度";
+  return "一般難度";
+}
+
+/** 難度＋門檻提示（給擲骰面板／系統訊息） */
+export function difficultyLabelWithHint(d: CheckDifficulty): string {
+  if (d === "hard") return "困難難度（需 ≤ 半值）";
+  if (d === "extreme") return "極限難度（需 ≤ ⅕）";
+  return "一般難度（需 ≤ 技能）";
+}
+
+/**
+ * 成功品質（骰完後依完整技能切分的結果等級）。
+ * 與「難度」分開：困難級成功＝骰 ≤ 半值，不是「很辛苦才成功」。
+ */
+export function successQualityLabel(outcome: string): string {
+  const o = outcome.trim().toUpperCase();
+  switch (o) {
+    case "CRITICAL_SUCCESS":
+    case "CRITICAL":
+      return "大成功";
+    case "EXTREME_SUCCESS":
+    case "EXTREME":
+      return "極限級成功（≤ ⅕）";
+    case "HARD_SUCCESS":
+    case "HARD":
+      return "困難級成功（≤ 半值）";
+    case "SUCCESS":
+    case "REGULAR_SUCCESS":
+      return "普通成功";
+    case "FAILURE":
+    case "FAIL":
+      return "失敗";
+    case "FUMBLE":
+      return "大失敗";
+    case "CANCELLED":
+      return "已取消";
+    case "TIMEOUT":
+      return "逾時";
+    case "ROLLED":
+      return "已擲出";
+    default:
+      return outcome;
+  }
+}
+
+/** 同時標示難度與成功品質（玩家／GM 可見結果） */
+export function formatDiceResultLabels(input: {
+  outcome: string;
+  difficulty?: CheckDifficulty | null;
+}): string {
+  const quality = successQualityLabel(input.outcome);
+  if (input.difficulty) {
+    return `難度：${difficultyLabel(input.difficulty)}｜成功品質：${quality}`;
+  }
+  return `成功品質：${quality}`;
 }

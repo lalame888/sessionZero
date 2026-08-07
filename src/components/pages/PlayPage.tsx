@@ -249,8 +249,9 @@ export function PlayPage({
           {endingOffer ? (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-700/40 bg-amber-950/20 px-3 py-2 text-xs text-ink">
               <span className="min-w-0 flex-1">
-                GM 已寫出結局敘事（{endingOffer.title}
-                ），但尚未進入結算畫面。可手動進入階段四結算與角色成長。
+                {pendingManualEnding?.ending_type === "BAD_ENDING"
+                  ? `角色已瀕死／崩潰（${endingOffer.title}）。建議以壞結局進入結算，勿硬拗通關。`
+                  : `GM 已寫出結局敘事（${endingOffer.title}），但尚未進入結算畫面。可手動進入階段四結算與角色成長。`}
               </span>
               <Button
                 type="button"
@@ -264,6 +265,11 @@ export function PlayPage({
                   confirmManualEnding({
                     title: endingOffer.title,
                     narrative: endingOffer.narrative,
+                    ending_type:
+                      pendingManualEnding?.ending_type ??
+                      ("ending_type" in endingOffer
+                        ? (endingOffer as { ending_type?: string }).ending_type
+                        : undefined),
                   })
                 }
               >

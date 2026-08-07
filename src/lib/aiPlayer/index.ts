@@ -3,6 +3,7 @@ export { PLAYER_AGENT_DIRECTIVES } from "@/lib/aiPlayer/directives";
 export {
   startAiPlayerLoop,
   resolveAiPlayerTurnGate,
+  shouldPauseAiPlayerForEnding,
   hasOpeningNarrative,
   isAwaitingGmReply,
 } from "@/lib/aiPlayer/autoPlay";

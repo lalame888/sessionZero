@@ -1,10 +1,30 @@
 import { useMemo, useState } from "react";
 import { ArrowLeft, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  CONTINUITY_DURATION_LABELS,
+  CONTINUITY_MODE_HINTS,
+  CONTINUITY_MODE_LABELS,
+  lastCareerEndingType,
+  normalizeContinuityChoice,
+  previewContinuityRecovery,
+  suggestContinuityBridge,
+  type ContinuityBridgeChoice,
+  type ContinuityDuration,
+  type ContinuityMode,
+} from "@/engine/continuityBridge";
 import type { LibraryCharacter } from "@/types/characterLibrary";
 import type { UniversalCharacterSheet } from "@/types/game";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
+
+const MODES: ContinuityMode[] = ["continual", "interlude", "fresh"];
+const DURATIONS: ContinuityDuration[] = [
+  "breath",
+  "overnight",
+  "days",
+  "weeks",
+];
 
 export function ReturningCharacterConfirm({
   entry,
@@ -30,16 +50,79 @@ export function ReturningCharacterConfirm({
   const appendSystem = useGameStore((s) => s.appendSystem);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
   const isTyping = useGameStore((s) => s.isTyping);
+  const existingBridge = useGameStore((s) => s.continuityBridge);
+  const applyContinuityToLibrarySheet = useGameStore(
+    (s) => s.applyContinuityToLibrarySheet,
+  );
 
   const [sheet, setSheet] = useState<UniversalCharacterSheet>(() => ({
     ...entry.sheet,
     inventory: [...entry.sheet.inventory],
   }));
 
+  const suggested = useMemo(
+    () => suggestContinuityBridge(lastCareerEndingType(entry.career)),
+    [entry.career],
+  );
+
+  const [choice, setChoice] = useState<ContinuityBridgeChoice>(() => {
+    if (existingBridge) {
+      return normalizeContinuityChoice({
+        mode: existingBridge.mode,
+        duration: existingBridge.duration,
+      });
+    }
+    return normalizeContinuityChoice(suggested);
+  });
+
+  const partyBridgeLocked = Boolean(existingBridge);
+
+  const preview = useMemo(
+    () =>
+      previewContinuityRecovery(
+        entry.sheet,
+        normalizeContinuityChoice(choice),
+      ),
+    [entry.sheet, choice],
+  );
+
+  const scriptProtagonistRole = useGameStore(
+    (s) => s.script.public_summary?.protagonist_role,
+  );
+
   const recentCareer = useMemo(
     () => entry.career.slice(0, 2),
     [entry.career],
   );
+
+  const roleMismatchHint = useMemo(() => {
+    if (!asPlayer) return null;
+    const scriptRole = scriptProtagonistRole?.trim() ?? "";
+    if (!scriptRole) return null;
+    const cardRole = [
+      sheet.role_title,
+      sheet.profile_coc?.occupation,
+      sheet.profile_dnd?.class_name,
+    ]
+      .map((x) => x?.trim())
+      .filter(Boolean)
+      .join("／");
+    if (!cardRole) return null;
+    const norm = (s: string) => s.replace(/\s/g, "");
+    const a = norm(scriptRole);
+    const b = norm(cardRole);
+    if (a === b || a.includes(b) || b.includes(a)) return null;
+    // 任一卡面稱謂與劇本定位互相包含即視為對齊
+    const parts = cardRole.split("／").map(norm).filter(Boolean);
+    if (parts.some((p) => a.includes(p) || p.includes(a))) return null;
+    return { scriptRole, cardRole };
+  }, [
+    asPlayer,
+    scriptProtagonistRole,
+    sheet.role_title,
+    sheet.profile_coc?.occupation,
+    sheet.profile_dnd?.class_name,
+  ]);
 
   const skillPreview = useMemo(() => {
     return Object.entries(sheet.skills)
@@ -66,7 +149,27 @@ export function ReturningCharacterConfirm({
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
-    const next = { ...sheet, inventory };
+    const narrative = { ...sheet, inventory };
+    const recovered = applyContinuityToLibrarySheet(
+      {
+        ...entry.sheet,
+        name: narrative.name,
+        role_title: narrative.role_title,
+        appearance: narrative.appearance,
+        personal_bio: narrative.personal_bio,
+        inventory,
+      },
+      normalizeContinuityChoice(choice),
+    );
+    // 保留上場前微調；數值以銜接恢復為準
+    const next: UniversalCharacterSheet = {
+      ...recovered,
+      appearance: narrative.appearance,
+      personal_bio: narrative.personal_bio,
+      inventory,
+      name: narrative.name,
+      role_title: narrative.role_title,
+    };
 
     if (asPlayer) {
       setPlayerMemberSlot(editingPartySlotIndex);
@@ -83,10 +186,12 @@ export function ReturningCharacterConfirm({
       });
     }
     setCharacter(next);
+    const modeLabel =
+      CONTINUITY_MODE_LABELS[normalizeContinuityChoice(choice).mode];
     appendSystem(
       asPlayer
-        ? `已帶入調查員「${next.name}」至席次 ${editingPartySlotIndex + 1}（沿用既有屬性／技能；開始冒險後將佔用此卡）。`
-        : `已帶入「${next.name}」至席次 ${editingPartySlotIndex + 1} 作為 AI 隊友（將佔用此卡；結局可選是否寫回檔案庫）。`,
+        ? `已帶入調查員「${next.name}」至席次 ${editingPartySlotIndex + 1}（${modeLabel}；開始冒險後將佔用此卡）。`
+        : `已帶入「${next.name}」至席次 ${editingPartySlotIndex + 1} 作為 AI 隊友（${modeLabel}；將佔用此卡；結局可選是否寫回檔案庫）。`,
     );
     if (partySize <= 1) {
       confirmCharacterAndPlay();
@@ -111,6 +216,14 @@ export function ReturningCharacterConfirm({
             ? ` · 履歷 ${entry.career.length} 場`
             : " · 尚無履歷"}
         </p>
+
+        {roleMismatchHint ? (
+          <p className="mt-2 rounded-md border border-border/80 bg-bg/40 px-2.5 py-2 text-[11px] text-muted">
+            劇本主角定位是「{roleMismatchHint.scriptRole}」，此卡較偏「
+            {roleMismatchHint.cardRole}
+            」。可開打；GM 應依實際職業／技能適配場景，勿硬拗成原定民俗學者等設定。
+          </p>
+        ) : null}
 
         <div className="mt-3 grid gap-2 text-xs text-muted sm:grid-cols-2">
           {sheet.derived.san ? (
@@ -162,6 +275,74 @@ export function ReturningCharacterConfirm({
           </ul>
         </div>
       ) : null}
+
+      <div className="space-y-3 rounded-lg border border-accent/25 bg-accent/5 p-4">
+        <h4 className="brand-title text-sm">幕間銜接</h4>
+        <p className="text-xs text-muted">
+          {partyBridgeLocked
+            ? "本場已選定銜接模式（全隊共用）。可改選；開打時會以檔案庫原數值重新套用同一模式。"
+            : "依上一場結局已建議預設。地城連場選「連續冒險」；結案後再接新案選「幕間」。"}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {MODES.map((mode) => (
+            <Button
+              key={mode}
+              type="button"
+              size="sm"
+              variant={choice.mode === mode ? "default" : "secondary"}
+              onClick={() =>
+                setChoice((c) =>
+                  normalizeContinuityChoice({
+                    mode,
+                    duration:
+                      mode === "interlude"
+                        ? c.duration ?? suggested.duration ?? "days"
+                        : null,
+                  }),
+                )
+              }
+            >
+              {CONTINUITY_MODE_LABELS[mode]}
+            </Button>
+          ))}
+        </div>
+        <p className="text-xs text-muted">{CONTINUITY_MODE_HINTS[choice.mode]}</p>
+        {choice.mode === "interlude" ? (
+          <div className="flex flex-wrap gap-2">
+            {DURATIONS.map((d) => (
+              <Button
+                key={d}
+                type="button"
+                size="sm"
+                variant={choice.duration === d ? "default" : "ghost"}
+                onClick={() =>
+                  setChoice({ mode: "interlude", duration: d })
+                }
+              >
+                {CONTINUITY_DURATION_LABELS[d]}
+              </Button>
+            ))}
+          </div>
+        ) : null}
+        <div className="rounded-md border border-border/60 bg-bg/50 px-3 py-2 text-xs text-ink">
+          <div className="text-muted">恢復預覽（相對檔案庫）</div>
+          <ul className="mt-1 list-inside list-disc space-y-0.5">
+            {preview.lines.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+          <div className="mt-2 text-muted">
+            上場後 → HP {preview.sheet.derived.hp.current}/
+            {preview.sheet.derived.hp.max}
+            {preview.sheet.derived.san
+              ? ` · SAN ${preview.sheet.derived.san.current}/${preview.sheet.derived.san.max}`
+              : ""}
+            {preview.sheet.derived.mp_or_slots
+              ? ` · MP/資源 ${preview.sheet.derived.mp_or_slots.current}/${preview.sheet.derived.mp_or_slots.max}`
+              : ""}
+          </div>
+        </div>
+      </div>
 
       <div className="space-y-3 rounded-lg border border-border p-4">
         <h4 className="brand-title text-sm">上場前微調</h4>

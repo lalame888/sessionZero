@@ -165,6 +165,47 @@ export interface ScenarioNpcPrep {
   attitude_to_pc: string;
 }
 
+/** CoC／戰鬥用：劇本備註中的敵人／怪物／敵對生物數值（Keeper SSOT） */
+export interface ScenarioCreatureAttack {
+  name: string;
+  /** 命中技能％（CoC d100） */
+  skill_pct: number;
+  /** 傷害骰字串，如 1D6+1D4、1D3 */
+  damage: string;
+  attacks_per_round?: number;
+}
+
+export interface ScenarioCreature {
+  id: string;
+  name: string;
+  kind: "human" | "monster" | "mythos" | string;
+  /** 屬性；人類宜齊全，怪物可只填戰鬥相關 */
+  attributes?: {
+    STR?: number;
+    CON?: number;
+    SIZ?: number;
+    DEX?: number;
+    APP?: number;
+    INT?: number;
+    POW?: number;
+    EDU?: number;
+  };
+  hp: number;
+  /** 護甲點數（先扣傷害再套到 HP） */
+  armor?: number;
+  mov?: number;
+  build?: number;
+  damage_bonus?: string;
+  attacks: ScenarioCreatureAttack[];
+  /** 目擊／遭遇 SAN 損失，如 0/1D4 或 1/1D6 */
+  san_loss_on_sight?: string;
+  armor_notes?: string;
+  powers?: string;
+  combat_notes?: string;
+  /** 可連結到 npcs[].id */
+  linked_npc_id?: string;
+}
+
 export interface ScenarioFaction {
   id: string;
   name: string;
@@ -189,6 +230,11 @@ export interface HiddenFullScript {
   scenes?: ScenarioScene[];
   /** 重要 NPC 備註 */
   npcs?: ScenarioNpcPrep[];
+  /**
+   * 會參戰／具威脅的敵人／怪物戰鬥數值（Keeper SSOT）。
+   * oneshot／arc 若有戰鬥威脅應填寫。
+   */
+  creatures?: ScenarioCreature[];
   /** 長篇用：勢力 */
   factions?: ScenarioFaction[];
   /** SAN／威脅備註 */
@@ -302,7 +348,7 @@ export interface PendingDice {
   target_value?: number;
   /** CoC：角色卡上的完整技能％（用於成功等級與大失敗） */
   skill_value?: number;
-  /** CoC：一般 / 困難 / 極限 */
+  /** CoC：檢定難度 regular / hard / extreme（一般／困難／極限難度） */
   difficulty?: "regular" | "hard" | "extreme";
   dnd_advantage_mode?: "normal" | "advantage" | "disadvantage" | string;
   reason: string;

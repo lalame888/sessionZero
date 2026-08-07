@@ -100,6 +100,62 @@ export const setupScriptTool = defineTool({
               ],
             },
           },
+          creatures: {
+            type: "array",
+            description:
+              "COC／有戰鬥威脅時必填：敵人／怪物戰鬥數值（HP、護甲、攻擊技能％與傷害骰、目擊 SAN）。人類敵對 NPC 也可列於此並用 linked_npc_id 對應 npcs。",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string" },
+                name: { type: "string" },
+                kind: {
+                  type: "string",
+                  description: "human | monster | mythos",
+                },
+                attributes: {
+                  type: "object",
+                  properties: {
+                    STR: { type: "number" },
+                    CON: { type: "number" },
+                    SIZ: { type: "number" },
+                    DEX: { type: "number" },
+                    APP: { type: "number" },
+                    INT: { type: "number" },
+                    POW: { type: "number" },
+                    EDU: { type: "number" },
+                  },
+                },
+                hp: { type: "number" },
+                armor: { type: "number" },
+                mov: { type: "number" },
+                build: { type: "number" },
+                damage_bonus: { type: "string" },
+                attacks: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      name: { type: "string" },
+                      skill_pct: { type: "number" },
+                      damage: { type: "string" },
+                      attacks_per_round: { type: "number" },
+                    },
+                    required: ["name", "skill_pct", "damage"],
+                  },
+                },
+                san_loss_on_sight: {
+                  type: "string",
+                  description: "如 0/1D4 或 1/1D6（成功/失敗）",
+                },
+                armor_notes: { type: "string" },
+                powers: { type: "string" },
+                combat_notes: { type: "string" },
+                linked_npc_id: { type: "string" },
+              },
+              required: ["id", "name", "kind", "hp", "attacks"],
+            },
+          },
           factions: {
             type: "array",
             items: {
@@ -466,7 +522,7 @@ export const narrateStoryTool = defineTool({
           difficulty: {
             type: "string",
             description:
-              "CoC only: regular | hard | extreme（一般／困難／極限）。預設 regular。",
+              "CoC only — 檢定難度（KP 事先要求的門檻）：regular=一般難度（≤技能）｜hard=困難難度（≤半值）｜extreme=極限難度（≤⅕）。預設 regular。與骰完後的「成功品質」（普通／困難級／極限級成功）不同。",
           },
           dnd_advantage_mode: { type: "string" },
           reason: { type: "string" },

@@ -1,6 +1,7 @@
 import type { ProviderCode } from "@kaoruisaac/pedelec";
 import { defineTool } from "@kaoruisaac/pedelec";
 import { isNoiseHistoryNarrative } from "@/lib/historyHygiene";
+import { parseHistoryActorInput } from "@/lib/historySpeaker";
 import { pedelec } from "@/lib/pedelec/client";
 import { useGameStore } from "@/store/useGameStore";
 
@@ -63,11 +64,14 @@ function assembleStoryContext(): string {
 
   const beats = picks
     .map((h) => {
-      const player = h.playerInput?.trim()
-        ? `玩家：${h.playerInput.trim().slice(0, 160)}`
+      const actor = h.playerInput?.trim()
+        ? parseHistoryActorInput(h.playerInput)
+        : null;
+      const actorLine = actor
+        ? `${actor.label}：${actor.body.slice(0, 160)}`
         : null;
       const narr = h.aiNarrative.replace(/\s+/g, " ").trim().slice(0, 280);
-      return [`[Turn ${h.turn}]`, player, narr ? `GM：${narr}` : null]
+      return [`[Turn ${h.turn}]`, actorLine, narr ? `GM：${narr}` : null]
         .filter(Boolean)
         .join("\n");
     })

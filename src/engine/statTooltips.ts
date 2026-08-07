@@ -106,7 +106,7 @@ export function attributeTooltipContent(
     const half = Math.floor(opts.score / 2);
     const fifth = Math.floor(opts.score / 5);
     lines.push(
-      `百分制檢定參考：一般 ≤${opts.score}；困難 ≤${half}；極限 ≤${fifth}。`,
+      `百分制檢定參考：一般難度 ≤${opts.score}；困難難度 ≤${half}；極限難度 ≤${fifth}。成功品質另依骰值：普通／困難級（半值）／極限級（⅕）。`,
     );
   }
 

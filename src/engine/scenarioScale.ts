@@ -49,8 +49,12 @@ MUST call setup_script with richer Traditional Chinese content:
   - timeline: 5–10 個節點（when/what），含明確時間壓力.
   - scenes: 6–10 個；每項 id, name, summary, clues[], dangers[], linked_npc_ids[].
   - npcs: 4–8 個；每項 id, name, role, appearance?, motivation, knows, attitude_to_pc.
+  - creatures: 若劇本含敵對人類／怪物／神話生物且可能開戰，MUST 填 1+ 筆戰鬥數值：
+    id, name, kind(human|monster|mythos), hp, armor?, attributes?, attacks[{name,skill_pct,damage}],
+    san_loss_on_sight?, powers?, combat_notes?, linked_npc_id?.
+    這是 Keeper SSOT；遊玩時敵方攻擊與傷害必須依此，不可即興亂改 HP／傷害。
   - san_and_threats: 何處可能掉 SAN／主要威脅備註.
-- Design for a single evening (約 2–4 小時節奏). Solo 1 PC.`;
+- Design for a single evening (約 2–4 小時節奏). 1 human PC + optional AI companions (party 1–4); still runnable solo.`;
   }
   return `SCENARIO SCALE = arc（多場次長篇）
 MUST call setup_script with campaign-arc Traditional Chinese content:
@@ -63,7 +67,72 @@ MUST call setup_script with campaign-arc Traditional Chinese content:
   - timeline: 8–15 節點，跨數日／數週.
   - scenes: 12–20 個（同上欄位）.
   - npcs: 8–14 個.
+  - creatures: 各幕主要敵人／怪物戰鬥區塊（同上 oneshot 欄位；可跨場复用 id）.
   - factions: 2–5 個（id, name, goal, methods?).
   - san_and_threats: 分階段威脅.
-- Solo 1 PC; pacing for multiple sessions.`;
+- 1 human PC + optional AI companions (party 1–4); pacing for multiple sessions.`;
+}
+
+export type ScenarioScaleGap = {
+  field: string;
+  have: number;
+  wantMin: number;
+  wantMax?: number;
+};
+
+/** 檢查 bible 深度是否低於所選規模下限（給 setup 後系統提示用） */
+export function assessScenarioScaleGaps(input: {
+  scale: ScenarioScale | string | null | undefined;
+  key_clues?: string[] | null;
+  timeline?: unknown[] | null;
+  scenes?: unknown[] | null;
+  npcs?: unknown[] | null;
+  creatures?: unknown[] | null;
+  acts?: unknown[] | null;
+  factions?: unknown[] | null;
+}): ScenarioScaleGap[] {
+  const scale = normalizeScenarioScale(
+    typeof input.scale === "string" ? input.scale : input.scale ?? undefined,
+  );
+  const count = (arr: unknown[] | null | undefined) => arr?.length ?? 0;
+  const gaps: ScenarioScaleGap[] = [];
+  const push = (
+    field: string,
+    have: number,
+    wantMin: number,
+    wantMax?: number,
+  ) => {
+    if (have < wantMin) gaps.push({ field, have, wantMin, wantMax });
+  };
+
+  if (scale === "seed") {
+    push("key_clues", count(input.key_clues), 3, 5);
+    return gaps;
+  }
+  if (scale === "oneshot") {
+    push("key_clues", count(input.key_clues), 6, 10);
+    push("timeline", count(input.timeline), 5, 10);
+    push("scenes", count(input.scenes), 6, 10);
+    push("npcs", count(input.npcs), 4, 8);
+    return gaps;
+  }
+  // arc
+  push("key_clues", count(input.key_clues), 10, 16);
+  push("timeline", count(input.timeline), 8, 15);
+  push("scenes", count(input.scenes), 12, 20);
+  push("npcs", count(input.npcs), 8, 14);
+  push("acts", count(input.acts), 3, 5);
+  push("factions", count(input.factions), 2, 5);
+  return gaps;
+}
+
+export function formatScenarioScaleGapsZh(gaps: ScenarioScaleGap[]): string {
+  if (!gaps.length) return "";
+  return gaps
+    .map((g) => {
+      const range =
+        g.wantMax != null ? `${g.wantMin}–${g.wantMax}` : `≥${g.wantMin}`;
+      return `${g.field} ${g.have}（建議 ${range}）`;
+    })
+    .join("、");
 }

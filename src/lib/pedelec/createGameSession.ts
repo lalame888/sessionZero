@@ -14,26 +14,36 @@ import {
 } from "@/engine/dice";
 import {
   cocSuccessThreshold,
-  difficultyLabel,
+  difficultyLabelWithHint,
+  formatDiceResultLabels,
   isSanityCheckName,
   resolveCocAttributeValueFromSheet,
   resolveCocAttributeKeyFromCheckName,
   lookupCharacterSkill,
   parseCheckDifficulty,
   resolveSanityCheckFromSheet,
+  successQualityLabel,
   type CheckDifficulty,
   type ResolvedCheckKind,
 } from "@/engine/skillCheck";
 import { findSrdByTopic } from "@/engine/srdLorebook";
 import {
+  assessScenarioScaleGaps,
+  formatScenarioScaleGapsZh,
+  normalizeScenarioScale,
+} from "@/engine/scenarioScale";
+import {
   areDuplicateNarratives,
   isCorruptedNarrativeFragment,
+  isNarrativeRewrite,
 } from "@/lib/narrativeDedupe";
 import { requestCompanionDecision } from "@/lib/companionAi/session";
+import { useAiPlayerStore } from "@/lib/aiPlayer/store";
 import { normalizeNarrativeText } from "@/lib/normalizeNarrativeText";
 import {
   isGmMetaOnlyNarrative,
   stripGmMetaPrompts,
+  stripLeadingCompanionParaphrase,
 } from "@/lib/stripGmMetaPrompts";
 import {
   extractEndingTitleFromNarrative,
@@ -148,6 +158,7 @@ async function maybeAutoInvokeCompanions() {
   if (autoCompanionInFlight) return;
   const store = useGameStore.getState();
   if (store.phase !== "PLAYING") return;
+  if (store.pendingManualEnding || store.ending) return;
   if (store.pendingDice) return;
   if (store.pendingCompanionHandoff) return;
   if (activeCompanionResolveId) return;
@@ -248,27 +259,79 @@ export function buildCompanionResolveExtraLayers(input: {
   const supplement = input.playerSupplement?.trim();
   return [
     [
-      "[COMPANION RESOLVE — PC NOT NPC]",
+      "[COMPANION RESOLVE — PC NOT NPC — ANTI-REWRITE]",
       `Companion id: ${input.companionId}`,
       `Name: ${input.companionName}`,
-      `Their declaration (do NOT rewrite or paraphrase as NPC narration): 「${input.action}」`,
+      `Their declaration is ALREADY visible as a separate player bubble. Do NOT rewrite or paraphrase it.`,
+      `Declaration (for your eyes only — never re-speak): 「${input.action}」`,
       supplement ? `Human player follow-up: ${supplement}` : "",
       `MUST use character_id=${input.companionId} on check_request / secret_check_request / update_game_stats / mark_skill_success for THIS companion's attempt.`,
       `If the companion's declaration is attempting an investigation / examination / medical / mysticism / combat maneuvre / knowledge assessment, you MUST initiate a check_request or secret_check_request for THIS attempt (and provide target_value if no sheet-matched skill exists).`,
-      "Narrate ONLY dice outcomes, world/NPC reactions, and visible consequences. Do not re-speak their lines. Then return spotlight to the human player.",
+      "FORBIDDEN in narrative_text:",
+      "- Prefix 【隊友·…】 or any restatement of their spoken lines",
+      `- Third-person replay of the same action (e.g.「${input.companionName}大喊…」「她忍著痛…」repeating what they already declared)`,
+      "- God-moding the human PC's actions/thoughts",
+      "REQUIRED:",
+      "- Narrate ONLY dice outcomes, world/NPC reactions, and NEW visible consequences",
+      "- If no check yet: 1–3 short sentences max of world reaction, then pause for the human player",
+      "- Prefer opening with the world's response (enemy move, footing slips, NPC glance) — never re-enact the companion's declaration",
+      "Then return spotlight to the human player.",
     ]
       .filter(Boolean)
       .join("\n"),
   ];
 }
 
-async function waitForSessionIdle(maxAttempts = 80) {
+/** 收下隊友發言／意圖，不呼叫 GM（避免純對話被複述） */
+export function acceptCompanionHandoffWithoutResolve() {
+  const store = useGameStore.getState();
+  if (!store.pendingCompanionHandoff) return;
+  store.setPendingCompanionHandoff(null);
+}
+
+async function waitForSessionIdle(maxAttempts = 120) {
   for (let i = 0; i < maxAttempts; i++) {
     const s = getActiveSession();
     if (s && s.getStatus() === "idle") return true;
-    await new Promise((r) => setTimeout(r, 120));
+    await new Promise((r) => setTimeout(r, 150));
   }
   return getActiveSession()?.getStatus() === "idle";
+}
+
+let companionHandoffResolveInFlight = false;
+
+/**
+ * Session idle 時：若有因 GM 忙碌而暫存的隊友宣告（autoResume），或 AI 代打開啟中，
+ * 自動送出「讓 GM 結算」，避免 UI 卡住且代打繼續搶話。
+ */
+async function maybeAutoResolvePendingCompanionHandoff(opts?: {
+  /** 僅處理 autoResume 標記（預設）；true 時只要有 pending 就結算 */
+  force?: boolean;
+}) {
+  if (companionHandoffResolveInFlight) return;
+  const store = useGameStore.getState();
+  if (store.phase !== "PLAYING") return;
+  if (store.pendingManualEnding || store.ending) return;
+  const handoff = store.pendingCompanionHandoff;
+  if (!handoff) return;
+
+  const force =
+    Boolean(opts?.force) || useAiPlayerStore.getState().enabled;
+  if (!force && !handoff.autoResume) return;
+
+  const session = getActiveSession();
+  if (!session || session.getStatus() !== "idle") return;
+  if (store.pendingDice) return;
+  if (activeCompanionResolveId) return;
+
+  companionHandoffResolveInFlight = true;
+  try {
+    await resolvePendingCompanionHandoff();
+  } catch {
+    // 仍忙碌或失敗：保留 pending，下一次 idle 再試
+  } finally {
+    companionHandoffResolveInFlight = false;
+  }
 }
 
 /** 軟停「讓 GM 結算」或玩家插話後，送出隊友結算給 GM */
@@ -280,6 +343,7 @@ export async function resolvePendingCompanionHandoff(opts?: {
   if (!handoff) {
     throw new Error("NO_PENDING_COMPANION_HANDOFF");
   }
+  // 先清 UI，避免結算過程中仍顯示「可插話」
   store.setPendingCompanionHandoff(null);
   activeCompanionResolveId = handoff.companionId;
 
@@ -292,22 +356,38 @@ export async function resolvePendingCompanionHandoff(opts?: {
   const label = `【隊友·${handoff.companionName}】${handoff.action}`;
 
   const idle = await waitForSessionIdle();
-  if (!idle) throw new Error("SESSION_BUSY");
+  if (!idle) {
+    activeCompanionResolveId = null;
+    // 還原 pending，並標記可自動重試
+    useGameStore.getState().setPendingCompanionHandoff({
+      ...handoff,
+      handoff: "pause",
+      autoResume: true,
+    });
+    throw new Error("SESSION_BUSY");
+  }
 
   try {
     if (opts?.playerSupplement?.trim()) {
       await sendPlayerAction(opts.playerSupplement.trim(), {
         skipUserMessage: false,
         extraLayers: layers,
+        companionResolve: true,
       });
     } else {
       await sendPlayerAction(label, {
         skipUserMessage: true,
         extraLayers: layers,
+        companionResolve: true,
       });
     }
   } catch (e) {
     activeCompanionResolveId = null;
+    useGameStore.getState().setPendingCompanionHandoff({
+      ...handoff,
+      handoff: "pause",
+      autoResume: true,
+    });
     throw e;
   }
 }
@@ -322,18 +402,19 @@ async function beginImmediateCompanionResolve(input: {
   const label = `【隊友·${input.companionName}】${input.action}`;
   const layers = buildCompanionResolveExtraLayers(input);
   void (async () => {
-    const idle = await waitForSessionIdle();
+    const idle = await waitForSessionIdle(160);
     if (!idle) {
       useGameStore
         .getState()
         .appendSystem(
-          `隊友「${input.companionName}」的行動已記錄，但 GM 忙碌；請稍後按「讓 GM 結算」或重試。`,
+          `隊友「${input.companionName}」的行動已記錄，但 GM 忙碌；系統將在 GM 空閒後自動結算。`,
         );
       useGameStore.getState().setPendingCompanionHandoff({
         companionId: input.companionId,
         companionName: input.companionName,
         action: input.action,
         handoff: "pause",
+        autoResume: true,
       });
       activeCompanionResolveId = null;
       return;
@@ -342,19 +423,21 @@ async function beginImmediateCompanionResolve(input: {
       await sendPlayerAction(label, {
         skipUserMessage: true,
         extraLayers: layers,
+        companionResolve: true,
       });
     } catch {
       activeCompanionResolveId = null;
       useGameStore
         .getState()
         .appendSystem(
-          `隊友「${input.companionName}」的行動已記錄，但 GM 接續失敗；可請玩家重試上一步。`,
+          `隊友「${input.companionName}」的行動已記錄，但 GM 接續失敗；系統將在空閒後自動重試結算。`,
         );
       useGameStore.getState().setPendingCompanionHandoff({
         companionId: input.companionId,
         companionName: input.companionName,
         action: input.action,
         handoff: "pause",
+        autoResume: true,
       });
     }
   })();
@@ -392,18 +475,7 @@ function resolveCheckAgainstSheet(args: {
 
   const hit = lookupCharacterSkill(sheet, args.check_target_name);
 
-  if (isD100 && hit) {
-    const threshold = cocSuccessThreshold(hit.value, difficulty);
-    return {
-      target_value: threshold,
-      skill_value: hit.value,
-      difficulty,
-      sheetSkillName: hit.name,
-      checkKind: "skill",
-    };
-  }
-
-  // CoC：屬性檢定（不是技能欄）
+  // CoC：屬性名（力量／敏捷…）優先於同名「假技能」——角色卡若誤建「敏捷:5」不可蓋掉 DEX
   if (isD100 && sheet?.system_id === "COC_7E") {
     const attrVal = resolveCocAttributeValueFromSheet(
       sheet,
@@ -419,6 +491,17 @@ function resolveCheckAgainstSheet(args: {
         checkKind: "attribute",
       };
     }
+  }
+
+  if (isD100 && hit) {
+    const threshold = cocSuccessThreshold(hit.value, difficulty);
+    return {
+      target_value: threshold,
+      skill_value: hit.value,
+      difficulty,
+      sheetSkillName: hit.name,
+      checkKind: "skill",
+    };
   }
 
   // 自訂目標（GM 提供 target_value，技能欄未對上）
@@ -463,7 +546,8 @@ function formatDiceThresholdNote(input: {
     return `，門檻 ≤${input.target_value}（屬性 ${input.check_target_name} ${input.skill_value}）`;
   }
   if (input.skill_value != null && input.target_value != null) {
-    return `，門檻 ≤${input.target_value}（技能 ${input.skill_value}%／${difficultyLabel(input.difficulty ?? "regular")}）`;
+    const diff = difficultyLabelWithHint(input.difficulty ?? "regular");
+    return `，${diff}，門檻 ≤${input.target_value}（技能 ${input.skill_value}%）`;
   }
   if (input.target_value != null) {
     return `，門檻 ≤${input.target_value}`;
@@ -535,7 +619,10 @@ function waitForPlayerDice(args: {
       dnd_advantage_mode: args.dnd_advantage_mode,
     });
     store.appendSystem(
-      `擲骰結果：${whoLabel}${displayName} → ${rolled.detail}（${rolled.outcome}${rolled.thresholdNote}）`,
+      `擲骰結果：${whoLabel}${displayName} → ${rolled.detail}（${formatDiceResultLabels({
+        outcome: rolled.outcome,
+        difficulty: resolved.difficulty,
+      })}${rolled.thresholdNote}）`,
     );
     return Promise.resolve({
       request_id: args.request_id,
@@ -595,9 +682,42 @@ export function settlePendingDiceOnTeardown() {
 
 async function runNarrateStory(args: NarrateStoryArgs) {
   const a = args;
-  const narrativeText = stripGmMetaPrompts(
+  let narrativeText = stripGmMetaPrompts(
     normalizeNarrativeText(a.narrative_text),
   );
+
+  // 隊友結算：剝掉複讀隊友氣泡／第三人稱重演，避免「隊友講完 GM 再講一遍」
+  if (activeCompanionResolveId) {
+    const msgs = useGameStore.getState().messages;
+    let companionName = "";
+    let companionAction = "";
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m || m.role !== "user") continue;
+      const matched = m.content.match(/^【隊友[·・]([^】]+)】(.*)$/s);
+      if (matched) {
+        companionName = matched[1]?.trim() ?? "";
+        companionAction = (matched[2] ?? "").trim();
+        break;
+      }
+    }
+    if (companionName) {
+      narrativeText = stripLeadingCompanionParaphrase(
+        narrativeText,
+        companionName,
+      );
+    }
+    if (
+      companionAction &&
+      narrativeText &&
+      !/【檢定結果/.test(narrativeText) &&
+      (isNarrativeRewrite(companionAction, narrativeText) ||
+        areDuplicateNarratives(companionAction, narrativeText))
+    ) {
+      narrativeText = "";
+    }
+  }
+
   const store = useGameStore.getState();
   const trailingAgents: { content: string }[] = [];
   for (let i = store.messages.length - 1; i >= 0; i--) {
@@ -659,6 +779,15 @@ async function runNarrateStory(args: NarrateStoryArgs) {
       title: extractEndingTitleFromNarrative(narrativeText, titleFallback),
       narrative: narrativeText,
     });
+    // 結局提示出現後立刻停 AI 代打，避免繼續搶話
+    if (useAiPlayerStore.getState().enabled) {
+      useAiPlayerStore
+        .getState()
+        .setLastError(
+          "偵測到結局／可手動結算提示，已暫停 AI 代打。請確認後進入結局結算。",
+        );
+      useAiPlayerStore.getState().setEnabled(false);
+    }
   }
 
   const diceAttach = pendingPublicDiceRecord;
@@ -736,7 +865,7 @@ async function runNarrateStory(args: NarrateStoryArgs) {
           resolved.target_value != null
         ? `${whoLabel}屬性「${skillLabel}」${resolved.skill_value}，成功需 ≤ ${resolved.target_value}`
       : resolved.skill_value != null && resolved.target_value != null
-        ? `${whoLabel}角色卡「${skillLabel}」${resolved.skill_value}% · ${difficultyLabel(resolved.difficulty)}難度，成功需 ≤ ${resolved.target_value}`
+        ? `${whoLabel}角色卡「${skillLabel}」${resolved.skill_value}% · ${difficultyLabelWithHint(resolved.difficulty)}，成功需 ≤ ${resolved.target_value}`
         : resolved.target_value != null
           ? `${whoLabel}目標值 ${resolved.target_value}`
           : `${whoLabel}未找到對應角色卡技能（將無法依技能％判定）`;
@@ -778,11 +907,22 @@ async function runNarrateStory(args: NarrateStoryArgs) {
 
   return {
     ...roll,
+    outcome_zh: successQualityLabel(roll.outcome),
+    difficulty: resolved.difficulty,
+    difficulty_zh: difficultyLabelWithHint(resolved.difficulty),
+    result_zh: formatDiceResultLabels({
+      outcome: roll.outcome,
+      difficulty: resolved.difficulty,
+    }),
     gm_instruction:
       "CRITICAL: Your next narrate_story.narrative_text must ONLY describe this check outcome and immediate consequences. Do NOT repeat, paraphrase, or rewrite any previously narrated scene text. Prefer updating location/scene_id/npc_updates if the scene changed. Sheet skills for " +
       whoLabel +
       ": " +
-      (skillHint || "（無）"),
+      (skillHint || "（無）") +
+      `. Dice result labels (Traditional Chinese): ${formatDiceResultLabels({
+        outcome: roll.outcome,
+        difficulty: resolved.difficulty,
+      })}. Engine outcome_zh=${successQualityLabel(roll.outcome)}. You MUST use this exact success-quality label — if it is 失敗, do NOT write 大失敗; only FUMBLE is 大失敗. Use 成功品質 wording (普通成功／困難級成功≤半值／極限級成功≤⅕／失敗／大失敗), not casual「很辛苦才成功」. On FAILURE: no full key_clue dump / no soft-win climax.`,
   };
 }
 
@@ -917,6 +1057,28 @@ function registerHandlers(
             knows: string;
             attitude_to_pc: string;
           }[];
+          creatures?: {
+            id: string;
+            name: string;
+            kind: string;
+            attributes?: Record<string, number>;
+            hp: number;
+            armor?: number;
+            mov?: number;
+            build?: number;
+            damage_bonus?: string;
+            attacks: {
+              name: string;
+              skill_pct: number;
+              damage: string;
+              attacks_per_round?: number;
+            }[];
+            san_loss_on_sight?: string;
+            armor_notes?: string;
+            powers?: string;
+            combat_notes?: string;
+            linked_npc_id?: string;
+          }[];
           factions?: {
             id: string;
             name: string;
@@ -932,13 +1094,34 @@ function registerHandlers(
         party_role_hints?: { role_title: string; brief: string }[];
       };
       useGameStore.getState().setupScript(a);
+      const gaps = assessScenarioScaleGaps({
+        scale: a.scenario_scale,
+        key_clues: a.hidden_full_script.key_clues,
+        timeline: a.hidden_full_script.timeline,
+        scenes: a.hidden_full_script.scenes,
+        npcs: a.hidden_full_script.npcs,
+        creatures: a.hidden_full_script.creatures,
+        acts: a.hidden_full_script.acts,
+        factions: a.hidden_full_script.factions,
+      });
+      const gapNote = formatScenarioScaleGapsZh(gaps);
+      if (gapNote) {
+        useGameStore
+          .getState()
+          .appendSystem(
+            `劇本規模深度不足（${normalizeScenarioScale(a.scenario_scale)}）：${gapNote}。可請 GM 再呼叫 setup_script 補齊，或接受較薄的即興局。`,
+          );
+      }
       return {
         ok: true,
         system_id: a.system_id,
         scenario_scale: a.scenario_scale ?? null,
         scenes: a.hidden_full_script.scenes?.length ?? 0,
         npcs: a.hidden_full_script.npcs?.length ?? 0,
+        creatures: a.hidden_full_script.creatures?.length ?? 0,
         tone_examples: a.tone_examples?.length ?? 0,
+        scale_gaps: gaps,
+        scale_gap_note: gapNote || null,
       };
     }),
   );
@@ -1115,6 +1298,13 @@ function registerHandlers(
         request_id: a.request_id,
         diceResult: rolled.total,
         outcome,
+        outcome_zh: successQualityLabel(outcome),
+        difficulty: resolved.difficulty,
+        difficulty_zh: difficultyLabelWithHint(resolved.difficulty),
+        result_zh: formatDiceResultLabels({
+          outcome,
+          difficulty: resolved.difficulty,
+        }),
         detail: rolled.detail,
         isSecret: true,
         target_value: resolved.target_value,
@@ -1394,24 +1584,33 @@ export async function createGameSession(options: {
       ? useGameStore.getState().messages.find((m) => m.id === chatId)
       : undefined;
     const chatContent = chatMsg?.content ?? "";
-    if (chatId && chatContent.trim().length >= 24) {
-      const others: string[] = [];
-      const msgs = useGameStore.getState().messages;
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        const m = msgs[i];
-        if (!m) continue;
-        if (m.role === "user") break;
-        if (m.role === "agent" && m.id !== chatId) others.push(m.content);
-      }
-      const drop =
-        isCorruptedNarrativeFragment(chatContent) ||
-        isGmMetaOnlyNarrative(chatContent) ||
-        others.some((o) => areDuplicateNarratives(o, chatContent));
-      if (drop) {
+    if (chatId && chatContent.trim().length >= 12) {
+      const stripped = stripGmMetaPrompts(chatContent);
+      if (!stripped.trim() || isGmMetaOnlyNarrative(chatContent)) {
         useGameStore.setState((st) => ({
           messages: st.messages.filter((m) => m.id !== chatId),
         }));
         activeAgentMessageId = null;
+      } else if (stripped !== chatContent.trim()) {
+        s.updateMessage(chatId, stripped);
+      } else {
+        const others: string[] = [];
+        const msgs = useGameStore.getState().messages;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i];
+          if (!m) continue;
+          if (m.role === "user") break;
+          if (m.role === "agent" && m.id !== chatId) others.push(m.content);
+        }
+        const drop =
+          isCorruptedNarrativeFragment(chatContent) ||
+          others.some((o) => areDuplicateNarratives(o, chatContent));
+        if (drop) {
+          useGameStore.setState((st) => ({
+            messages: st.messages.filter((m) => m.id !== chatId),
+          }));
+          activeAgentMessageId = null;
+        }
       }
     }
   });
@@ -1429,6 +1628,7 @@ export async function createGameSession(options: {
       s.setIsTyping(false);
       flushLeakedChatBuffers(session);
       s.collapseNarrativeRewrites();
+      void maybeAutoResolvePendingCompanionHandoff();
       void maybeAutoInvokeCompanions();
       // 不在 idle 清除 sessionError：錯誤後 Session 常回到 idle，仍需顯示重試按鈕
     }
@@ -1502,13 +1702,25 @@ export async function disposeGameSession() {
 
 export async function sendPlayerAction(
   text: string,
-  opts?: { skipUserMessage?: boolean; extraLayers?: string[] },
+  opts?: {
+    skipUserMessage?: boolean;
+    extraLayers?: string[];
+    /** 內部：正在結算隊友宣告，勿再轉成 handoff resolve */
+    companionResolve?: boolean;
+  },
 ) {
   const session = getActiveSession();
   if (!session) throw new Error("NO_SESSION");
   if (session.getStatus() !== "idle") throw new Error("SESSION_BUSY");
 
   const store = useGameStore.getState();
+
+  // PC 新行動進來時若仍有未結算的隊友宣告：先結算（把本行動當插話），避免 UI 卡住
+  if (!opts?.companionResolve && store.pendingCompanionHandoff) {
+    await resolvePendingCompanionHandoff({ playerSupplement: text });
+    return;
+  }
+
   store.setLastPlayerAction(text);
   autoCompanionHandledForAction = null;
   store.setRetryAction({
@@ -1607,6 +1819,7 @@ export async function sendOpeningNarration() {
     sceneDirector: latest.sceneDirector,
     party: latest.party,
     playerMemberId: latest.playerMemberId,
+    continuityPremiseZh: latest.continuityBridge?.premiseZh ?? null,
   });
 
   await session.sendText(prompt);
@@ -1682,7 +1895,10 @@ export function resolvePlayerDice(opts: {
   useGameStore
     .getState()
     .appendSystem(
-      `擲骰結果：${pendingDice.check_target_name} → ${rolled.detail}（${rolled.outcome}${rolled.thresholdNote}）`,
+      `擲骰結果：${pendingDice.check_target_name} → ${rolled.detail}（${formatDiceResultLabels({
+        outcome: rolled.outcome,
+        difficulty: pendingDice.difficulty,
+      })}${rolled.thresholdNote}）`,
     );
 
   diceResolver({

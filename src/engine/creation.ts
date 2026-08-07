@@ -1,5 +1,6 @@
 import { evaluate } from "mathjs";
 import { rollDice } from "@/engine/dice";
+import { resolveCocAttributeKeyFromCheckName } from "@/engine/skillCheck";
 import type {
   AttributeDef,
   CharacterSchemaState,
@@ -477,16 +478,19 @@ export function resolveSkillBaseValue(
   return catalog;
 }
 
-/** 確保角色卡技能％不低於系統基礎值 */
+/** 確保角色卡技能％不低於系統基礎值；並剝離誤建的屬性名技能（如「敏捷」） */
 export function clampSkillsToSystemBases(
   systemId: GameSystemID,
   skills: Record<string, number>,
 ): Record<string, number> {
   if (systemId !== "COC_7E") return skills;
-  const next = { ...skills };
-  for (const [name, value] of Object.entries(next)) {
+  const next: Record<string, number> = {};
+  for (const [name, value] of Object.entries(skills)) {
+    // 屬性不是技能；誤建的「敏捷／力量…」會把屬性檢定門檻打成個位數
+    if (resolveCocAttributeKeyFromCheckName(name)) continue;
     const base = resolveSkillBaseValue(systemId, name, undefined);
     if (typeof value === "number" && value < base) next[name] = base;
+    else next[name] = value;
   }
   return next;
 }

@@ -1,5 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
-import { Archive, Download, Eye, ScrollText, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Archive,
+  Download,
+  Eye,
+  PackageMinus,
+  ScrollText,
+  Sparkles,
+} from "lucide-react";
 import { MarkdownContent } from "@/components/chat/MarkdownContent";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,7 +16,13 @@ import {
 } from "@/engine/adventureDossier";
 import { enrichCharacterSheetMeta } from "@/engine/creation";
 import { rollDice } from "@/engine/dice";
+import {
+  proposeScenarioInventoryReturn,
+  reasonLabelZh,
+} from "@/engine/inventoryReturn";
 import { requestStorySynopsis } from "@/lib/adventureSynopsis/requestStorySynopsis";
+import { parseHistoryActorInput } from "@/lib/historySpeaker";
+import { successQualityLabel } from "@/engine/skillCheck";
 import { resolveAvailableProvider } from "@/lib/pedelec/resolveProvider";
 import {
   clearPartyLibraryBindingsForCampaign,
@@ -33,6 +46,9 @@ export function TimelineScrubber() {
   const idx = timelineIndex ?? history.length - 1;
   const entry = history[Math.max(0, Math.min(history.length - 1, idx))];
   const char = entry.snapshot.character;
+  const actor = entry.playerInput?.trim()
+    ? parseHistoryActorInput(entry.playerInput)
+    : null;
 
   return (
     <div className="space-y-3 rounded-lg border border-border bg-surface p-3">
@@ -70,15 +86,27 @@ export function TimelineScrubber() {
       </div>
 
       <div className="h-64 overflow-y-auto rounded-md border border-border/60 bg-bg/40 p-3">
-        {entry.playerInput ? (
-          <p className="mb-3 text-sm">
-            <span className="text-muted">玩家：</span>
-            {entry.playerInput}
+        {actor ? (
+          <p className="mb-3 whitespace-pre-wrap text-sm">
+            <span
+              className={cn(
+                "font-medium",
+                actor.kind === "companion" ? "text-accent" : "text-muted",
+              )}
+            >
+              {actor.label}：
+            </span>
+            {actor.body}
           </p>
         ) : null}
-        <div className="story-text text-sm">
-          <MarkdownContent content={entry.aiNarrative} />
-        </div>
+        {entry.aiNarrative?.trim() ? (
+          <div className="story-text text-sm">
+            <div className="mb-1 text-[10px] uppercase tracking-wide text-muted">
+              GM
+            </div>
+            <MarkdownContent content={entry.aiNarrative} />
+          </div>
+        ) : null}
         {entry.diceRecord ? (
           <div className="mt-3 rounded bg-bg/50 p-2 text-xs">
             <div>
@@ -87,9 +115,9 @@ export function TimelineScrubber() {
             </div>
             <div>
               {entry.diceRecord.diceType} → {entry.diceRecord.diceResult}（
-              {entry.diceRecord.outcome}）
+              {successQualityLabel(entry.diceRecord.outcome)}）
               {entry.diceRecord.targetValue != null
-                ? ` / 目標 ${entry.diceRecord.targetValue}`
+                ? ` / 門檻 ${entry.diceRecord.targetValue}`
                 : ""}
             </div>
           </div>
@@ -198,6 +226,54 @@ export function EndingStage() {
   const [companionGrowthById, setCompanionGrowthById] = useState<
     Record<string, string[]>
   >({});
+  /** 結局回繳勾選：true = 寫入檔案庫前從背包移除 */
+  const [returnSelected, setReturnSelected] = useState<Record<string, boolean>>(
+    {},
+  );
+  const autoSynopsisStartedRef = useRef(false);
+
+  const keyClueTitles = useMemo(
+    () => clues.filter((c) => c.is_key_clue).map((c) => c.title),
+    [clues],
+  );
+  const bibleKeyClues = script.hidden_full_script?.key_clues;
+
+  const returnProposal = useMemo(() => {
+    if (!character || settled) return null;
+    return proposeScenarioInventoryReturn({
+      inventory: character.inventory,
+      baselineInventory: characterBaseline?.inventory ?? null,
+      keyClues: bibleKeyClues ?? [],
+      clueTitles: keyClueTitles,
+    });
+  }, [
+    character,
+    characterBaseline?.inventory,
+    bibleKeyClues,
+    keyClueTitles,
+    settled,
+  ]);
+
+  const returnCandidateKey = returnProposal?.candidates.join("\0") ?? "";
+
+  useEffect(() => {
+    if (!returnProposal) return;
+    setReturnSelected((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const item of returnProposal.candidates) {
+        next[item] = prev[item] ?? true;
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 以 candidate 字串為準，避免物件參考抖動
+  }, [returnCandidateKey]);
+
+  const selectedReturnItems = useMemo(() => {
+    if (!returnProposal) return [] as string[];
+    return returnProposal.candidates.filter(
+      (item) => returnSelected[item] !== false,
+    );
+  }, [returnProposal, returnSelected]);
 
   const aiCompanions = useMemo(
     () => party.filter((m) => m.controller === "ai"),
@@ -239,6 +315,19 @@ export function EndingStage() {
     return logs;
   };
 
+  /** 從角色卡剝離勾選的劇本物資；回傳實際移除清單。 */
+  const applyInventoryReturns = (
+    characterId: string,
+    items: string[],
+  ): string[] => {
+    const unique = [...new Set(items.map((x) => x.trim()).filter(Boolean))];
+    if (!unique.length) return [];
+    useGameStore
+      .getState()
+      .applyStatChanges([], [], unique, characterId);
+    return unique;
+  };
+
   const saveCompanionToLibrary = (
     memberId: string,
     growthLogs: string[],
@@ -262,7 +351,7 @@ export function EndingStage() {
     return true;
   };
 
-  /** 結算一位 AI 隊友：成長檢定 → 可選寫入檔案庫（含履歷） */
+  /** 結算一位 AI 隊友：成長檢定 → 關鍵物證回繳 → 可選寫入檔案庫 */
   const settleCompanionMember = (
     memberId: string,
     saveToLibrary: boolean,
@@ -273,19 +362,35 @@ export function EndingStage() {
     const madnessNow = useGameStore.getState().madness;
     const statsBefore = captureStatSnapshot(beforeSheet, madnessNow);
     const growthLogs = runCocGrowthForMember(memberId);
-    const afterSheet =
+    const afterGrowth =
       useGameStore.getState().getSheetById(memberId) ?? beforeSheet;
+    const companionReturn = proposeScenarioInventoryReturn({
+      inventory: afterGrowth.inventory,
+      baselineInventory: null,
+      keyClues: bibleKeyClues ?? [],
+      clueTitles: keyClueTitles,
+    });
+    const returned = applyInventoryReturns(
+      memberId,
+      companionReturn.candidates,
+    );
+    const logsWithReturn =
+      returned.length > 0
+        ? [...growthLogs, `劇本物資回繳：${returned.join("、")}`]
+        : growthLogs;
+    const afterSheet =
+      useGameStore.getState().getSheetById(memberId) ?? afterGrowth;
     const statsAfter = captureStatSnapshot(afterSheet, madnessNow);
     let saved = false;
     if (saveToLibrary) {
       saved = saveCompanionToLibrary(
         memberId,
-        growthLogs,
+        logsWithReturn,
         statsBefore,
         statsAfter,
       );
     }
-    return { name, growthLogs, saved };
+    return { name, growthLogs: logsWithReturn, saved };
   };
 
   // 再進入結局頁：略過結算，直接上帝視角／回放
@@ -391,13 +496,24 @@ export function EndingStage() {
     return true;
   };
 
-  /** 成長／無需成長／D&D：結算後一律自動存檔並解鎖回放 */
+  /** 成長／無需成長／D&D：回繳勾選物資 → 結算存檔並解鎖回放 */
   const finishSettlement = (logs: string[]) => {
-    setGrowthLog(logs);
-    const text = buildSynopsisText(logs);
+    const sheet = useGameStore.getState().character;
+    const returned = sheet
+      ? applyInventoryReturns(sheet.id, selectedReturnItems)
+      : [];
+    const logsWithReturn =
+      returned.length > 0
+        ? [...logs, `劇本物資回繳：${returned.join("、")}`]
+        : logs;
+    if (returned.length) {
+      appendSystem(`結局結算：已回繳劇本物資 — ${returned.join("、")}`);
+    }
+    setGrowthLog(logsWithReturn);
+    const text = buildSynopsisText(logsWithReturn);
     setSynopsis(text);
     setSynopsisReady(true);
-    autoSaveCharacter(logs, text);
+    autoSaveCharacter(logsWithReturn, text);
   };
 
   const runCocGrowth = () => {
@@ -494,7 +610,12 @@ export function EndingStage() {
     );
   };
 
-  const generateStorySynopsis = () => {
+  const generateStorySynopsis = (opts?: {
+    /** 寫回檔案庫（預設 true，當已結算存檔時） */
+    persist?: boolean;
+    /** 進場自動生成時的提示文案 */
+    notice?: string;
+  }) => {
     if (synopsisGenerating) return;
     setSynopsisError(null);
     setSynopsisGenerating(true);
@@ -510,9 +631,44 @@ export function EndingStage() {
         });
         setSynopsis(text);
         setSynopsisReady(true);
-        setSavedNotice(
-          "已填入 AI 故事經歷總結；可編輯後按「更新履歷摘要」寫入檔案庫。",
-        );
+        const shouldPersist = opts?.persist !== false;
+        if (shouldPersist) {
+          const sheet = sheetForSave();
+          if (sheet?.name?.trim()) {
+            const after = captureStatSnapshot(
+              sheet,
+              useGameStore.getState().madness,
+            );
+            const before =
+              useGameStore.getState().characterBaseline ?? after;
+            const record = buildAdventureRecord({
+              campaignId,
+              scenarioTitle: script.public_summary?.title ?? "",
+              systemId: sheet.system_id,
+              ending,
+              growthLog,
+              clues,
+              statsBefore: before,
+              statsAfter: after,
+              synopsisOverride: text,
+            });
+            saveLibraryCharacterWithAdventure(sheet, record);
+            setSavedNotice(
+              opts?.notice ??
+                "已自動填入本場履歷摘要並寫入檔案庫；可再編輯或按「重新生成」。",
+            );
+          } else {
+            setSavedNotice(
+              opts?.notice ??
+                "已填入 AI 故事經歷總結；可編輯後按「更新履歷摘要」寫入檔案庫。",
+            );
+          }
+        } else {
+          setSavedNotice(
+            opts?.notice ??
+              "已填入 AI 故事經歷總結；可編輯後按「更新履歷摘要」寫入檔案庫。",
+          );
+        }
       } catch (e) {
         const msg =
           e instanceof Error && e.name === "AbortError"
@@ -528,6 +684,25 @@ export function EndingStage() {
       }
     })();
   };
+
+  // 進入結局並完成結算後：若尚無履歷摘要，主動請 AI 生成一次
+  useEffect(() => {
+    if (!settled) return;
+    if (autoSynopsisStartedRef.current) return;
+    if (synopsisGenerating) return;
+
+    const existing = (synopsis || careerRecord?.synopsis || "").trim();
+    // 重開已結算場次且已有履歷 → 不自動重跑
+    if (alreadySettled && existing) return;
+
+    autoSynopsisStartedRef.current = true;
+    generateStorySynopsis({
+      persist: true,
+      notice:
+        "已自動生成本場履歷摘要；可編輯後按「更新履歷摘要」，或按「重新生成」再寫一次。",
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 僅在 settled 轉 true 時觸發一次
+  }, [settled, alreadySettled]);
 
   return (
     <div className="space-y-4 overflow-y-auto p-1">
@@ -572,7 +747,7 @@ export function EndingStage() {
             <h3 className="brand-title text-sm">① 角色結算與存檔</h3>
           </div>
           <p className="text-xs text-muted">
-            完成成長或確認結果後會自動將角色卡與本場履歷寫入檔案庫，並解鎖上帝視角與時間軸回放。
+            完成成長或確認結果後會自動將角色卡與本場履歷寫入檔案庫，並解鎖上帝視角與時間軸回放。劇本專屬物證／筆記可在下方勾選回繳，避免堆進檔案庫。
           </p>
 
           {character ? (
@@ -591,6 +766,95 @@ export function EndingStage() {
           ) : (
             <p className="text-xs text-danger">本局沒有角色卡資料。</p>
           )}
+
+          {returnProposal && returnProposal.candidates.length > 0 ? (
+            <div className="space-y-2 rounded-md border border-border/60 bg-bg/30 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <PackageMinus className="h-4 w-4 text-accent" />
+                  <h4 className="text-sm text-ink">劇本物資回繳</h4>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-7 text-[11px]"
+                    type="button"
+                    onClick={() =>
+                      setReturnSelected(
+                        Object.fromEntries(
+                          returnProposal.candidates.map((i) => [i, true]),
+                        ),
+                      )
+                    }
+                  >
+                    全選回繳
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-7 text-[11px]"
+                    type="button"
+                    onClick={() =>
+                      setReturnSelected(
+                        Object.fromEntries(
+                          returnProposal.candidates.map((i) => [i, false]),
+                        ),
+                      )
+                    }
+                  >
+                    全部保留
+                  </Button>
+                </div>
+              </div>
+              <p className="text-[11px] text-muted">
+                勾選的物品會在存入檔案庫前從背包移除（履歷仍會記錄本場曾持有）。預設回繳「本場取得」與「關鍵物證／筆記」。
+              </p>
+              <ul className="space-y-1.5">
+                {returnProposal.candidates.map((item) => {
+                  const reasons = returnProposal.reasons[item] ?? [];
+                  const checked = returnSelected[item] !== false;
+                  return (
+                    <li key={item}>
+                      <label className="flex cursor-pointer items-start gap-2 rounded-md px-1 py-0.5 text-xs hover:bg-surface-2/60">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={checked}
+                          onChange={(e) =>
+                            setReturnSelected((prev) => ({
+                              ...prev,
+                              [item]: e.target.checked,
+                            }))
+                          }
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="text-ink">{item}</span>
+                          {reasons.length ? (
+                            <span className="mt-0.5 block text-[10px] text-muted">
+                              {reasons.map(reasonLabelZh).join(" · ")}
+                            </span>
+                          ) : null}
+                        </span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="text-[11px] text-muted">
+                將回繳 {selectedReturnItems.length}／
+                {returnProposal.candidates.length} 件
+                {returnProposal.keep.length
+                  ? `；另保留起始裝備等 ${returnProposal.keep.length} 件`
+                  : ""}
+                。
+              </p>
+            </div>
+          ) : character?.inventory.length ? (
+            <p className="text-[11px] text-muted">
+              背包無可自動辨識的劇本物資（本場新增或關鍵物證）；若有私人紀念品會原樣寫入檔案庫。
+            </p>
+          ) : null}
 
           {isCoc ? (
             <div className="space-y-2">
@@ -668,7 +932,7 @@ export function EndingStage() {
                   className="h-7 gap-1"
                   disabled={synopsisGenerating}
                   title="依本場遊玩紀錄生成情節總結（不含成長／數值）"
-                  onClick={generateStorySynopsis}
+                  onClick={() => generateStorySynopsis()}
                 >
                   <Sparkles className="h-3.5 w-3.5" />
                   {synopsisGenerating
@@ -753,7 +1017,7 @@ export function EndingStage() {
           ) : (
             <>
               <p className="text-xs text-muted">
-                AI 隊友比照玩家結算：確認時會先做成長檢定（CoC）／經驗摘要（D&amp;D），再依選擇寫入檔案庫（含本場履歷）或略過寫入。
+                AI 隊友比照玩家結算：確認時會先做成長檢定（CoC）／經驗摘要（D&amp;D），自動回繳對應關鍵物證的背包物品，再依選擇寫入檔案庫（含本場履歷）或略過寫入。
               </p>
               <ul className="space-y-2">
                 {aiCompanions.map((m) => {

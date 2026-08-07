@@ -1,11 +1,13 @@
 import type {
   HiddenFullScript,
+  ScenarioCreature,
   ScenarioNpcPrep,
   ScenarioScene,
 } from "@/types/game";
 
 const MAX_EXTRA_SCENES = 2;
 const MAX_EXTRA_NPCS = 3;
+const MAX_EXTRA_CREATURES = 4;
 
 function haystack(...parts: (string | undefined | null)[]): string {
   return parts.filter(Boolean).join("\n").toLowerCase();
@@ -32,6 +34,22 @@ function npcMatches(npc: ScenarioNpcPrep, hay: string): boolean {
   return keys.split(/\s+/).some((k) => k.length >= 2 && hay.includes(k));
 }
 
+function creatureMatches(c: ScenarioCreature, hay: string): boolean {
+  const keys = [
+    c.id,
+    c.name,
+    c.kind,
+    c.linked_npc_id,
+    c.combat_notes,
+    c.powers,
+    ...(c.attacks?.map((a) => a.name) ?? []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return keys.split(/\s+/).some((k) => k.length >= 2 && hay.includes(k));
+}
+
 function formatScene(s: ScenarioScene): string {
   const clues = s.clues?.length ? ` clues=[${s.clues.join("; ")}]` : "";
   const dangers = s.dangers?.length
@@ -45,6 +63,37 @@ function formatScene(s: ScenarioScene): string {
 
 function formatNpc(n: ScenarioNpcPrep): string {
   return `- [${n.id}] ${n.name}（${n.role}）動機=${n.motivation}；知情=${n.knows}；對PC=${n.attitude_to_pc}`;
+}
+
+function formatCreature(c: ScenarioCreature): string {
+  const attrs = c.attributes
+    ? Object.entries(c.attributes)
+        .filter(([, v]) => v != null)
+        .map(([k, v]) => `${k}${v}`)
+        .join(" ")
+    : "";
+  const attacks = (c.attacks ?? [])
+    .map(
+      (a) =>
+        `${a.name}@${a.skill_pct}% ${a.damage}${a.attacks_per_round && a.attacks_per_round > 1 ? `×${a.attacks_per_round}` : ""}`,
+    )
+    .join("; ");
+  const bits = [
+    `kind=${c.kind}`,
+    `HP=${c.hp}`,
+    c.armor != null ? `Armor=${c.armor}` : null,
+    c.mov != null ? `MOV=${c.mov}` : null,
+    c.build != null ? `Build=${c.build}` : null,
+    c.damage_bonus ? `DB=${c.damage_bonus}` : null,
+    attrs ? `attrs[${attrs}]` : null,
+    attacks ? `attacks[${attacks}]` : null,
+    c.san_loss_on_sight ? `SAN_sight=${c.san_loss_on_sight}` : null,
+    c.linked_npc_id ? `npc=${c.linked_npc_id}` : null,
+    c.powers ? `powers=${c.powers}` : null,
+    c.armor_notes ? `armor_notes=${c.armor_notes}` : null,
+    c.combat_notes ? `notes=${c.combat_notes}` : null,
+  ].filter(Boolean);
+  return `- [${c.id}] ${c.name}: ${bits.join("；")}`;
 }
 
 /**
@@ -89,6 +138,7 @@ export function formatScenarioBibleOnDemand(
   );
   const scenes = hidden.scenes ?? [];
   const npcs = hidden.npcs ?? [];
+  const creatures = hidden.creatures ?? [];
 
   const current =
     (opts.currentSceneId &&
@@ -124,7 +174,6 @@ export function formatScenarioBibleOnDemand(
       );
     }
     if (!current && !extraScenes.length && scenes.length) {
-      // 無命中時給精簡目錄，避免完全失憶
       lines.push(
         `Scene index (summaries only):\n${scenes
           .map((s) => `- [${s.id}] ${s.name}: ${s.summary}`)
@@ -136,6 +185,27 @@ export function formatScenarioBibleOnDemand(
 
   if (selectedNpcs.length) {
     chunks.push(`NPCs (on-demand):\n${selectedNpcs.map(formatNpc).join("\n")}`);
+  }
+
+  if (creatures.length) {
+    const linkedCreatureIds = new Set(
+      selectedNpcs.map((n) => n.id).concat([...linkedIds]),
+    );
+    const hitCreatures = creatures.filter(
+      (c) =>
+        creatureMatches(c, hay) ||
+        (c.linked_npc_id != null && linkedCreatureIds.has(c.linked_npc_id)) ||
+        linkedCreatureIds.has(c.id),
+    );
+    const selectedCreatures =
+      hitCreatures.length > 0
+        ? hitCreatures.slice(0, MAX_EXTRA_CREATURES)
+        : creatures.slice(0, Math.min(MAX_EXTRA_CREATURES, creatures.length));
+    chunks.push(
+      `CREATURES / ENEMIES (KEEPER SSOT — use attacks/HP/armor; never invent contradicting stats):\n${selectedCreatures
+        .map(formatCreature)
+        .join("\n")}`,
+    );
   }
 
   if (hidden.factions?.length) {

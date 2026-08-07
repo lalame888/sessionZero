@@ -640,7 +640,7 @@ function FieldGuideTab({
 export function DevStorageInspector() {
   const [open, setOpen] = useState(false);
   const [tick, setTick] = useState(0);
-  const [mainTab, setMainTab] = useState("raw");
+  const [mainTab, setMainTab] = useState("sessions");
 
   const dump = useMemo(() => collectFrontendDump(), [tick, open]);
   const refresh = () => setTick((n) => n + 1);

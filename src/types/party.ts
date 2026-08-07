@@ -39,6 +39,11 @@ export interface PendingCompanionHandoff {
   companionName: string;
   action: string;
   handoff: "pause" | "immediate";
+  /**
+   * GM 當時忙碌導致無法立即結算時設為 true。
+   * Session 回到 idle 後引擎會自動重試結算（不必等玩家再按）。
+   */
+  autoResume?: boolean;
 }
 
 export const MIN_PARTY_SIZE = 1;

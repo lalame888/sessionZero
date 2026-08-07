@@ -46,6 +46,8 @@ export interface ContextAssemblyInput {
   sceneDirector?: SceneDirectorState | null;
   party?: PartyMember[];
   playerMemberId?: string | null;
+  /** 自庫帶入的幕間銜接前提（開場必注入） */
+  continuityPremiseZh?: string | null;
 }
 
 export function houseRulesSummary(houseRules: HouseRuleConfig): string {
@@ -236,6 +238,10 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
     layers.push(...input.extraLayers.filter((l) => l.trim().length > 0));
   }
 
+  if (input.continuityPremiseZh?.trim()) {
+    layers.push(input.continuityPremiseZh.trim());
+  }
+
   if (input.script.public_summary?.player_hook) {
     layers.push(`[PLAYER HOOK]\n${input.script.public_summary.player_hook}`);
   }
@@ -261,7 +267,8 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
     const hasBible =
       (hidden.scenes?.length ?? 0) > 0 ||
       (hidden.npcs?.length ?? 0) > 0 ||
-      (hidden.timeline?.length ?? 0) > 0;
+      (hidden.timeline?.length ?? 0) > 0 ||
+      (hidden.creatures?.length ?? 0) > 0;
     layers.push(
       hasBible
         ? `[SCENARIO BIBLE — GM ONLY, NEVER REVEAL DIRECTLY]\n${formatScenarioBibleOnDemand(

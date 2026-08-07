@@ -1,3 +1,4 @@
+import type { ContinuityBridgeState } from "@/engine/continuityBridge";
 import type { CharacterStatSnapshot } from "@/types/characterLibrary";
 import type {
   ChapterSummary,
@@ -94,6 +95,8 @@ export interface CampaignPersist {
   endingCompanionsResolved?: boolean;
   /** 隊友宣告後軟停手遞（重整後可繼續） */
   pendingCompanionHandoff?: PendingCompanionHandoff | null;
+  /** 自庫帶入的幕間銜接（全隊共用）；舊存檔可能缺 */
+  continuityBridge?: ContinuityBridgeState | null;
   /** 側欄目前檢視的隊伍成員 id（預設玩家） */
   viewedPartyMemberId?: string | null;
 }
@@ -392,6 +395,7 @@ export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPe
     endingCompanionsSavedIds: [],
     endingCompanionsResolved: false,
     pendingCompanionHandoff: null,
+    continuityBridge: null,
     viewedPartyMemberId: null,
   };
 }

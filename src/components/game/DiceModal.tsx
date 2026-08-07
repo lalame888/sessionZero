@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Dices } from "lucide-react";
 import type { AdvantageMode } from "@/engine/dice";
+import { difficultyLabelWithHint } from "@/engine/skillCheck";
 import { resolvePlayerDice } from "@/lib/pedelec/createGameSession";
 import { Button } from "@/components/ui/button";
 import { useGameStore } from "@/store/useGameStore";
@@ -44,17 +45,23 @@ export function DiceCheckPanel() {
           </span>
         </p>
         {pending.skill_value != null && pending.target_value != null ? (
-          <p className="mt-1 text-xs text-ink">
-            技能 {pending.skill_value}%
-            {pending.difficulty && pending.difficulty !== "regular"
-              ? ` · ${pending.difficulty === "hard" ? "困難" : "極限"}難度`
-              : " · 一般難度"}
-            → 成功需擲出{" "}
-            <strong className="tabular-nums">≤ {pending.target_value}</strong>
-          </p>
+          <div className="mt-1 space-y-0.5 text-xs text-ink">
+            <p>
+              技能 {pending.skill_value}%
+              {" · "}
+              {difficultyLabelWithHint(pending.difficulty ?? "regular")}
+            </p>
+            <p>
+              成功門檻{" "}
+              <strong className="tabular-nums">≤ {pending.target_value}</strong>
+              <span className="text-muted">
+                （達標即過；骰得更低可達更高成功品質）
+              </span>
+            </p>
+          </div>
         ) : pending.target_value != null ? (
           <p className="mt-1 text-xs text-muted">
-            目標值／難度：{pending.target_value}
+            成功門檻：{pending.target_value}
           </p>
         ) : null}
         {pending.reason ? (

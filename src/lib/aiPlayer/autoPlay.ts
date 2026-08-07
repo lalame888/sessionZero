@@ -1,11 +1,15 @@
 import type { ProviderCode } from "@kaoruisaac/pedelec";
 import { requestAiPlayerAction } from "@/lib/aiPlayer/session";
 import { useAiPlayerStore } from "@/lib/aiPlayer/store";
+import { looksLikeEndingNarrative } from "@/lib/endingDetect";
 import {
   getActiveSession,
+  acceptCompanionHandoffWithoutResolve,
+  resolvePendingCompanionHandoff,
   resolvePlayerDice,
   sendPlayerAction,
 } from "@/lib/pedelec/createGameSession";
+import { isCompanionSpeechOnly } from "@/lib/stripGmMetaPrompts";
 import { useGameStore } from "@/store/useGameStore";
 import type { ChatMessage } from "@/types/game";
 
@@ -21,7 +25,33 @@ export type AiPlayerTurnGate =
   | "wait_opening"
   | "wait_gm"
   | "roll_dice"
+  | "resolve_companion"
+  | "ending_pause"
   | "act";
+
+/**
+ * 敘事已出現結局／可手動結算提示時，代打應停止（留給玩家按進入結局）。
+ */
+export function shouldPauseAiPlayerForEnding(game: {
+  phase: string;
+  ending: unknown;
+  pendingManualEnding: { title: string; narrative: string } | null;
+  messages: ChatMessage[];
+}): boolean {
+  if (game.phase === "ENDING" || game.ending) return true;
+  if (game.pendingManualEnding) return true;
+  // 掃近期 GM 敘事（略過 system），避免 PlayPage 尚未寫入 pending 時代打又送一拍
+  for (let i = game.messages.length - 1; i >= 0; i--) {
+    const m = game.messages[i];
+    if (!m) continue;
+    if (m.role === "system") continue;
+    if (m.role === "user") break;
+    if (m.role === "agent" && looksLikeEndingNarrative(m.content)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * 啟動 AI Player 自動迴圈。回傳 stop()。
@@ -45,12 +75,23 @@ export function startAiPlayerLoop(deps: AiPlayerLoopDeps): () => void {
 
         const game = useGameStore.getState();
 
-        if (game.phase === "ENDING" || game.ending) {
+        if (shouldPauseAiPlayerForEnding(game)) {
+          useAiPlayerStore.getState().setLastError(
+            "偵測到結局／可手動結算提示，已暫停 AI 代打。請確認後進入結局結算。",
+          );
           useAiPlayerStore.getState().setEnabled(false);
           break;
         }
 
         const gate = resolveAiPlayerTurnGate();
+
+        if (gate === "ending_pause") {
+          useAiPlayerStore.getState().setLastError(
+            "偵測到結局／可手動結算提示，已暫停 AI 代打。請確認後進入結局結算。",
+          );
+          useAiPlayerStore.getState().setEnabled(false);
+          break;
+        }
 
         if (gate === "wait_phase") {
           useAiPlayerStore.getState().setPhase("idle");
@@ -66,6 +107,23 @@ export function startAiPlayerLoop(deps: AiPlayerLoopDeps): () => void {
 
         if (gate === "roll_dice") {
           tryAutoRoll();
+          await sleep(POLL_MS, abort.signal);
+          continue;
+        }
+
+        if (gate === "resolve_companion") {
+          useAiPlayerStore.getState().setPhase("waiting_gm");
+          try {
+            const handoff = useGameStore.getState().pendingCompanionHandoff;
+            // 純發言／分工：收下氣泡即可，勿再叫 GM 複述一遍
+            if (handoff && isCompanionSpeechOnly(handoff.action)) {
+              acceptCompanionHandoffWithoutResolve();
+            } else {
+              await resolvePendingCompanionHandoff();
+            }
+          } catch {
+            // SESSION_BUSY 等：等下一輪 idle／autoResume
+          }
           await sleep(POLL_MS, abort.signal);
           continue;
         }
@@ -101,9 +159,16 @@ export function startAiPlayerLoop(deps: AiPlayerLoopDeps): () => void {
           if (!running || abort.signal.aborted) break;
           if (!useAiPlayerStore.getState().enabled) break;
 
-          // 送出前再確認仍輪到玩家，避免與 GM 搶回合
+          // 送出前再確認仍輪到玩家，避免與 GM 搶回合／結局後繼續講
           const gateAfterThink = resolveAiPlayerTurnGate();
           if (gateAfterThink !== "act") {
+            if (gateAfterThink === "ending_pause") {
+              useAiPlayerStore.getState().setLastError(
+                "偵測到結局／可手動結算提示，已暫停 AI 代打。請確認後進入結局結算。",
+              );
+              useAiPlayerStore.getState().setEnabled(false);
+              break;
+            }
             useAiPlayerStore.getState().setPhase(
               gateAfterThink === "wait_opening"
                 ? "wait_opening"
@@ -113,6 +178,14 @@ export function startAiPlayerLoop(deps: AiPlayerLoopDeps): () => void {
             );
             await sleep(POLL_MS, abort.signal);
             continue;
+          }
+
+          if (shouldPauseAiPlayerForEnding(useGameStore.getState())) {
+            useAiPlayerStore.getState().setLastError(
+              "偵測到結局／可手動結算提示，已暫停 AI 代打。請確認後進入結局結算。",
+            );
+            useAiPlayerStore.getState().setEnabled(false);
+            break;
           }
 
           useAiPlayerStore.getState().setLastAction(action);
@@ -130,7 +203,8 @@ export function startAiPlayerLoop(deps: AiPlayerLoopDeps): () => void {
           if (
             message === "NO_SESSION" ||
             message === "SESSION_BUSY" ||
-            message === "AI_PLAYER_NO_ACTION"
+            message === "AI_PLAYER_NO_ACTION" ||
+            message === "NO_PENDING_COMPANION_HANDOFF"
           ) {
             await sleep(800, abort.signal);
             useAiPlayerStore.getState().setPhase("idle");
@@ -161,6 +235,10 @@ export function startAiPlayerLoop(deps: AiPlayerLoopDeps): () => void {
 export function resolveAiPlayerTurnGate(): AiPlayerTurnGate {
   const game = useGameStore.getState();
 
+  if (shouldPauseAiPlayerForEnding(game)) {
+    return "ending_pause";
+  }
+
   if (game.phase !== "PLAYING" || game.ending) {
     return "wait_phase";
   }
@@ -174,6 +252,12 @@ export function resolveAiPlayerTurnGate(): AiPlayerTurnGate {
     if (game.diceResolver) return "roll_dice";
     // 有 pending 卻無 resolver：仍視為 GM 工具回合未就緒
     return "wait_gm";
+  }
+
+  // 隊友已宣告、等待結算：代打必須先讓 GM 結算，不可繼續搶 PC 發言
+  if (game.pendingCompanionHandoff) {
+    if (isGmSessionBusy(game.sessionStatus)) return "wait_gm";
+    return "resolve_companion";
   }
 
   if (isGmSessionBusy(game.sessionStatus)) {

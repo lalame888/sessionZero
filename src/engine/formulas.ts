@@ -1,5 +1,8 @@
 import { evaluate } from "mathjs";
-import { createEmptyCharacterShell } from "@/engine/creation";
+import {
+  clampSkillsToSystemBases,
+  createEmptyCharacterShell,
+} from "@/engine/creation";
 import type { GameSystemID, UniversalCharacterSheet } from "@/types/game";
 
 export function abilityModifier(score: number): number {
@@ -237,7 +240,10 @@ export function migrateCharacterSheet(
     backstory_hooks: hooks,
     backstory_hook_questions: sheet.backstory_hook_questions,
     inventory: sheet.inventory ?? [],
-    skills: sheet.skills ?? {},
+    skills: clampSkillsToSystemBases(
+      sheet.system_id,
+      sheet.skills ?? {},
+    ),
     skill_descriptions: sheet.skill_descriptions,
   });
 }
