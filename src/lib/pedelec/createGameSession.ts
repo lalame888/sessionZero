@@ -550,18 +550,18 @@ function formatDiceThresholdNote(input: {
     isSanityCheckName(input.check_target_name) &&
     input.skill_value != null
   ) {
-    return `，門檻 ≤${input.target_value}（當前 SAN ${input.skill_value}）`;
+    return `，門檻 <=${input.target_value}（當前 SAN ${input.skill_value}）`;
   }
   const attrKey = resolveCocAttributeKeyFromCheckName(input.check_target_name);
   if (attrKey && input.skill_value != null && input.target_value != null) {
-    return `，門檻 ≤${input.target_value}（屬性 ${input.check_target_name} ${input.skill_value}）`;
+    return `，門檻 <=${input.target_value}（屬性 ${input.check_target_name} ${input.skill_value}）`;
   }
   if (input.skill_value != null && input.target_value != null) {
     const diff = difficultyLabelWithHint(input.difficulty ?? "regular");
-    return `，${diff}，門檻 ≤${input.target_value}（技能 ${input.skill_value}%）`;
+    return `，${diff}，門檻 <=${input.target_value}（技能 ${input.skill_value}%）`;
   }
   if (input.target_value != null) {
-    return `，門檻 ≤${input.target_value}`;
+    return `，門檻 <=${input.target_value}`;
   }
   return "";
 }
@@ -871,13 +871,13 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     : "角色";
   const thresholdText =
     resolved.checkKind === "sanity" && resolved.skill_value != null
-      ? `${whoLabel}當前 SAN ${resolved.skill_value}，成功需 ≤ ${resolved.target_value}（CoC 理智檢定）`
+      ? `${whoLabel}當前 SAN ${resolved.skill_value}，成功需 <= ${resolved.target_value}（CoC 理智檢定）`
       : resolved.checkKind === "attribute" &&
           resolved.skill_value != null &&
           resolved.target_value != null
-        ? `${whoLabel}屬性「${skillLabel}」${resolved.skill_value}，成功需 ≤ ${resolved.target_value}`
+        ? `${whoLabel}屬性「${skillLabel}」${resolved.skill_value}，成功需 <= ${resolved.target_value}`
       : resolved.skill_value != null && resolved.target_value != null
-        ? `${whoLabel}角色卡「${skillLabel}」${resolved.skill_value}% · ${difficultyLabelWithHint(resolved.difficulty)}，成功需 ≤ ${resolved.target_value}`
+        ? `${whoLabel}角色卡「${skillLabel}」${resolved.skill_value}% · ${difficultyLabelWithHint(resolved.difficulty)}，成功需 <= ${resolved.target_value}`
         : resolved.target_value != null
           ? `${whoLabel}目標值 ${resolved.target_value}`
           : `${whoLabel}未找到對應角色卡技能（將無法依技能％判定）`;
@@ -948,7 +948,7 @@ async function runNarrateStory(args: NarrateStoryArgs) {
       `. Dice result labels (Traditional Chinese): ${formatDiceResultLabels({
         outcome: roll.outcome,
         difficulty: resolved.difficulty,
-      })}. Engine outcome_zh=${successQualityLabel(roll.outcome)}. You MUST use this exact success-quality label — if it is 失敗, do NOT write 大失敗; only FUMBLE is 大失敗. Use 成功品質 wording (普通成功／困難級成功≤半值／極限級成功≤⅕／失敗／大失敗), not casual「很辛苦才成功」. On FAILURE: no full key_clue dump / no soft-win climax.`,
+      })}. Engine outcome_zh=${successQualityLabel(roll.outcome)}. You MUST use this exact success-quality label — if it is 失敗, do NOT write 大失敗; only FUMBLE is 大失敗. Use 成功品質 wording (普通成功／困難級成功<=半值／極限級成功<=1/5／失敗／大失敗), not casual「很辛苦才成功」. On FAILURE: no full key_clue dump / no soft-win climax.`,
   };
 }
 

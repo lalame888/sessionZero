@@ -154,16 +154,16 @@ export function difficultyLabel(d: CheckDifficulty): string {
   return "一般難度";
 }
 
-/** 難度＋門檻提示（給擲骰面板／系統訊息） */
+/** 難度＋門檻提示（給擲骰面板／系統訊息／tool 回傳；避免 ≤ ⅕ 等字元在 Win cp950 CLI 炸） */
 export function difficultyLabelWithHint(d: CheckDifficulty): string {
-  if (d === "hard") return "困難難度（需 ≤ 半值）";
-  if (d === "extreme") return "極限難度（需 ≤ ⅕）";
-  return "一般難度（需 ≤ 技能）";
+  if (d === "hard") return "困難難度（需 <= 半值）";
+  if (d === "extreme") return "極限難度（需 <= 1/5）";
+  return "一般難度（需 <= 技能）";
 }
 
 /**
  * 成功品質（骰完後依完整技能切分的結果等級）。
- * 與「難度」分開：困難級成功＝骰 ≤ 半值，不是「很辛苦才成功」。
+ * 與「難度」分開：困難級成功＝骰 <= 半值，不是「很辛苦才成功」。
  */
 export function successQualityLabel(outcome: string): string {
   const o = outcome.trim().toUpperCase();
@@ -173,10 +173,10 @@ export function successQualityLabel(outcome: string): string {
       return "大成功";
     case "EXTREME_SUCCESS":
     case "EXTREME":
-      return "極限級成功（≤ ⅕）";
+      return "極限級成功（<= 1/5）";
     case "HARD_SUCCESS":
     case "HARD":
-      return "困難級成功（≤ 半值）";
+      return "困難級成功（<= 半值）";
     case "SUCCESS":
     case "REGULAR_SUCCESS":
       return "普通成功";
