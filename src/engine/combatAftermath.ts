@@ -24,6 +24,12 @@ export interface CombatAftermathNotice {
 
 export interface CombatAftermathResult {
   notices: CombatAftermathNotice[];
+  /** 重傷且仍存活時，引擎應強制佇列 CON／體質檢定 */
+  requireConCheck?: {
+    characterName: string;
+    damageTaken: number;
+    hpMax: number;
+  };
   /** 玩家 PC HP≤0 時建議手動壞結局 */
   offerBadEnding?: {
     title: string;
@@ -44,12 +50,18 @@ export function evaluateCombatStatAftermath(
   const notices: CombatAftermathNotice[] = [];
   const who = snap.name.trim() || "角色";
   const damageTaken = Math.max(0, snap.hpBefore - snap.hpAfter);
+  let requireConCheck: CombatAftermathResult["requireConCheck"];
 
   if (isMajorWound(damageTaken, snap.hpMax) && snap.hpAfter > 0) {
     notices.push({
       kind: "major_wound",
       message: `重傷警示（${who}）：本次傷害 ${damageTaken} ≥ 最大 HP 一半（${Math.ceil(snap.hpMax / 2)}）。依 CoC 7e 應進行體質（CON）檢定；失敗則昏迷／失去行動，GM 必須敘事並暫停該角色行動。`,
     });
+    requireConCheck = {
+      characterName: who,
+      damageTaken,
+      hpMax: snap.hpMax,
+    };
   }
 
   if (snap.hpAfter <= 0 && snap.hpBefore > 0) {
@@ -96,5 +108,5 @@ export function evaluateCombatStatAftermath(
     };
   }
 
-  return { notices, offerBadEnding };
+  return { notices, requireConCheck, offerBadEnding };
 }

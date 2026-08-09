@@ -84,16 +84,19 @@ export function SessionManager({
                   <li
                     key={s.id}
                     className={cn(
-                      "rounded-lg border p-3",
+                      "rounded-lg border p-3 transition-colors",
                       isActive
                         ? "border-accent bg-accent/10"
-                        : "border-border bg-surface-2/40",
+                        : "border-border bg-surface-2/40 hover:border-accent/40 hover:bg-accent/[0.06]",
                     )}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <button
                         type="button"
-                        className="min-w-0 flex-1 text-left"
+                        className={cn(
+                          "min-w-0 flex-1 rounded-md text-left outline-none",
+                          "transition-colors focus-visible:ring-2 focus-visible:ring-accent",
+                        )}
                         onClick={() => {
                           if (!isActive) onSwitch(s.id);
                           setOpen(false);

@@ -734,6 +734,10 @@ export function CharacterStage({
     pool: "occ" | "interest",
     requested: number,
   ) => {
+    if (name === "克蘇魯神話") {
+      appendSystem("創角時「克蘇魯神話」固定為 0；開場後才可經遭遇成長。");
+      return;
+    }
     const sk = allocSkills.find((s) => s.name === name);
     if (!sk) return;
     if (pool === "occ" && !sk.is_occupational) {

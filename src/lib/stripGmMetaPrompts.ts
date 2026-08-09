@@ -7,7 +7,7 @@ const META_ONLY_RE =
 
 /** Companion pipeline / GM 內部等待狀態（整段應隱藏） */
 const COMPANION_WAIT_META_RE =
-  /Waiting for companion action response\.|I will wait for the companion(?:'s)? response|No more tools to call\.?(?:\s*Waiting for [^\n]*)?|Waiting for the transition to the carousel(?: and companion action)?\.?|Waiting for the (?:background task|companion response task) to complete[^\n]*|等待隊友行動|呼叫隊友.{0,40}(?:配合|前來|協助|回應)/i;
+  /Waiting for companion action response\.|I will wait for the companion(?:'s)? response|I will wait for the tool[^\n]*|I have (?:narrated|requested|initiated|processed)[^\n]*|Standing by(?: for[^\n]*)?\.?|No more tools to call\.?(?:\s*Waiting for [^\n]*)?|Waiting for the transition to the carousel(?: and companion action)?\.?|Waiting for the (?:background task|companion response task) to complete[^\n]*|An error occurred while executing the task[^\n]*|等待隊友行動|呼叫隊友.{0,40}(?:配合|前來|協助|回應)/i;
 
 /** 是否為隊友 pipeline 的內部等待／轉場腔（勿當劇情顯示、勿觸發自動喚起） */
 export function isCompanionWaitMeta(text: string): boolean {
@@ -113,6 +113,13 @@ function stripPipelineStatusMeta(text: string): string {
       if (/^Waiting for the transition to the carousel/i.test(L)) return false;
       if (/^Waiting for the (?:background task|companion response task)/i.test(L))
         return false;
+      if (/^I will wait for the tool/i.test(L)) return false;
+      if (/^I have (?:narrated|requested|initiated|processed)/i.test(L))
+        return false;
+      if (/^Standing by/i.test(L)) return false;
+      if (/^An error occurred while executing the task/i.test(L)) return false;
+      if (/^- Task (?:ID|details|Status|Error)/i.test(L)) return false;
+      if (/^- Log URI:/i.test(L)) return false;
       if (/現場敘事已推進/.test(L)) return false;
       if (/場景已設置完畢/.test(L)) return false;
       return true;
@@ -164,10 +171,14 @@ export function stripGmMetaPrompts(text: string): string {
       .replace(/^---+\s*/gm, "")
       .replace(/^\*?等待隊友行動[^*]*\*?\s*$/gim, "")
       .replace(/^I will wait for the companion[^\n]*$/gim, "")
+      .replace(/^I will wait for the tool[^\n]*$/gim, "")
+      .replace(/^I have (?:narrated|requested|initiated|processed)[^\n]*$/gim, "")
+      .replace(/^Standing by[^\n]*$/gim, "")
       .replace(/^Waiting for companion[^\n]*$/gim, "")
       .replace(/^No more tools to call[^\n]*$/gim, "")
       .replace(/^Waiting for the transition to the carousel[^\n]*$/gim, "")
       .replace(/^Waiting for the (?:background task|companion response task)[^\n]*$/gim, "")
+      .replace(/^An error occurred while executing the task[\s\S]*?(?=^\S|$)/gim, "")
       .replace(/^呼叫隊友[^\n]*$/gim, "")
       .trim();
     if (!withoutWait || COMPANION_WAIT_META_RE.test(withoutWait)) return "";

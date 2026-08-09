@@ -238,7 +238,7 @@ function SessionFieldGroup({
     <div className="rounded-md border border-border/80 bg-bg/40">
       <button
         type="button"
-        className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-surface-2/50"
+        className="flex w-full items-start gap-2 px-3 py-2 text-left outline-none transition-colors hover:bg-surface-2/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
         onClick={() => setOpen((v) => !v)}
       >
         {open ? (
@@ -544,7 +544,7 @@ function NestedHintsPanel() {
     <div className="rounded-lg border border-border/80 bg-surface/40">
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3 py-2.5 text-left hover:bg-surface-2/40"
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-left outline-none transition-colors hover:bg-surface-2/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
         onClick={() => setOpen((v) => !v)}
       >
         {open ? (

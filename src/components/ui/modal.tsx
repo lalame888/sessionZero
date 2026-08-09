@@ -17,7 +17,7 @@ function ModalNavButton({
       type="button"
       aria-label={label}
       className={cn(
-        "hidden shrink-0 items-center justify-center rounded-full border-2 border-border bg-surface text-ink shadow-lg transition-colors",
+        "hidden shrink-0 cursor-pointer items-center justify-center rounded-full border-2 border-border bg-surface text-ink shadow-lg transition-colors",
         "h-12 w-12 sm:flex",
         "hover:border-accent hover:bg-accent/15 hover:text-accent",
         "active:scale-95 active:bg-accent/25",

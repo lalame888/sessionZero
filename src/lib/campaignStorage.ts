@@ -385,7 +385,7 @@ export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPe
     timelineIndex: null,
     lastPlayerAction: "",
     composerDraft: "",
-    suggestPlayerActions: true,
+    suggestPlayerActions: false,
     endingCharacterSettled: false,
     partySize: 1,
     recommendedPartySize: null,

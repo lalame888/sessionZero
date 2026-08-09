@@ -320,7 +320,7 @@ export function CharacterPage() {
                           "cursor-not-allowed border-border bg-surface-2/50 opacity-50",
                         !busy &&
                           !inParty &&
-                          "cursor-pointer border-border bg-surface-2/50 hover:border-accent/40",
+                          "cursor-pointer border-border bg-surface-2/50 hover:border-accent/40 hover:bg-accent/[0.06]",
                       )}
                     >
                       <div className="min-w-0">

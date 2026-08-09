@@ -133,9 +133,8 @@ export function recomputeDerived(
 
     const skills = { ...sheet.skills };
     if (dodge > 0) {
-      const prev = skills["閃避"];
-      // 僅在尚未分配或仍等於舊基礎時，同步閃避基礎值
-      if (prev == null || prev === 0) skills["閃避"] = dodge;
+      // CoC：閃避技能與 derived.dodge 對齊為 DEX/2
+      skills["閃避"] = dodge;
     }
 
     return {
@@ -254,4 +253,25 @@ export function themeForSystem(
   if (systemId === "COC_7E") return "coc";
   if (systemId === "DND_5E") return "dnd";
   return "neutral";
+}
+
+/** 進入冒險前：克蘇魯神話強制 0，閃避對齊 DEX/2 */
+export function normalizeCocCreationSheet(
+  sheet: UniversalCharacterSheet,
+): { sheet: UniversalCharacterSheet; forcedMythosToZero: boolean } {
+  if (sheet.system_id !== "COC_7E") {
+    return { sheet, forcedMythosToZero: false };
+  }
+  const forcedMythosToZero = (sheet.skills["克蘇魯神話"] ?? 0) > 0;
+  const skills: Record<string, number> = {
+    ...sheet.skills,
+    克蘇魯神話: 0,
+  };
+  const dex = sheet.attributes.DEX ?? 0;
+  const dodge = Math.floor(dex / 2);
+  if (dodge > 0) skills["閃避"] = dodge;
+  return {
+    sheet: recomputeDerived({ ...sheet, skills }),
+    forcedMythosToZero,
+  };
 }

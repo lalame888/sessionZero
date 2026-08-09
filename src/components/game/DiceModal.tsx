@@ -126,7 +126,7 @@ export function RuleLookupToast() {
         <strong className="text-ink">規則：{rule.rule_topic}</strong>
         <button
           type="button"
-          className="text-muted hover:text-ink"
+          className="text-muted outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-accent"
           onClick={() => setPending(null)}
         >
           關閉

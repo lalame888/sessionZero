@@ -410,8 +410,8 @@ export function CharacterDetailModal({
               type="button"
               className={
                 active
-                  ? "rounded border border-accent/50 bg-accent/15 px-2 py-0.5 text-[10px] text-ink"
-                  : "rounded border border-border px-2 py-0.5 text-[10px] text-muted hover:border-accent/30"
+                  ? "cursor-pointer rounded border border-accent/50 bg-accent/15 px-2 py-0.5 text-[10px] text-ink"
+                  : "cursor-pointer rounded border border-border px-2 py-0.5 text-[10px] text-muted transition-colors hover:border-accent/30 hover:bg-accent/10 hover:text-ink"
               }
               onClick={() => selectMember(m.id)}
             >

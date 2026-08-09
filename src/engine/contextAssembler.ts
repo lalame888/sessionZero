@@ -112,7 +112,7 @@ export interface ContextAssemblyInput {
   recentMessages: ChatMessage[];
   playerAction: string;
   turn: number;
-  /** 是否請 GM 在敘事後提供行動建議；預設 true */
+  /** 是否請 GM 在敘事後提供行動建議；預設 false */
   suggestPlayerActions?: boolean;
   /** 額外上下文層（不會寫入對話紀錄，僅本回合送給 LLM） */
   extraLayers?: string[];
@@ -122,6 +122,8 @@ export interface ContextAssemblyInput {
   playerMemberId?: string | null;
   /** 自庫帶入的幕間銜接前提（開場必注入） */
   continuityPremiseZh?: string | null;
+  /** 重傷 CON 失敗後失去主動行動的角色 id */
+  incapacitatedCharacterIds?: string[];
 }
 
 export function houseRulesSummary(houseRules: HouseRuleConfig): string {
@@ -169,8 +171,9 @@ function buildSceneDirectorBlock(
 - Location SSOT: ${input.location}
 - Scene goal / pressure: ${goal || "（推進調查或當下威脅；失敗須改變場面）"}
 - Tension: ${tension}
-${notes ? `- Director notes: ${notes}\n` : ""}- NEVER speak/decide for the PC. Pause for player agency.
-- Check economy: no SAN loss for social/info failures; avoid isomorphic re-rolls; prefer NPC/document beats.
+${notes ? `- Director notes: ${notes}\n` : ""}- NEVER speak/decide for the PC (no invented PC dialogue). Follow the player's stated intent this turn; do not substitute a different action.
+- Check economy: no SAN loss for social/info failures; avoid isomorphic re-rolls; prefer NPC/document beats; rotate skills — do not spam 偵查/Spot Hidden.
+- ANTI-SPOILER: never tell the player exact win steps (times, ritual dials, "完成超渡"); companions must not dump full Win paths.
 ${hooks ? `- Hook callbacks available: ${hooks}` : ""}`;
 }
 
@@ -392,6 +395,47 @@ ${hr}`);
 
   layers.push(buildSootBlock(input));
 
+  const incapacitated = input.incapacitatedCharacterIds ?? [];
+  if (incapacitated.length) {
+    const names = incapacitated
+      .map((id) => {
+        const m = (input.party ?? []).find(
+          (p) => p.id === id || p.sheet?.id === id,
+        );
+        return m?.sheet?.name ?? id;
+      })
+      .join("、");
+    layers.push(
+      `[INCAPACITATED — MANDATORY]\nThese characters failed major-wound CON and cannot make proactive attacks/rituals until treated: ${names}. Narrate accordingly; pause their agency.`,
+    );
+  }
+
+  const recentChecks = input.recentMessages
+    .filter((m) => m.role === "system" && /需要檢定：/.test(m.content))
+    .slice(-12);
+  if (recentChecks.length >= 4) {
+    const skillCounts: Record<string, number> = {};
+    for (const m of recentChecks) {
+      const hit = m.content.match(/需要檢定：「[^」]+」([^（\n]+)/);
+      const skill = (hit?.[1] ?? "?").trim().replace(/\s+/g, "");
+      skillCounts[skill] = (skillCounts[skill] ?? 0) + 1;
+    }
+    const total = recentChecks.length;
+    const spot = Object.entries(skillCounts).find(([k]) =>
+      /偵查|Spot/i.test(k),
+    );
+    const spotN = spot?.[1] ?? 0;
+    const dist = Object.entries(skillCounts)
+      .map(([k, n]) => `${k}:${n}`)
+      .join(", ");
+    layers.push(
+      `[CHECK ECONOMY — RECENT ${total}]\n${dist}` +
+        (spotN / total >= 0.4
+          ? `\n偵查占比偏高（${spotN}/${total}）。Prefer other skills or dice-free document/NPC beats; do not spam Spot Hidden.`
+          : ""),
+    );
+  }
+
   const companionTrigger = buildCompanionMentionDirective(
     input.playerAction,
     input.party ?? [],
@@ -399,7 +443,7 @@ ${hr}`);
   );
   if (companionTrigger) layers.push(companionTrigger);
 
-  const suggest = input.suggestPlayerActions !== false;
+  const suggest = input.suggestPlayerActions === true;
   layers.push(
     suggest
       ? `[PLAYER UX PREFS — MANDATORY]
@@ -407,8 +451,9 @@ Suggest player actions: ON
 After this turn's narration (and tools), end with a Traditional Chinese block:
 
 你可以：
-- **短標題**：一句具體可執行的下一步
-- （共 2–4 項，貼近當下場景；勿替玩家做決定）`
+- **短標題**：一句模糊可執行方向（搜／談／逃／戒備／檢查環境）
+- （共 2–4 項；勿替玩家做決定）
+FORBIDDEN in options: puzzle answers, ritual parameters (e.g. 12:00), Win-condition wording, "完成超渡", exact combo solutions.`
       : `[PLAYER UX PREFS — MANDATORY]
 Suggest player actions: OFF
 Do NOT provide「你可以：」、行動選項清單、或多重選擇式下一步建議。

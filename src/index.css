@@ -79,6 +79,18 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Tailwind preflight 常把 button 設成 default cursor；可點控件統一用 pointer */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+  button:disabled,
+  [role="button"][aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+}
+
 ::selection {
   background: var(--sz-accent);
   color: var(--sz-bg);

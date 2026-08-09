@@ -36,7 +36,11 @@ function AdventureDetail({ record }: { record: AdventureRecord }) {
     <div className="rounded-lg border border-border bg-surface-2/40">
       <button
         type="button"
-        className="flex w-full items-start gap-2 p-3 text-left"
+        className={cn(
+          "flex w-full items-start gap-2 rounded-t-lg p-3 text-left outline-none",
+          "transition-colors hover:bg-surface-2/70",
+          "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
+        )}
         onClick={() => setOpen((v) => !v)}
       >
         {open ? (
@@ -431,8 +435,9 @@ export function CharacterLibraryPanel({
                 <button
                   type="button"
                   className={cn(
-                    "flex w-full items-start justify-between gap-2 rounded-lg border border-border bg-surface-2/50 p-3 text-left",
-                    "hover:border-accent/40",
+                    "flex w-full items-start justify-between gap-2 rounded-lg border border-border bg-surface-2/50 p-3 text-left outline-none",
+                    "transition-colors hover:border-accent/40 hover:bg-accent/[0.06]",
+                    "focus-visible:ring-2 focus-visible:ring-accent",
                   )}
                   onClick={() => setSelectedId(c.sheet.id)}
                 >

@@ -89,6 +89,8 @@ export default function App() {
   const phase = useGameStore((s) => s.phase);
   const preflight = useGameStore((s) => s.preflight);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
+  const sessionError = useGameStore((s) => s.sessionError);
+  const lastPlayerAction = useGameStore((s) => s.lastPlayerAction);
   const setPreflight = useGameStore((s) => s.setPreflight);
   const setShowInstallGuide = useGameStore((s) => s.setShowInstallGuide);
   const setShowSettings = useGameStore((s) => s.setShowSettings);
@@ -415,6 +417,29 @@ export default function App() {
       setBootstrapping(false);
     }
   }, [ensureSession, runPreflight]);
+
+  // SESSION/PROVIDER 錯誤後自動重建並重送一次，避免玩家連貼同一指令
+  const autoResumeKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (bootstrapping) return;
+    const store = useGameStore.getState();
+    const err = store.sessionError;
+    const action = store.retryAction;
+    if (!err || !action) return;
+    if (!/SESSION_ERROR|PROVIDER_/.test(err.code)) return;
+    const key = `${action.kind}|${action.kind === "player" ? action.text : "opening"}|${err.code}`;
+    if (autoResumeKeyRef.current === key) return;
+    autoResumeKeyRef.current = key;
+    store.appendSystem(
+      "偵測到連線／Session 錯誤，正在自動重建並重試上一步（僅一次）…",
+    );
+    void onRetrySessionAction();
+  }, [sessionError, bootstrapping, onRetrySessionAction]);
+
+  useEffect(() => {
+    // 新玩家行動時允許下一次錯誤再自動重試
+    autoResumeKeyRef.current = null;
+  }, [lastPlayerAction]);
 
   return (
     <div className="mx-auto flex h-dvh max-h-dvh max-w-7xl flex-col overflow-hidden px-3 py-4 md:px-6">

@@ -13,6 +13,15 @@ function haystack(...parts: (string | undefined | null)[]): string {
   return parts.filter(Boolean).join("\n").toLowerCase();
 }
 
+/** GM-only win memo — never quote to the player. */
+export function formatWinAdjudication(winningCondition: string): string {
+  const w = winningCondition.trim();
+  return [
+    `[GM-ONLY ADJUDICATE — never quote to player] Win: ${w}`,
+    "If Win is OR and the player substantially completed one branch, allow escape / end_game_session — do not upgrade OR into AND.",
+  ].join("\n");
+}
+
 function sceneMatches(scene: ScenarioScene, hay: string): boolean {
   const keys = [
     scene.id,
@@ -110,7 +119,7 @@ export function formatScenarioBibleOnDemand(
 ): string {
   const chunks: string[] = [];
   chunks.push(`Truth: ${hidden.truth_and_secrets}`);
-  chunks.push(`Win: ${hidden.winning_condition}`);
+  chunks.push(formatWinAdjudication(hidden.winning_condition));
   if (hidden.failure_consequences) {
     chunks.push(`Failure: ${hidden.failure_consequences}`);
   }
@@ -261,7 +270,7 @@ function formatCoreSection(
     out.push(`Truth: ${hidden.truth_and_secrets}`);
   }
   if (section === "all" || section === "win") {
-    out.push(`Win: ${hidden.winning_condition}`);
+    out.push(formatWinAdjudication(hidden.winning_condition));
   }
   if (
     (section === "all" || section === "failure") &&
@@ -471,7 +480,7 @@ export function formatScenarioTurnCanon(
 ): string {
   const TRUTH_MAX = 520;
   const chunks: string[] = [];
-  chunks.push(`Win: ${hidden.winning_condition}`);
+  chunks.push(formatWinAdjudication(hidden.winning_condition));
   const truth = hidden.truth_and_secrets.trim();
   chunks.push(
     `Truth (abbrev): ${truth.length > TRUTH_MAX ? `${truth.slice(0, TRUTH_MAX)}…` : truth}`,
@@ -559,7 +568,7 @@ export function formatScenarioTurnCanon(
 export function formatFullScenarioBible(hidden: HiddenFullScript): string {
   const chunks: string[] = [];
   chunks.push(`Truth: ${hidden.truth_and_secrets}`);
-  chunks.push(`Win: ${hidden.winning_condition}`);
+  chunks.push(formatWinAdjudication(hidden.winning_condition));
   if (hidden.failure_consequences) {
     chunks.push(`Failure: ${hidden.failure_consequences}`);
   }

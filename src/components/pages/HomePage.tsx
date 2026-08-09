@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FolderOpen, Plus, Trash2, Users } from "lucide-react";
+import { ChevronDown, FolderOpen, Plus, Trash2, Users } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
 import { CharacterLibraryPanel } from "@/components/character/CharacterLibraryPanel";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,22 @@ function scaleLabel(meta: CampaignMeta): string {
 
 type HomeTab = "sessions" | "characters";
 
+const TAB_META: Record<
+  HomeTab,
+  { label: string; icon: typeof FolderOpen; panelTitle: string }
+> = {
+  sessions: {
+    label: "既有 Session",
+    icon: FolderOpen,
+    panelTitle: "既有 Session",
+  },
+  characters: {
+    label: "角色檔案庫",
+    icon: Users,
+    panelTitle: "角色檔案庫",
+  },
+};
+
 export function HomePage({
   sessions,
   pedelecReady,
@@ -41,7 +57,11 @@ export function HomePage({
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
-  const [tab, setTab] = useState<HomeTab>("sessions");
+  const [tab, setTab] = useState<HomeTab | null>(null);
+
+  const selectTab = (next: HomeTab) => {
+    setTab((prev) => (prev === next ? null : next));
+  };
 
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col justify-center gap-8 px-2 py-6">
@@ -73,85 +93,150 @@ export function HomePage({
         <p className="text-center text-sm text-muted">正在建立 Session 並連線 GM…</p>
       ) : null}
 
-      <div className="flex justify-center gap-2">
-        <Button
-          size="sm"
-          variant={tab === "sessions" ? "default" : "secondary"}
-          onClick={() => setTab("sessions")}
-        >
-          <FolderOpen className="h-3.5 w-3.5" />
-          既有 Session
-        </Button>
-        <Button
-          size="sm"
-          variant={tab === "characters" ? "default" : "secondary"}
-          onClick={() => setTab("characters")}
-        >
-          <Users className="h-3.5 w-3.5" />
-          角色檔案庫
-        </Button>
-      </div>
-
-      {tab === "sessions" ? (
-        <section className="rounded-xl border border-border bg-surface/80 p-4">
-          <div className="mb-3 flex items-center gap-2 text-ink">
-            <FolderOpen className="h-4 w-4" />
-            <h2 className="brand-title text-lg">既有 Session</h2>
-          </div>
-          {sessions.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted">
-              尚無存檔。建立第一個劇本開始 Session 0。
-            </p>
-          ) : (
-            <ul className="max-h-[42vh] space-y-2 overflow-y-auto">
-              {sessions.map((s) => (
-                <li
-                  key={s.id}
-                  className={cn(
-                    "flex items-start gap-2 rounded-lg border border-border bg-surface-2/50 p-3",
-                  )}
-                >
-                  <button
-                    type="button"
-                    className="min-w-0 flex-1 text-left"
-                    disabled={bootstrapping || !pedelecReady}
-                    onClick={() => onOpen(s.id)}
-                  >
-                    <div className="truncate font-medium text-ink">{s.title}</div>
-                    <div className="mt-1 text-xs text-muted">
-                      {s.boundCharacterName
-                        ? `主角 ${s.boundCharacterName} · `
-                        : ""}
-                      隊伍 {s.partySize ?? 1} 人 · {s.systemId ?? "系統未定"} ·{" "}
-                      {scaleLabel(s)} · {PHASE_LABEL[s.phase]} ·{" "}
-                      {new Date(s.updatedAt).toLocaleString()}
-                    </div>
-                  </button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-danger"
-                    onClick={() => {
-                      if (confirm(`確定刪除「${s.title}」？`)) onDelete(s.id);
-                    }}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </li>
-              ))}
-            </ul>
+      <div className="w-full">
+        <div
+          role="tablist"
+          aria-label="瀏覽存檔與角色"
+          className={cn(
+            "grid grid-cols-2 gap-1 rounded-xl border border-border bg-surface-2/60 p-1",
+            tab && "rounded-b-none border-b-0",
           )}
-        </section>
-      ) : (
-        <section className="rounded-xl border border-border bg-surface/80 p-4">
-          <CharacterLibraryPanel
-            sessions={sessions}
-            pedelecReady={pedelecReady}
-            bootstrapping={bootstrapping}
-            onOpenCampaign={onOpen}
-          />
-        </section>
-      )}
+        >
+          {(Object.keys(TAB_META) as HomeTab[]).map((key) => {
+            const meta = TAB_META[key];
+            const Icon = meta.icon;
+            const selected = tab === key;
+            const countHint =
+              key === "sessions"
+                ? sessions.length
+                : null;
+            return (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                aria-expanded={selected}
+                aria-controls={selected ? `home-panel-${key}` : undefined}
+                id={`home-tab-${key}`}
+                onClick={() => selectTab(key)}
+                className={cn(
+                  "inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium outline-none transition-colors",
+                  "focus-visible:ring-2 focus-visible:ring-accent",
+                  selected
+                    ? "bg-surface text-ink shadow-sm ring-1 ring-border"
+                    : "text-muted hover:bg-surface/70 hover:text-ink",
+                )}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                <span>{meta.label}</span>
+                {countHint != null ? (
+                  <span
+                    className={cn(
+                      "rounded-full px-1.5 py-0.5 text-[10px] tabular-nums",
+                      selected
+                        ? "bg-accent/20 text-accent"
+                        : "bg-bg/50 text-muted",
+                    )}
+                  >
+                    {countHint}
+                  </span>
+                ) : null}
+                <ChevronDown
+                  className={cn(
+                    "h-3.5 w-3.5 shrink-0 text-muted transition-transform",
+                    selected && "rotate-180 text-ink",
+                  )}
+                  aria-hidden
+                />
+              </button>
+            );
+          })}
+        </div>
+
+        {!tab ? (
+          <p className="mt-3 text-center text-xs text-muted">
+            點選上方分頁以展開存檔列表或角色檔案庫（再點一次可收合）。
+          </p>
+        ) : (
+          <section
+            id={`home-panel-${tab}`}
+            role="tabpanel"
+            aria-labelledby={`home-tab-${tab}`}
+            className="rounded-b-xl border border-border border-t-border/60 bg-surface/80 p-4"
+          >
+            {tab === "sessions" ? (
+              <>
+                <div className="mb-3 flex items-center gap-2 text-ink">
+                  <FolderOpen className="h-4 w-4" />
+                  <h2 className="brand-title text-lg">
+                    {TAB_META.sessions.panelTitle}
+                  </h2>
+                </div>
+                {sessions.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-muted">
+                    尚無存檔。建立第一個劇本開始 Session 0。
+                  </p>
+                ) : (
+                  <ul className="max-h-[42vh] space-y-2 overflow-y-auto">
+                    {sessions.map((s) => (
+                      <li
+                        key={s.id}
+                        className={cn(
+                          "flex items-start gap-2 rounded-lg border border-border bg-surface-2/50 p-3",
+                          "transition-colors hover:border-accent/40 hover:bg-accent/[0.06]",
+                        )}
+                      >
+                        <button
+                          type="button"
+                          className={cn(
+                            "min-w-0 flex-1 rounded-md text-left outline-none",
+                            "transition-colors focus-visible:ring-2 focus-visible:ring-accent",
+                            "disabled:cursor-not-allowed disabled:opacity-50",
+                          )}
+                          disabled={bootstrapping || !pedelecReady}
+                          onClick={() => onOpen(s.id)}
+                        >
+                          <div className="truncate font-medium text-ink">
+                            {s.title}
+                          </div>
+                          <div className="mt-1 text-xs text-muted">
+                            {s.boundCharacterName
+                              ? `主角 ${s.boundCharacterName} · `
+                              : ""}
+                            隊伍 {s.partySize ?? 1} 人 ·{" "}
+                            {s.systemId ?? "系統未定"} · {scaleLabel(s)} ·{" "}
+                            {PHASE_LABEL[s.phase]} ·{" "}
+                            {new Date(s.updatedAt).toLocaleString()}
+                          </div>
+                        </button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-danger"
+                          onClick={() => {
+                            if (confirm(`確定刪除「${s.title}」？`))
+                              onDelete(s.id);
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            ) : (
+              <CharacterLibraryPanel
+                sessions={sessions}
+                pedelecReady={pedelecReady}
+                bootstrapping={bootstrapping}
+                onOpenCampaign={onOpen}
+              />
+            )}
+          </section>
+        )}
+      </div>
     </div>
   );
 }

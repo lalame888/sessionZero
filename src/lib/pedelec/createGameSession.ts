@@ -3,7 +3,16 @@ import type {
   PedelecSession,
   ProviderCode,
 } from "@kaoruisaac/pedelec";
+import {
+  findRecentSuccessfulCheck,
+  makeCheckFingerprint,
+  recordSuccessfulCheck,
+} from "@/engine/checkDedup";
 import { assemblePlayerTurnPrompt } from "@/engine/contextAssembler";
+import {
+  badEndingWinConflictWarning,
+  noteNarrativeForWinProgress,
+} from "@/engine/winFlags";
 import { aiCompanionsMentionedInAction } from "@/engine/companionTrigger";
 import { buildOpeningPartyDirective } from "@/engine/partyNarrativeBrief";
 import {
@@ -277,11 +286,12 @@ export function buildCompanionResolveExtraLayers(input: {
       `Declaration (for your eyes only — never re-speak): 「${input.action}」`,
       supplement ? `Human player follow-up: ${supplement}` : "",
       `MUST use character_id=${input.companionId} on check_request / secret_check_request / update_game_stats / mark_skill_success for THIS companion's attempt.`,
-      `If the companion's declaration is attempting an investigation / examination / medical / mysticism / combat maneuvre / knowledge assessment, you MUST initiate a check_request or secret_check_request for THIS attempt (and provide target_value if no sheet-matched skill exists).`,
+      `If the companion's declaration is attempting an investigation / examination / medical / mysticism / combat maneuvre / knowledge assessment, you MUST initiate a check_request or secret_check_request for THIS attempt (and provide target_value if no sheet-matched skill exists). Prefer the skill that matches the attempt — do not default investigation to 偵查/Spot Hidden.`,
       "FORBIDDEN in narrative_text:",
       "- Prefix 【隊友·…】 or any restatement of their spoken lines",
       `- Third-person replay of the same action (e.g.「${input.companionName}大喊…」「她忍著痛…」repeating what they already declared)`,
       "- God-moding the human PC's actions/thoughts",
+      "- Spelling exact win steps / ritual parameters / full Win paths to the player",
       "REQUIRED:",
       "- Narrate ONLY dice outcomes, world/NPC reactions, and NEW visible consequences",
       "- If no check yet: 1–3 short sentences max of world reaction, then pause for the human player",
@@ -645,6 +655,16 @@ function waitForPlayerDice(args: {
 
   return new Promise((resolve) => {
     const store = useGameStore.getState();
+    if (store.pendingDice && store.diceResolver) {
+      resolve({
+        request_id: args.request_id,
+        diceResult: 0,
+        outcome: "REJECTED_PENDING",
+        detail: "pending_check_exists",
+        cancelled: true,
+      });
+      return;
+    }
     const timeoutId = window.setTimeout(() => {
       store.clearDiceResolver();
       resolve({
@@ -775,6 +795,11 @@ async function runNarrateStory(args: NarrateStoryArgs) {
 
   if (narrativeText.trim()) {
     store.narrateFromTool(narrativeText, a.system_notice);
+    if (narrativeText.trim()) {
+      store.patchWinProgress((prev) =>
+        noteNarrativeForWinProgress(prev, narrativeText),
+      );
+    }
   } else if (a.system_notice?.trim()) {
     store.appendSystem(a.system_notice);
   }
@@ -869,6 +894,52 @@ async function runNarrateStory(args: NarrateStoryArgs) {
   const whoLabel = whoSheet?.name?.trim()
     ? `「${whoSheet.name}」`
     : "角色";
+  const checkFp = makeCheckFingerprint({
+    characterId: checkRequest.character_id,
+    skillLabel,
+    reason: checkRequest.reason ?? "",
+  });
+  const priorSuccess = findRecentSuccessfulCheck(checkFp);
+  if (priorSuccess) {
+    useGameStore.getState().appendSystem(
+      `（略過重複檢定：${whoLabel}${skillLabel} 近日已成功，不再重骰）`,
+    );
+    activeCompanionResolveId = null;
+    return {
+      ok: true as const,
+      narrative_recorded: true as const,
+      check_skipped: true as const,
+      request_id: checkRequest.request_id,
+      diceResult: 0,
+      outcome: priorSuccess.outcome,
+      detail: "duplicate_success_skipped",
+      cancelled: false,
+      outcome_zh: successQualityLabel(priorSuccess.outcome),
+      difficulty: resolved.difficulty,
+      difficulty_zh: difficultyLabelWithHint(resolved.difficulty),
+      result_zh: formatDiceResultLabels({
+        outcome: priorSuccess.outcome,
+        difficulty: resolved.difficulty,
+      }),
+      gm_instruction:
+        "CRITICAL: Do NOT re-request this check. A matching check already SUCCEEDED recently. Your next narrate_story must ONLY continue from that prior success and immediate consequences — never roll again, never overwrite with failure.",
+    };
+  }
+  if (
+    useGameStore.getState().pendingDice &&
+    !isCompanionDiceCheck(checkRequest.character_id)
+  ) {
+    activeCompanionResolveId = null;
+    return {
+      ok: false as const,
+      error: "PENDING_CHECK_EXISTS",
+      message:
+        "A player-facing check is already pending. Wait for the dice result before requesting another check.",
+      narrative_recorded: true as const,
+      gm_instruction:
+        "Do not overwrite the pending check. Wait for the engine dice result, then narrate only that outcome.",
+    };
+  }
   const thresholdText =
     resolved.checkKind === "sanity" && resolved.skill_value != null
       ? `${whoLabel}當前 SAN ${resolved.skill_value}，成功需 <= ${resolved.target_value}（CoC 理智檢定）`
@@ -890,6 +961,22 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     ...checkRequest,
     difficulty: checkRequest.difficulty ?? resolved.difficulty,
   });
+  if (roll.outcome === "REJECTED_PENDING" || roll.detail === "pending_check_exists") {
+    activeCompanionResolveId = null;
+    useGameStore.getState().appendSystem(
+      "（拒絕覆寫檢定：尚有未結算的擲骰請求）",
+    );
+    return {
+      ok: false as const,
+      error: "PENDING_CHECK_EXISTS",
+      message:
+        "A player-facing check is already pending. Wait for the dice result before requesting another check.",
+      narrative_recorded: true as const,
+      cancelled: true,
+      gm_instruction:
+        "Do not overwrite the pending check. Wait for the engine dice result, then narrate only that outcome.",
+    };
+  }
   // 隊友檢定絕不可落到「已取消／不進行」；若誤走玩家 UI 被取消，強制改為自動擲骰
   if (
     roll.cancelled &&
@@ -913,6 +1000,9 @@ async function runNarrateStory(args: NarrateStoryArgs) {
       diceResult: roll.diceResult,
       outcome: roll.outcome,
     };
+    if (isSuccessDiceOutcome(roll.outcome)) {
+      recordSuccessfulCheck(checkFp, roll.outcome);
+    }
     if (
       resolved.checkKind === "skill" &&
       isSuccessDiceOutcome(roll.outcome)
@@ -1295,6 +1385,33 @@ function registerHandlers(
       store.appendSystem("GM 暗骰進行中…（點數將於結局時間軸揭曉）");
 
       const resolved = resolveCheckAgainstSheet(a);
+      const skillLabel = resolved.sheetSkillName ?? a.check_target_name;
+      const secretFp = makeCheckFingerprint({
+        characterId: a.character_id,
+        skillLabel,
+        reason: a.reason_for_gm ?? "",
+      });
+      const priorSecret = findRecentSuccessfulCheck(secretFp);
+      if (priorSecret) {
+        store.setSecretRollActive(false);
+        return {
+          request_id: a.request_id,
+          check_skipped: true,
+          diceResult: 0,
+          outcome: priorSecret.outcome,
+          outcome_zh: successQualityLabel(priorSecret.outcome),
+          difficulty: resolved.difficulty,
+          difficulty_zh: difficultyLabelWithHint(resolved.difficulty),
+          result_zh: formatDiceResultLabels({
+            outcome: priorSecret.outcome,
+            difficulty: resolved.difficulty,
+          }),
+          detail: "duplicate_success_skipped",
+          isSecret: true,
+          gm_instruction:
+            "Do NOT re-secret-check the same attempt; continue from the prior success.",
+        };
+      }
       const rolled = rollDice(a.dice_type, "normal");
       const outcome = a.dice_type.toLowerCase().includes("20")
         ? resolveD20Outcome(
@@ -1312,7 +1429,7 @@ function registerHandlers(
       store.recordHistoryTurn({
         aiNarrative: `（暗骰）${a.reason_for_gm}`,
         diceRecord: {
-          skillName: resolved.sheetSkillName ?? a.check_target_name,
+          skillName: skillLabel,
           isSecret: true,
           diceType: a.dice_type,
           targetValue: resolved.target_value,
@@ -1322,11 +1439,11 @@ function registerHandlers(
       });
       store.setSecretRollActive(false);
 
+      if (isSuccessDiceOutcome(outcome)) {
+        recordSuccessfulCheck(secretFp, outcome);
+      }
       if (resolved.checkKind === "skill" && isSuccessDiceOutcome(outcome)) {
-        store.markSkillSuccess(
-          resolved.sheetSkillName ?? a.check_target_name,
-          a.character_id,
-        );
+        store.markSkillSuccess(skillLabel, a.character_id);
       }
 
       return {
@@ -1350,7 +1467,7 @@ function registerHandlers(
   );
 
   disposers.push(
-    session.onTool("update_game_stats", (args) => {
+    session.onTool("update_game_stats", async (args) => {
       const raw = args as {
         character_id?: string;
         stat_changes: { key: string; change_amount: number; reason: string }[];
@@ -1362,22 +1479,73 @@ function registerHandlers(
         noteCompanionIdCorrection("update_game_stats");
       }
       const characterId = coerced.characterId ?? undefined;
-      useGameStore
-        .getState()
-        .applyStatChanges(
-          raw.stat_changes,
-          raw.inventory_add,
-          raw.inventory_remove,
-          characterId,
-        );
+      const store = useGameStore.getState();
+      const aftermath = store.applyStatChanges(
+        raw.stat_changes,
+        raw.inventory_add,
+        raw.inventory_remove,
+        characterId,
+      );
       const sheet = useGameStore.getState().getSheetById(characterId);
-      return {
-        ok: true,
+      const base = {
+        ok: true as const,
         character_id: sheet?.id,
         hp: sheet?.derived.hp,
         san: sheet?.derived.san,
         inventory: sheet?.inventory,
       };
+
+      if (
+        aftermath?.requireConCheck &&
+        sheet?.system_id === "COC_7E" &&
+        sheet.derived.hp.current > 0
+      ) {
+        const whoLabel = sheet.name?.trim()
+          ? `「${sheet.name}」`
+          : "角色";
+        const reason = `重傷後的體質（CON）檢定：失敗則昏迷／失去行動`;
+        useGameStore.getState().appendSystem(
+          `需要檢定：${whoLabel}體質（d100）— ${reason}`,
+        );
+        const roll = await waitForPlayerDice({
+          request_id: `major_wound_con_${Date.now()}`,
+          check_target_name: "體質",
+          dice_type: "d100",
+          reason,
+          character_id: sheet.id,
+        });
+        const failed =
+          roll.cancelled ||
+          !isSuccessDiceOutcome(roll.outcome);
+        if (failed && !roll.cancelled) {
+          useGameStore.getState().setCharacterIncapacitated(sheet.id, true);
+          useGameStore.getState().appendSystem(
+            `重傷體質檢定失敗（${whoLabel}）：失去行動／需急救；GM 必須敘事並暫停該角色主動攻擊或儀式。`,
+          );
+        } else if (!failed) {
+          useGameStore.getState().setCharacterIncapacitated(sheet.id, false);
+          useGameStore.getState().appendSystem(
+            `重傷體質檢定成功（${whoLabel}）：仍可行動，但應敘述傷勢痛苦。`,
+          );
+        }
+        return {
+          ...base,
+          major_wound_con: {
+            cancelled: Boolean(roll.cancelled),
+            outcome: roll.outcome,
+            outcome_zh: successQualityLabel(roll.outcome),
+            detail: roll.detail,
+            incapacitated: failed && !roll.cancelled,
+          },
+          gm_instruction: failed && !roll.cancelled
+            ? `MANDATORY: ${whoLabel} failed the major-wound CON check and is incapacitated — narrate collapse/pain and pause their proactive attacks/rituals until treated.`
+            : roll.cancelled
+              ? "Major-wound CON check was cancelled; do not ignore the major wound — re-request CON if still unresolved."
+              : `MAJOR WOUND: ${whoLabel} passed CON and remains active; narrate pain but they can still act carefully.`,
+        };
+      }
+
+      return base;
     }),
   );
 
@@ -1447,13 +1615,26 @@ function registerHandlers(
       activeCompanionResolveId = null;
       autoCompanionHandledForAction = null;
       useGameStore.getState().setPendingCompanionHandoff(null);
-      useGameStore.getState().endGame({
+      const store = useGameStore.getState();
+      const win = store.script.hidden_full_script?.winning_condition ?? "";
+      const warn = badEndingWinConflictWarning({
+        endingType: a.ending_type,
+        winningCondition: win,
+        progress: store.winProgress,
+      });
+      store.endGame({
         ending_type: a.ending_type,
         ending_title: a.ending_title,
         ending_narrative: a.ending_narrative,
         achievements: a.achievements ?? [],
       });
-      return { ok: true };
+      return {
+        ok: true,
+        win_conflict_warning: warn,
+        gm_instruction: warn
+          ? `WARNING: ${warn} If a Win OR-branch was already achieved, prefer a non-bad ending or explain why escape still failed.`
+          : undefined,
+      };
     }),
   );
 
@@ -1841,6 +2022,7 @@ export async function sendPlayerAction(
     sceneDirector: store.sceneDirector,
     party: store.party,
     playerMemberId: store.playerMemberId,
+    incapacitatedCharacterIds: store.incapacitatedCharacterIds,
   });
 
   await session.sendText(prompt);
@@ -1912,6 +2094,7 @@ export async function sendOpeningNarration() {
     sceneDirector: latest.sceneDirector,
     party: latest.party,
     playerMemberId: latest.playerMemberId,
+    incapacitatedCharacterIds: latest.incapacitatedCharacterIds,
     continuityPremiseZh: latest.continuityBridge?.premiseZh ?? null,
   });
 

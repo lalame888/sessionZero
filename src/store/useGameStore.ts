@@ -6,9 +6,17 @@ import {
 import {
   createBlankCharacter,
   migrateCharacterSheet,
+  normalizeCocCreationSheet,
   recomputeDerived,
   themeForSystem,
 } from "@/engine/formulas";
+import {
+  badEndingWinConflictWarning,
+  emptyWinProgress,
+  noteClueForWinProgress,
+  noteNarrativeForWinProgress,
+  type WinProgressFlags,
+} from "@/engine/winFlags";
 import {
   createEmptyCharacterShell,
   defaultAttributeDefs,
@@ -28,7 +36,7 @@ import {
   createEmptyCampaignPersist,
   type CampaignPersist,
 } from "@/lib/campaignStorage";
-import { evaluateCombatStatAftermath } from "@/engine/combatAftermath";
+import { evaluateCombatStatAftermath, type CombatAftermathResult } from "@/engine/combatAftermath";
 import type { ContinuityBridgeState } from "@/engine/continuityBridge";
 import {
   applyContinuityRecovery,
@@ -305,7 +313,12 @@ interface GameStore {
     inventory_add?: string[],
     inventory_remove?: string[],
     character_id?: string | null,
-  ) => void;
+  ) => CombatAftermathResult | null;
+  /** 重傷 CON 失敗後暫時失去主動行動的角色 id */
+  incapacitatedCharacterIds: string[];
+  setCharacterIncapacitated: (characterId: string, incapacitated: boolean) => void;
+  winProgress: WinProgressFlags;
+  patchWinProgress: (patch: Partial<WinProgressFlags> | ((prev: WinProgressFlags) => WinProgressFlags)) => void;
   markSkillSuccess: (skill_name: string, character_id?: string | null) => void;
   recordClue: (clue: ClueItem) => void;
   addPlayerNote: (note: { title: string; content: string }) => string;
@@ -377,11 +390,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
   sessionStatus: "disconnected",
   sessionError: null,
   retryAction: null,
+  incapacitatedCharacterIds: [],
+  winProgress: emptyWinProgress(),
   selectedProvider: null,
   selectedModel: "",
   composerDraft: "",
   lastPlayerAction: "",
-  suggestPlayerActions: true,
+  suggestPlayerActions: false,
   showInstallGuide: false,
   showSettings: false,
   isTyping: false,
@@ -422,6 +437,32 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setSessionStatus: (s) => set({ sessionStatus: s }),
   setSessionError: (e) => set({ sessionError: e }),
   setRetryAction: (a) => set({ retryAction: a }),
+  setCharacterIncapacitated: (characterId, incapacitated) =>
+    set((s) => {
+      const id = characterId.trim();
+      if (!id) return s;
+      const has = s.incapacitatedCharacterIds.includes(id);
+      if (incapacitated && !has) {
+        return {
+          incapacitatedCharacterIds: [...s.incapacitatedCharacterIds, id],
+        };
+      }
+      if (!incapacitated && has) {
+        return {
+          incapacitatedCharacterIds: s.incapacitatedCharacterIds.filter(
+            (x) => x !== id,
+          ),
+        };
+      }
+      return s;
+    }),
+  patchWinProgress: (patch) =>
+    set((s) => ({
+      winProgress:
+        typeof patch === "function"
+          ? patch(s.winProgress)
+          : { ...s.winProgress, ...patch },
+    })),
   setProvider: (p) => set({ selectedProvider: p }),
   setModel: (m) => set({ selectedModel: m }),
   setComposerDraft: (v) => set({ composerDraft: v }),
@@ -1118,7 +1159,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     character_id = null,
   ) => {
     const sheet = get().getSheetById(character_id);
-    if (!sheet) return;
+    if (!sheet) return null;
     const blocked: string[] = [];
     const allowed = changes.filter((ch) => {
       if (ch.change_amount < 0 && isBlockedSocialSanLoss(ch.key, ch.reason)) {
@@ -1133,7 +1174,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       );
     }
     if (!allowed.length && !inventory_add.length && !inventory_remove.length) {
-      return;
+      return null;
     }
     const targetId = character_id ?? sheet.id;
     const hpBefore = sheet.derived.hp.current;
@@ -1192,7 +1233,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     const after = get().getSheetById(targetId);
-    if (!after) return;
+    if (!after) return null;
     const isPlayerPc =
       targetId === get().playerMemberId ||
       (!get().playerMemberId && targetId === get().character?.id);
@@ -1211,6 +1252,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (aftermath.offerBadEnding && get().phase === "PLAYING") {
       get().offerManualEnding(aftermath.offerBadEnding);
     }
+    return aftermath;
   },
 
   markSkillSuccess: (skill_name, character_id = null) => {
@@ -1232,6 +1274,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
   recordClue: (clue) => {
     set((s) => ({
       clues: [...s.clues.filter((c) => c.clue_id !== clue.clue_id), clue],
+      winProgress: noteClueForWinProgress(
+        s.winProgress,
+        clue.title,
+        clue.is_key_clue,
+      ),
     }));
     get().appendSystem(`發現線索：${clue.title}`);
   },
@@ -1441,6 +1488,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   endGame: (ending) => {
+    const win = get().script.hidden_full_script?.winning_condition ?? "";
+    const warn = badEndingWinConflictWarning({
+      endingType: ending.ending_type,
+      winningCondition: win,
+      progress: get().winProgress,
+    });
+    if (warn) {
+      get().appendSystem(warn);
+    }
     set((s) => ({
       ending,
       phase: "ENDING",
@@ -1618,6 +1674,23 @@ export const useGameStore = create<GameStore>((set, get) => ({
         workingParty.find((m) => m.id === player.id)?.sheet ??
         player.sheet;
 
+      // CoC 創角硬限制：克蘇魯神話 0、閃避=DEX/2
+      workingParty = workingParty.map((m) => {
+        const { sheet: normalized, forcedMythosToZero } =
+          normalizeCocCreationSheet(m.sheet);
+        if (forcedMythosToZero) {
+          get().appendSystem(
+            `創角校正「${normalized.name || "角色"}」：克蘇魯神話於開場強制為 0（調查中再成長）。`,
+          );
+        }
+        return { ...m, sheet: normalized };
+      });
+
+      const sheetNormalized =
+        workingParty.find((m) => m.controller === "player")?.sheet ??
+        workingParty.find((m) => m.id === player.id)?.sheet ??
+        sheet;
+
       // 玩家 + 自檔案庫帶入的 AI 隊友皆佔用角色卡（同時僅一場）
       const toBind = workingParty.filter(
         (m) =>
@@ -1642,7 +1715,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
 
       const enriched = recomputeDerived(
-        enrichCharacterSheetMeta(sheet, get().characterSchema),
+        enrichCharacterSheetMeta(sheetNormalized, get().characterSchema),
       );
       bindCharacterToCampaign(enriched, campaignId);
 
@@ -1703,6 +1776,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
           notes: "",
         },
         retryAction: { kind: "opening", label: "述說開場敘事" },
+        winProgress: emptyWinProgress(),
+        incapacitatedCharacterIds: [],
       });
 
       if (bridgeNote) {
@@ -1887,6 +1962,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
         data.viewedPartyMemberId ?? playerMemberId ?? null,
       clues: data.clues,
       playerNotes: data.playerNotes ?? [],
+      winProgress: (() => {
+        let progress = (data.clues ?? []).reduce(
+          (acc, c) => noteClueForWinProgress(acc, c.title, c.is_key_clue),
+          emptyWinProgress(),
+        );
+        for (const m of messages) {
+          if (m.role === "agent") {
+            progress = noteNarrativeForWinProgress(progress, m.content);
+          }
+        }
+        return progress;
+      })(),
+      incapacitatedCharacterIds: [],
       npcs: data.npcs,
       madness: data.madness,
       history: data.history,

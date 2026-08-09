@@ -70,7 +70,7 @@ export function PedelecStatusBadge({ onRecheck }: { onRecheck?: () => void }) {
           if (!preflight.ready) setShowInstallGuide(true);
           else setShowSettings(true);
         }}
-        className="inline-flex items-center gap-2 rounded-sm px-1.5 py-0.5"
+        className="inline-flex items-center gap-2 rounded-sm px-1.5 py-0.5 outline-none transition-colors hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-accent"
         aria-label={`Pedelec 狀態：${text}`}
       >
         {icon}
