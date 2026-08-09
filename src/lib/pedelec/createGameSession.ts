@@ -59,7 +59,11 @@ import {
   type LeakedToolCall,
 } from "@/lib/pedelec/leakedToolCall";
 import { persistPedelecSessionId } from "@/lib/storage";
-import { GM_DIRECTIVES } from "@/prompts/gmDirectives";
+import { GM_SESSION_GUIDANCE } from "@/prompts/gmDirectives";
+import {
+  resetScenarioBibleAssetCache,
+  syncScenarioBibleAsset,
+} from "@/lib/pedelec/sessionAssets";
 import { useGameStore } from "@/store/useGameStore";
 import { allSessionTools } from "@/tools/definitions";
 import type {
@@ -1133,6 +1137,15 @@ function registerHandlers(
             `劇本規模深度不足（${normalizeScenarioScale(a.scenario_scale)}）：${gapNote}。可請 GM 再呼叫 setup_script 補齊，或接受較薄的即興局。`,
           );
       }
+      void syncScenarioBibleAsset(session, useGameStore.getState().script).catch(
+        (e) => {
+          useGameStore
+            .getState()
+            .appendSystem(
+              `（系統）劇本 bible 上傳 sandbox 失敗：${e instanceof Error ? e.message : String(e)}`,
+            );
+        },
+      );
       return {
         ok: true,
         system_id: a.system_id,
@@ -1540,7 +1553,7 @@ export async function createGameSession(options: {
     provider: options.provider,
     model: options.model || undefined,
     skills: {
-      guidance: GM_DIRECTIVES,
+      guidance: GM_SESSION_GUIDANCE,
       tools: allSessionTools,
     },
     autoEndOnDisconnect: false,
@@ -1549,6 +1562,14 @@ export async function createGameSession(options: {
   persistPedelecSessionId(session.sessionId);
   const store = useGameStore.getState();
   store.setSessionStatus(session.getStatus());
+  resetScenarioBibleAssetCache();
+  if (store.script.hidden_full_script) {
+    void syncScenarioBibleAsset(session, store.script).catch((e) => {
+      store.appendSystem(
+        `（系統）劇本 bible 上傳 sandbox 失敗：${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
+  }
 
   const offChat = session.onChat((delta, ctx) => {
     const s = useGameStore.getState();
@@ -1713,6 +1734,7 @@ export async function disposeGameSession() {
   if (!activeHandle) return;
   const handle = activeHandle;
   activeHandle = null;
+  resetScenarioBibleAssetCache();
   handle.dispose();
   try {
     await handle.session.end();
@@ -1745,6 +1767,13 @@ export async function sendPlayerAction(
   // 非隊友結算的玩家行動：關閉上一拍隊友 resolve 視窗（避免誤套 character_id）
   if (!opts?.companionResolve) {
     activeCompanionResolveId = null;
+  }
+
+  // PLAYING 前保險再 sync 一次（開舊檔／setup 後漏傳）
+  if (store.script.hidden_full_script) {
+    void syncScenarioBibleAsset(session, store.script).catch(() => {
+      // 靜默；create／setup 已有提示
+    });
   }
 
   store.setLastPlayerAction(text);
@@ -1825,6 +1854,9 @@ export async function sendOpeningNarration() {
   store.clearIncompleteOpening(isRetry ? "retry" : "first");
 
   const latest = useGameStore.getState();
+  if (latest.script.hidden_full_script) {
+    void syncScenarioBibleAsset(session, latest.script).catch(() => {});
+  }
   const prompt = assemblePlayerTurnPrompt({
     script: latest.script,
     houseRules: latest.houseRules,

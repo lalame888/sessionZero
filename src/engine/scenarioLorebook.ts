@@ -227,3 +227,57 @@ export function formatScenarioBibleOnDemand(
 
   return chunks.join("\n\n");
 }
+
+/**
+ * 完整 bible（供 sandbox 資產）。含全部 scenes／npcs／creatures，不依當下場景切片。
+ */
+export function formatFullScenarioBible(hidden: HiddenFullScript): string {
+  const chunks: string[] = [];
+  chunks.push(`Truth: ${hidden.truth_and_secrets}`);
+  chunks.push(`Win: ${hidden.winning_condition}`);
+  if (hidden.failure_consequences) {
+    chunks.push(`Failure: ${hidden.failure_consequences}`);
+  }
+  if (hidden.san_and_threats) {
+    chunks.push(`SAN/Threats: ${hidden.san_and_threats}`);
+  }
+  if (hidden.key_clues?.length) {
+    chunks.push(`Key clues: ${hidden.key_clues.join(" | ")}`);
+  }
+  if (hidden.acts?.length) {
+    chunks.push(
+      `Acts:\n${hidden.acts.map((a) => `- ${a.name}: ${a.summary}`).join("\n")}`,
+    );
+  }
+  if (hidden.timeline?.length) {
+    chunks.push(
+      `Timeline:\n${hidden.timeline.map((t) => `- ${t.when}: ${t.what}`).join("\n")}`,
+    );
+  }
+  if (hidden.scenes?.length) {
+    chunks.push(
+      `Scenes:\n${hidden.scenes.map(formatScene).join("\n")}`,
+    );
+  }
+  if (hidden.npcs?.length) {
+    chunks.push(`NPCs:\n${hidden.npcs.map(formatNpc).join("\n")}`);
+  }
+  if (hidden.creatures?.length) {
+    chunks.push(
+      `CREATURES / ENEMIES (KEEPER SSOT — use attacks/HP/armor; never invent contradicting stats):\n${hidden.creatures
+        .map(formatCreature)
+        .join("\n")}`,
+    );
+  }
+  if (hidden.factions?.length) {
+    chunks.push(
+      `Factions:\n${hidden.factions
+        .map(
+          (f) =>
+            `- [${f.id}] ${f.name}: ${f.goal}${f.methods ? `（${f.methods}）` : ""}`,
+        )
+        .join("\n")}`,
+    );
+  }
+  return chunks.join("\n\n");
+}

@@ -14,8 +14,11 @@ import type { PartyMember } from "@/types/party";
 import { buildCompanionMentionDirective } from "@/engine/companionTrigger";
 import { formatPartyRosterForGm } from "@/engine/partyNarrativeBrief";
 import { buildStructuredChapterSummary } from "@/engine/chapterSummary";
-import { formatScenarioBibleOnDemand } from "@/engine/scenarioLorebook";
 import { lookupSrdEntries } from "@/engine/srdLorebook";
+import {
+  SCENARIO_BIBLE_ASSET_PATH,
+  SCENARIO_BIBLE_READ_HINT,
+} from "@/lib/pedelec/sessionAssets";
 import { isNoiseHistoryNarrative } from "@/lib/historyHygiene";
 import { looksLikeLeakedToolCall } from "@/lib/pedelec/leakedToolCall";
 import {
@@ -23,8 +26,16 @@ import {
   scenarioScaleRequirements,
 } from "@/engine/scenarioScale";
 
-const SLIDING_WINDOW = 10;
+const SLIDING_WINDOW = 8;
 const SUMMARIZE_EVERY = 15;
+/** 單則對話進 prompt 的硬上限，避免 agy -p 命令列過長 */
+const DIALOGUE_LINE_MAX = 480;
+
+function truncateDialogueContent(text: string, max = DIALOGUE_LINE_MAX): string {
+  const t = text.trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max)}…`;
+}
 
 export interface ContextAssemblyInput {
   script: ScriptState;
@@ -263,26 +274,11 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
   }
 
   if (input.script.hidden_full_script && !input.script.revealed) {
-    const hidden = input.script.hidden_full_script;
-    const hasBible =
-      (hidden.scenes?.length ?? 0) > 0 ||
-      (hidden.npcs?.length ?? 0) > 0 ||
-      (hidden.timeline?.length ?? 0) > 0 ||
-      (hidden.creatures?.length ?? 0) > 0;
     layers.push(
-      hasBible
-        ? `[SCENARIO BIBLE — GM ONLY, NEVER REVEAL DIRECTLY]\n${formatScenarioBibleOnDemand(
-            hidden,
-            {
-              location: input.location,
-              playerAction: input.playerAction,
-              currentSceneId: input.sceneDirector?.currentSceneId,
-            },
-          )}`
-        : `[HIDDEN TRUTH — GM ONLY, NEVER REVEAL DIRECTLY]
-${hidden.truth_and_secrets}
-Key clues: ${hidden.key_clues.join(" | ")}
-Win: ${hidden.winning_condition}`,
+      `[SCENARIO BIBLE FILE — GM ONLY]
+${SCENARIO_BIBLE_READ_HINT}
+Do not re-print the file contents into player-facing narration.
+Path: ${SCENARIO_BIBLE_ASSET_PATH}`,
     );
   }
 
@@ -318,7 +314,10 @@ ${hr}`);
   if (windowMsgs.length) {
     layers.push(
       `[RECENT DIALOGUE]\n${windowMsgs
-        .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+        .map(
+          (m) =>
+            `${m.role.toUpperCase()}: ${truncateDialogueContent(m.content)}`,
+        )
         .join("\n")}`,
     );
   }
