@@ -27,6 +27,7 @@ import {
   type ResolvedCheckKind,
 } from "@/engine/skillCheck";
 import { findSrdByTopic } from "@/engine/srdLorebook";
+import { lookupScenarioTerm } from "@/engine/scenarioLorebook";
 import {
   assessScenarioScaleGaps,
   formatScenarioScaleGapsZh,
@@ -1535,6 +1536,40 @@ function registerHandlers(
       };
       useGameStore.getState().setPendingRuleLookup(enriched);
       return { ok: true, ...enriched };
+    }),
+  );
+
+  disposers.push(
+    session.onTool("lookup_scenario_term", (args) => {
+      const a = args as {
+        query: string;
+        kind?: string;
+        limit?: number;
+      };
+      const hidden = useGameStore.getState().script.hidden_full_script;
+      if (!hidden) {
+        return {
+          ok: false,
+          text: "No hidden bible yet. Call setup_script in Session 0, or improvise only within public_summary.",
+        };
+      }
+      const kindRaw = (a.kind ?? "any").trim().toLowerCase();
+      const kind =
+        kindRaw === "npc" ||
+        kindRaw === "scene" ||
+        kindRaw === "creature" ||
+        kindRaw === "faction" ||
+        kindRaw === "clue" ||
+        kindRaw === "core" ||
+        kindRaw === "any"
+          ? kindRaw
+          : "any";
+      const result = lookupScenarioTerm(hidden, {
+        query: a.query ?? "",
+        kind,
+        limit: a.limit,
+      });
+      return result;
     }),
   );
 

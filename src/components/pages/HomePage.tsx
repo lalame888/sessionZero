@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { FolderOpen, Plus, Trash2, Users } from "lucide-react";
+import { BrandMark } from "@/components/BrandMark";
 import { CharacterLibraryPanel } from "@/components/character/CharacterLibraryPanel";
 import { Button } from "@/components/ui/button";
 import type { CampaignMeta } from "@/lib/campaignStorage";
@@ -45,7 +46,7 @@ export function HomePage({
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col justify-center gap-8 px-2 py-6">
       <div className="text-center">
-        <h1 className="brand-title text-4xl text-ink md:text-5xl">SessionZero</h1>
+        <BrandMark size="lg" />
         <p className="mt-3 text-sm text-muted md:text-base">
           萬用 AI TRPG 跑團引擎。管理劇本 Session 與可跨劇本重用的角色檔案庫。
         </p>

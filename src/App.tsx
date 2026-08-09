@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProviderCode } from "@kaoruisaac/pedelec";
 import { Home, Settings } from "lucide-react";
+import { BrandMark } from "@/components/BrandMark";
 import { CharacterPage } from "@/components/pages/CharacterPage";
 import { EndingPage } from "@/components/pages/EndingPage";
 import { HomePage } from "@/components/pages/HomePage";
@@ -419,7 +420,7 @@ export default function App() {
     <div className="mx-auto flex h-dvh max-h-dvh max-w-7xl flex-col overflow-hidden px-3 py-4 md:px-6">
       <header className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
-          <h1 className="brand-title text-xl text-ink md:text-2xl">SessionZero</h1>
+          <BrandMark size="sm" />
           {screen === "campaign" ? (
             <p className="truncate text-xs text-muted">
               {script.public_summary?.title ?? "未命名劇本"}

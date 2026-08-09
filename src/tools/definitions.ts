@@ -730,6 +730,31 @@ export const lookupRuleTool = defineTool({
   },
 });
 
+export const lookupScenarioTermTool = defineTool({
+  name: "lookup_scenario_term",
+  description:
+    "查詢本局劇本 bible 字典（GM-only）：NPC／場景／生物／勢力／關鍵線索／core（truth/win/acts/timeline）。不確定專有名詞時先呼叫此 tool，勿整檔重讀 scenario_bible.md、勿對玩家劇透原文。",
+  argsSchema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "名稱、id 或關鍵詞（可中英）；core 可用 truth/win/acts/timeline/clues",
+      },
+      kind: {
+        type: "string",
+        description:
+          "any | npc | scene | creature | faction | clue | core（預設 any）",
+      },
+      limit: {
+        type: "number",
+        description: "每類最多回傳幾筆（1–12，預設 6）",
+      },
+    },
+    required: ["query"],
+  },
+});
+
 export const allSessionTools = [
   setupScriptTool,
   generateCharacterSchemaTool,
@@ -744,4 +769,5 @@ export const allSessionTools = [
   endGameSessionTool,
   requestCompanionActionTool,
   lookupRuleTool,
+  lookupScenarioTermTool,
 ] as const;

@@ -14,11 +14,11 @@ import type { PartyMember } from "@/types/party";
 import { buildCompanionMentionDirective } from "@/engine/companionTrigger";
 import { formatPartyRosterForGm } from "@/engine/partyNarrativeBrief";
 import { buildStructuredChapterSummary } from "@/engine/chapterSummary";
-import { lookupSrdEntries } from "@/engine/srdLorebook";
 import {
-  SCENARIO_BIBLE_ASSET_PATH,
-  SCENARIO_BIBLE_READ_HINT,
-} from "@/lib/pedelec/sessionAssets";
+  formatScenarioTurnCanon,
+} from "@/engine/scenarioLorebook";
+import { lookupSrdEntries } from "@/engine/srdLorebook";
+import { SCENARIO_BIBLE_READ_HINT } from "@/lib/pedelec/sessionAssets";
 import { isNoiseHistoryNarrative } from "@/lib/historyHygiene";
 import { looksLikeLeakedToolCall } from "@/lib/pedelec/leakedToolCall";
 import {
@@ -29,12 +29,75 @@ import {
 const SLIDING_WINDOW = 8;
 const SUMMARIZE_EVERY = 15;
 /** 單則對話進 prompt 的硬上限，避免 agy -p 命令列過長 */
-const DIALOGUE_LINE_MAX = 480;
+const DIALOGUE_LINE_MAX = 360;
+/** 章節摘要：最近完整保留幾則；更早的 rollup */
+const CHAPTER_RECENT_KEEP = 4;
+const CHAPTER_ROLLUP_MAX = 700;
+/** SSOT 技能：分數最高的 N 項 + 與本回合行動命中的技能 */
+const SSOT_SKILL_TOP_N = 14;
+const IDENTITY_FIELD_MAX = 160;
+const BIO_FIELD_MAX = 220;
 
 function truncateDialogueContent(text: string, max = DIALOGUE_LINE_MAX): string {
   const t = text.trim();
   if (t.length <= max) return t;
   return `${t.slice(0, max)}…`;
+}
+
+function clipField(text: string | undefined | null, max: number): string {
+  const t = (text ?? "").trim();
+  if (!t) return "";
+  if (t.length <= max) return t;
+  return `${t.slice(0, max)}…`;
+}
+
+/** 章節摘要：早期 rollup + 最近 N 則，避免長局線性膨脹 */
+export function formatChapterSummariesForPrompt(
+  summaries: ChapterSummary[],
+): string {
+  if (!summaries.length) return "";
+  if (summaries.length <= CHAPTER_RECENT_KEEP) {
+    return summaries
+      .map((s) => `Turns ${s.fromTurn}-${s.toTurn}: ${s.summary}`)
+      .join("\n");
+  }
+  const early = summaries.slice(0, -CHAPTER_RECENT_KEEP);
+  const recent = summaries.slice(-CHAPTER_RECENT_KEEP);
+  const rollup = early
+    .map((s) => s.summary)
+    .join(" / ")
+    .slice(0, CHAPTER_ROLLUP_MAX);
+  const from = early[0]!.fromTurn;
+  const to = early[early.length - 1]!.toTurn;
+  return [
+    `Earlier rollup T${from}-${to}: ${rollup}`,
+    ...recent.map((s) => `Turns ${s.fromTurn}-${s.toTurn}: ${s.summary}`),
+  ].join("\n");
+}
+
+function selectSkillsForPrompt(
+  skills: Record<string, number>,
+  playerAction: string,
+): string {
+  const entries = Object.entries(skills);
+  if (!entries.length) return "無";
+  const hay = playerAction.toLowerCase();
+  const byScore = [...entries].sort((a, b) => b[1] - a[1]);
+  const top = byScore.slice(0, SSOT_SKILL_TOP_N);
+  const topNames = new Set(top.map(([k]) => k));
+  const mentioned = entries.filter(
+    ([name]) =>
+      !topNames.has(name) &&
+      name.length >= 2 &&
+      (hay.includes(name.toLowerCase()) ||
+        playerAction.includes(name)),
+  );
+  const selected = [...top, ...mentioned.slice(0, 8)];
+  const omitted = Math.max(0, entries.length - selected.length);
+  const line = selected.map(([k, v]) => `${k} ${v}%`).join(", ");
+  return omitted > 0
+    ? `${line} (+${omitted} more on sheet; use exact name or target_value)`
+    : line;
 }
 
 export interface ContextAssemblyInput {
@@ -137,14 +200,15 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
   if (c) {
     if (c.age?.trim()) identityBits.push(`Age ${c.age.trim()}`);
     if (c.gender?.trim()) identityBits.push(c.gender.trim());
-    if (c.appearance?.trim()) identityBits.push(`Look: ${c.appearance.trim()}`);
+    const look = clipField(c.appearance, IDENTITY_FIELD_MAX);
+    if (look) identityBits.push(`Look: ${look}`);
     if (c.residence?.trim()) identityBits.push(`Lives: ${c.residence.trim()}`);
     if (c.birthplace?.trim())
       identityBits.push(`Born: ${c.birthplace.trim()}`);
     if (c.languages?.trim()) identityBits.push(`Lang: ${c.languages.trim()}`);
     if (c.wealth?.trim()) identityBits.push(`Wealth: ${c.wealth.trim()}`);
-    if (c.personal_bio?.trim())
-      identityBits.push(`Bio: ${c.personal_bio.trim()}`);
+    const bio = clipField(c.personal_bio, BIO_FIELD_MAX);
+    if (bio) identityBits.push(`Bio: ${bio}`);
     if (c.system_id === "COC_7E") {
       if (c.profile_coc?.occupation?.trim())
         identityBits.push(`Occupation: ${c.profile_coc.occupation.trim()}`);
@@ -169,10 +233,10 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
       if (d.alignment?.trim())
         identityBits.push(`Alignment: ${d.alignment.trim()}`);
       if (d.speed != null) identityBits.push(`Speed ${d.speed}`);
-      if (d.proficiencies?.trim())
-        identityBits.push(`Prof: ${d.proficiencies.trim()}`);
-      if (d.features?.trim())
-        identityBits.push(`Features: ${d.features.trim()}`);
+      const prof = clipField(d.proficiencies, IDENTITY_FIELD_MAX);
+      if (prof) identityBits.push(`Prof: ${prof}`);
+      const features = clipField(d.features, IDENTITY_FIELD_MAX);
+      if (features) identityBits.push(`Features: ${features}`);
     }
   }
   const identity = identityBits.length ? identityBits.join(" | ") : "無";
@@ -205,9 +269,7 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
         .join(", ") || "無"
     : "無";
   const skills = c?.skills
-    ? Object.entries(c.skills)
-        .map(([k, v]) => `${k} ${v}%`)
-        .join(", ") || "無"
+    ? selectSkillsForPrompt(c.skills, input.playerAction)
     : "無";
 
   return `[CURRENT SSOT GAME STATE - DO NOT OVERRIDE]
@@ -216,7 +278,7 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
 - Party size: ${input.party?.length ?? (c ? 1 : 0)} | Quick ids: [${partyLine}]
 - Identity (narrate with these; do NOT invent contradicting sheet facts): [${identity}]
 - Attributes: [${attributes}]
-- Skills (prefer these exact names for check_target_name; if none fit, MUST supply target_value): [${skills}]
+- Skills (top + action hits; prefer exact names for check_target_name; if none fit, MUST supply target_value): [${skills}]
 - Backstory Hooks (use for madness / inspiration / NPC bonds): [${hooks}]
 - Active House Rules: [${houseRulesSummary(input.houseRules)}]
 - Active Inventory: [${inventory}]
@@ -274,11 +336,16 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
   }
 
   if (input.script.hidden_full_script && !input.script.revealed) {
+    const canon = formatScenarioTurnCanon(input.script.hidden_full_script, {
+      location: input.location,
+      playerAction: input.playerAction,
+      currentSceneId: input.sceneDirector?.currentSceneId,
+    });
     layers.push(
-      `[SCENARIO BIBLE FILE — GM ONLY]
+      `[SCENARIO CANON — GM ONLY, SHORT]
 ${SCENARIO_BIBLE_READ_HINT}
-Do not re-print the file contents into player-facing narration.
-Path: ${SCENARIO_BIBLE_ASSET_PATH}`,
+
+${canon}`,
     );
   }
 
@@ -300,9 +367,7 @@ ${hr}`);
 
   if (input.chapterSummaries.length) {
     layers.push(
-      `[CHAPTER SUMMARIES]\n${input.chapterSummaries
-        .map((s) => `Turns ${s.fromTurn}-${s.toTurn}: ${s.summary}`)
-        .join("\n")}`,
+      `[CHAPTER SUMMARIES]\n${formatChapterSummariesForPrompt(input.chapterSummaries)}`,
     );
   }
 

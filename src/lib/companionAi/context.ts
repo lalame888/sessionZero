@@ -1,4 +1,5 @@
 import {
+  formatChapterSummariesForPrompt,
   houseRulesSummary,
   SLIDING_WINDOW,
 } from "@/engine/contextAssembler";
@@ -99,9 +100,7 @@ Hooks: ${
   }
   if (input.chapterSummaries.length) {
     layers.push(
-      `[CHAPTERS]\n${input.chapterSummaries
-        .map((s) => `Turns ${s.fromTurn}-${s.toTurn}: ${s.summary}`)
-        .join("\n")}`,
+      `[CHAPTERS]\n${formatChapterSummariesForPrompt(input.chapterSummaries)}`,
     );
   }
 

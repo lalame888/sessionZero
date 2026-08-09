@@ -6,8 +6,8 @@ import type { ScriptState } from "@/types/game";
 export const SCENARIO_BIBLE_ASSET_PATH =
   "/scenario_bible.md" as SandboxAssetPath;
 
-/** 給 guidance／turn prompt 的讀檔指示 */
-export const SCENARIO_BIBLE_READ_HINT = `Before PLAYING narration or checks, read sandbox asset ${SCENARIO_BIBLE_ASSET_PATH} (under assets/). It is the GM-only scenario bible SSOT — never dump it to the player. If the file is missing, improvise only within public_summary and call setup_script when Session 0 still needs a bible.`;
+/** 給 turn prompt 的 lore 指示（字典優先，整檔為後備） */
+export const SCENARIO_BIBLE_READ_HINT = `Prefer lookup_scenario_term for proper nouns / scenes / NPCs / creatures / factions / core (truth, win, acts, timeline). ${SCENARIO_BIBLE_ASSET_PATH} is full GM-only backup — use only if the dictionary misses. Never dump bible text to the player.`;
 
 let uploadChain: Promise<void> = Promise.resolve();
 let lastUploadedFingerprint: string | null = null;
