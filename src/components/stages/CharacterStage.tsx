@@ -25,6 +25,7 @@ import {
 } from "@/engine/creationDraft";
 import { buildPartyNarrativeDesignContext } from "@/engine/partyNarrativeBrief";
 import type { RecommendedSkill } from "@/types/game";
+import type { CharacterCreationDraft } from "@/types/party";
 import {
   CREDIT_LIFESTYLE_BANDS,
   CREDIT_RATING_TOOLTIP,
