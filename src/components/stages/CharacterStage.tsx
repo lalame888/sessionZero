@@ -38,7 +38,7 @@ import {
   buildFixedAttrTooltipRows,
   skillPoolFormulaTooltip,
 } from "@/engine/statTooltips";
-import { getActiveSession } from "@/lib/pedelec/createGameSession";
+import { getActiveSession, sendGmText } from "@/lib/pedelec/createGameSession";
 import {
   exportCharacterJson,
   saveCharacterToLibrary,
@@ -512,7 +512,7 @@ export function CharacterStage({
         : "正在請 AI 依劇本與藍圖完整填寫角色敘事欄位…",
     );
     try {
-      await session.sendText(
+      await sendGmText(
         [
           "此步驟是創角頁「請 AI 設計角色敘事」。請立刻呼叫工具 fill_character_narrative。",
           "目標：除屬性與技能配點外，前端已開放的敘事／身分欄位全部填寫完整。",

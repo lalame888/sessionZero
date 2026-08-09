@@ -755,6 +755,44 @@ export const lookupScenarioTermTool = defineTool({
   },
 });
 
+export const lookupGameStateTool = defineTool({
+  name: "lookup_game_state",
+  description:
+    "查詢目前遊戲 SSOT 快照（地點、HP/SAN、物品、線索標題、已知 NPC、隊伍、場景導演）。DELTA 回合不確定狀態時呼叫；勿對玩家貼出完整內部快照。",
+  argsSchema: {
+    type: "object",
+    properties: {
+      focus: {
+        type: "string",
+        description: "可選：想確認的焦點（僅供記錄，回傳仍為完整短快照）",
+      },
+    },
+  },
+});
+
+export const lookupHistoryTool = defineTool({
+  name: "lookup_history",
+  description:
+    "查詢章節摘要與／或近期對話（已截斷）。DELTA 回合需要劇情連貫時呼叫，勿要求系統重播整段 history。",
+  argsSchema: {
+    type: "object",
+    properties: {
+      scope: {
+        type: "string",
+        description: "chapters | recent | both（預設 both）",
+      },
+      query: {
+        type: "string",
+        description: "可選關鍵詞過濾",
+      },
+      limit: {
+        type: "number",
+        description: "最多幾則（1–20，預設 8）",
+      },
+    },
+  },
+});
+
 export const allSessionTools = [
   setupScriptTool,
   generateCharacterSchemaTool,
@@ -770,4 +808,6 @@ export const allSessionTools = [
   requestCompanionActionTool,
   lookupRuleTool,
   lookupScenarioTermTool,
+  lookupGameStateTool,
+  lookupHistoryTool,
 ] as const;

@@ -79,6 +79,7 @@ doc/            # 規格書
 
 - [`AGENTS_INSTRUCTIONS.md`](./AGENTS_INSTRUCTIONS.md) — 給 AI coding agent 的實作規範
 - [`doc/doc.md`](./doc/doc.md) — 完整產品／引擎規格書
+- [`doc/gm-memory-and-tokens.md`](./doc/gm-memory-and-tokens.md) — GM prompt／記憶與 token 策略（seed／delta／compact／lookup tools）
 
 ## 授權
 

@@ -10,6 +10,11 @@ import {
 } from "@/engine/checkDedup";
 import { assemblePlayerTurnPrompt } from "@/engine/contextAssembler";
 import {
+  formatLookupGameState,
+  formatLookupHistory,
+} from "@/engine/gmMemoryLookup";
+import { PROVIDER_COMPACT_EVERY } from "@/engine/gmMemoryPolicy";
+import {
   badEndingWinConflictWarning,
   noteNarrativeForWinProgress,
 } from "@/engine/winFlags";
@@ -138,6 +143,12 @@ let activeCompanionResolveId: string | null = null;
 /** 同一玩家行動只自動喚起隊友一次（GM 若未呼叫 tool） */
 let autoCompanionHandledForAction: string | null = null;
 let autoCompanionInFlight = false;
+/** 供 conversation 壓縮時重建同 provider／model */
+let lastCreateOptions: { provider: ProviderCode; model?: string } | null =
+  null;
+/** 自上次 create／compact 起的 session.sendText 次數 */
+let providerSendCount = 0;
+let compactInFlight = false;
 
 const DICE_TIMEOUT_MS = 170_000;
 
@@ -1079,7 +1090,7 @@ async function recoverLeakedToolCall(
         session.getStatus() === "idle"
       ) {
         try {
-          await session.sendText(
+          await sendGmText(
             `[RECOVERED TOOL RESULT — narrate_story]\n${JSON.stringify(result)}\nCRITICAL: Your next narrate_story.narrative_text must ONLY describe this check outcome and immediate consequences. Do NOT repeat, paraphrase, or rewrite any previously narrated scene text.`,
           );
         } catch {
@@ -1754,6 +1765,61 @@ function registerHandlers(
     }),
   );
 
+  disposers.push(
+    session.onTool("lookup_game_state", (args) => {
+      const focus =
+        args && typeof args === "object" && "focus" in args
+          ? String((args as { focus?: string }).focus ?? "")
+          : "";
+      const s = useGameStore.getState();
+      const text = formatLookupGameState({
+        script: s.script,
+        houseRules: s.houseRules,
+        character: s.character,
+        clues: s.clues,
+        npcs: s.npcs,
+        madness: s.madness,
+        location: s.location,
+        turn: s.turn,
+        sceneDirector: s.sceneDirector,
+        party: s.party,
+        playerMemberId: s.playerMemberId,
+        incapacitatedCharacterIds: s.incapacitatedCharacterIds,
+      });
+      return {
+        ok: true,
+        focus: focus || undefined,
+        text,
+      };
+    }),
+  );
+
+  disposers.push(
+    session.onTool("lookup_history", (args) => {
+      const a = (args ?? {}) as {
+        scope?: string;
+        query?: string;
+        limit?: number;
+      };
+      const scopeRaw = (a.scope ?? "both").trim().toLowerCase();
+      const scope =
+        scopeRaw === "chapters" ||
+        scopeRaw === "recent" ||
+        scopeRaw === "both"
+          ? scopeRaw
+          : "both";
+      const s = useGameStore.getState();
+      const text = formatLookupHistory({
+        chapterSummaries: s.chapterSummaries,
+        recentMessages: s.messages,
+        scope,
+        query: a.query,
+        limit: a.limit,
+      });
+      return { ok: true, scope, text };
+    }),
+  );
+
   return () => {
     for (const d of disposers) d();
   };
@@ -1776,6 +1842,11 @@ export async function createGameSession(options: {
   });
 
   persistPedelecSessionId(session.sessionId);
+  lastCreateOptions = {
+    provider: options.provider,
+    model: options.model || undefined,
+  };
+  providerSendCount = 0;
   const store = useGameStore.getState();
   store.setSessionStatus(session.getStatus());
   resetScenarioBibleAssetCache();
@@ -1959,6 +2030,52 @@ export async function disposeGameSession() {
   }
 }
 
+/**
+ * 重建 Pedelec session 以清空 provider conversation（遊戲 store 不變）。
+ * @see doc/gm-memory-and-tokens.md
+ */
+async function compactProviderConversation() {
+  if (compactInFlight || !lastCreateOptions) return;
+  compactInFlight = true;
+  const store = useGameStore.getState();
+  try {
+    store.appendSystem(
+      `（系統）壓縮 GM conversation 記憶中（每 ${PROVIDER_COMPACT_EVERY} 次送出一次）…`,
+    );
+    await createGameSession(lastCreateOptions);
+    store.appendSystem(
+      "（系統）GM 記憶已壓縮；下一則改送 SEED 上下文，細節請 GM 用 lookup_* tools。",
+    );
+  } finally {
+    compactInFlight = false;
+  }
+}
+
+async function maybeCompactBeforeSend() {
+  if (compactInFlight) return;
+  if (providerSendCount <= 0) return;
+  if (providerSendCount % PROVIDER_COMPACT_EVERY !== 0) return;
+  await compactProviderConversation();
+}
+
+/** 目前應組 SEED 還是 DELTA（compact／create 後為 seed） */
+export function peekGmPromptMode(): "seed" | "delta" {
+  return providerSendCount === 0 ? "seed" : "delta";
+}
+
+/**
+ * 所有主 GM session 的 sendText 應走這裡，以便計數與週期壓縮。
+ * companion／aiPlayer 等獨立 session 不要用此函式。
+ */
+export async function sendGmText(prompt: string) {
+  await maybeCompactBeforeSend();
+  const session = getActiveSession();
+  if (!session) throw new Error("NO_SESSION");
+  if (session.getStatus() !== "idle") throw new Error("SESSION_BUSY");
+  await session.sendText(prompt);
+  providerSendCount += 1;
+}
+
 export async function sendPlayerAction(
   text: string,
   opts?: {
@@ -2005,27 +2122,36 @@ export async function sendPlayerAction(
     store.appendMessage({ role: "user", content: text });
   }
 
+  // compact 可能在 sendGmText 內觸發；先 peek 會偏舊，故在 maybeCompact 後再組 prompt
+  await maybeCompactBeforeSend();
+  const latest = useGameStore.getState();
+  const promptMode = peekGmPromptMode();
   const prompt = assemblePlayerTurnPrompt({
-    script: store.script,
-    houseRules: store.houseRules,
-    character: store.character,
-    clues: store.clues,
-    npcs: store.npcs,
-    madness: store.madness,
-    location: store.location,
-    chapterSummaries: store.chapterSummaries,
-    recentMessages: store.messages,
+    script: latest.script,
+    houseRules: latest.houseRules,
+    character: latest.character,
+    clues: latest.clues,
+    npcs: latest.npcs,
+    madness: latest.madness,
+    location: latest.location,
+    chapterSummaries: latest.chapterSummaries,
+    recentMessages: latest.messages,
     playerAction: text,
-    turn: store.turn,
-    suggestPlayerActions: store.suggestPlayerActions,
+    turn: latest.turn,
+    suggestPlayerActions: latest.suggestPlayerActions,
     extraLayers: opts?.extraLayers,
-    sceneDirector: store.sceneDirector,
-    party: store.party,
-    playerMemberId: store.playerMemberId,
-    incapacitatedCharacterIds: store.incapacitatedCharacterIds,
+    sceneDirector: latest.sceneDirector,
+    party: latest.party,
+    playerMemberId: latest.playerMemberId,
+    incapacitatedCharacterIds: latest.incapacitatedCharacterIds,
+    promptMode,
   });
 
-  await session.sendText(prompt);
+  const active = getActiveSession();
+  if (!active) throw new Error("NO_SESSION");
+  if (active.getStatus() !== "idle") throw new Error("SESSION_BUSY");
+  await active.sendText(prompt);
+  providerSendCount += 1;
 }
 
 export const OPENING_NARRATION_ACTION =
@@ -2074,31 +2200,38 @@ export async function sendOpeningNarration() {
   if (latest.script.hidden_full_script) {
     void syncScenarioBibleAsset(session, latest.script).catch(() => {});
   }
+  await maybeCompactBeforeSend();
+  const after = useGameStore.getState();
   const prompt = assemblePlayerTurnPrompt({
-    script: latest.script,
-    houseRules: latest.houseRules,
-    character: latest.character,
-    clues: latest.clues,
-    npcs: latest.npcs,
-    madness: latest.madness,
-    location: latest.location,
-    chapterSummaries: latest.chapterSummaries,
+    script: after.script,
+    houseRules: after.houseRules,
+    character: after.character,
+    clues: after.clues,
+    npcs: after.npcs,
+    madness: after.madness,
+    location: after.location,
+    chapterSummaries: after.chapterSummaries,
     recentMessages: [],
     playerAction: buildOpeningNarrationAction({
-      party: latest.party,
-      playerMemberId: latest.playerMemberId,
+      party: after.party,
+      playerMemberId: after.playerMemberId,
     }),
-    turn: latest.turn,
+    turn: after.turn,
     // 開場第一則一律不附推薦行動（與開關無關）
     suggestPlayerActions: false,
-    sceneDirector: latest.sceneDirector,
-    party: latest.party,
-    playerMemberId: latest.playerMemberId,
-    incapacitatedCharacterIds: latest.incapacitatedCharacterIds,
-    continuityPremiseZh: latest.continuityBridge?.premiseZh ?? null,
+    sceneDirector: after.sceneDirector,
+    party: after.party,
+    playerMemberId: after.playerMemberId,
+    incapacitatedCharacterIds: after.incapacitatedCharacterIds,
+    continuityPremiseZh: after.continuityBridge?.premiseZh ?? null,
+    promptMode: "seed",
   });
 
-  await session.sendText(prompt);
+  const active = getActiveSession();
+  if (!active) throw new Error("NO_SESSION");
+  if (active.getStatus() !== "idle") throw new Error("SESSION_BUSY");
+  await active.sendText(prompt);
+  providerSendCount += 1;
 }
 
 const REGENERATE_NARRATIVE_ACTION =

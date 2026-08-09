@@ -8,8 +8,7 @@ import { HouseRulesBox } from "@/components/stages/HouseRulesBox";
 import { Button } from "@/components/ui/button";
 import { HoverTooltip } from "@/components/ui/hover-tooltip";
 import { Modal } from "@/components/ui/modal";
-import { sendPlayerAction } from "@/lib/pedelec/createGameSession";
-import { getActiveSession } from "@/lib/pedelec/createGameSession";
+import { sendPlayerAction, sendGmText, getActiveSession } from "@/lib/pedelec/createGameSession";
 import { loadRecentScriptDesigns } from "@/lib/campaignStorage";
 import {
   buildAutoGenerateCocScriptPrompt,
@@ -88,7 +87,7 @@ export function ScriptPage({
     }
     setGeneratingBlueprint(true);
     try {
-      await session.sendText(
+      await sendGmText(
         `此步驟是 Session 0「創角藍圖預覽」：請呼叫 generate_character_schema。` +
           `creation_mode 必須是 ${chosenMode}。` +
           `請提供 attribute_defs（含繁中 label 與 dice_formula）、` +

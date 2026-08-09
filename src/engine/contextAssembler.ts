@@ -25,6 +25,7 @@ import {
   normalizeScenarioScale,
   scenarioScaleRequirements,
 } from "@/engine/scenarioScale";
+import type { GmPromptMode } from "@/engine/gmMemoryPolicy";
 
 const SLIDING_WINDOW = 8;
 const SUMMARIZE_EVERY = 15;
@@ -37,6 +38,11 @@ const CHAPTER_ROLLUP_MAX = 700;
 const SSOT_SKILL_TOP_N = 14;
 const IDENTITY_FIELD_MAX = 160;
 const BIO_FIELD_MAX = 220;
+/** seed 模式最多帶回幾則近對話（避免與 provider history 雙重疊加） */
+const SEED_DIALOGUE_MAX_MSGS = 4;
+
+const MEMORY_TOOL_HINT = `If unsure of facts: call lookup_game_state, lookup_history, or lookup_scenario_term. Do not invent sheet/bible facts. Never dump GM-only canon to the player.`;
+
 
 function truncateDialogueContent(text: string, max = DIALOGUE_LINE_MAX): string {
   const t = text.trim();
@@ -124,6 +130,11 @@ export interface ContextAssemblyInput {
   continuityPremiseZh?: string | null;
   /** 重傷 CON 失敗後失去主動行動的角色 id */
   incapacitatedCharacterIds?: string[];
+  /**
+   * seed = 新／壓縮後 conversation 的種子上下文；
+   * delta = resume 同一 conversation 時只送增量（預設）。
+   */
+  promptMode?: GmPromptMode;
 }
 
 export function houseRulesSummary(houseRules: HouseRuleConfig): string {
@@ -292,8 +303,124 @@ export function buildSootBlock(input: ContextAssemblyInput): string {
 [User Action]: ${input.playerAction}`;
 }
 
-export function assemblePlayerTurnPrompt(input: ContextAssemblyInput): string {
+function buildUxPrefsBlock(suggest: boolean): string {
+  return suggest
+    ? `[PLAYER UX PREFS — MANDATORY]
+Suggest player actions: ON
+After this turn's narration (and tools), end with a Traditional Chinese block:
+
+你可以：
+- **短標題**：一句模糊可執行方向（搜／談／逃／戒備／檢查環境）
+- （共 2–4 項；勿替玩家做決定）
+FORBIDDEN in options: puzzle answers, ritual parameters (e.g. 12:00), Win-condition wording, "完成超渡", exact combo solutions.`
+    : `[PLAYER UX PREFS — MANDATORY]
+Suggest player actions: OFF
+Do NOT provide「你可以：」、行動選項清單、或多重選擇式下一步建議。
+Do NOT write fourth-wall UI prompts (e.g.「請輸入您的下一步行動」「請於輸入框輸入」). End in-fiction only; wait silently for player input.`;
+}
+
+function buildIncapacitatedBlock(input: ContextAssemblyInput): string | null {
+  const incapacitated = input.incapacitatedCharacterIds ?? [];
+  if (!incapacitated.length) return null;
+  const names = incapacitated
+    .map((id) => {
+      const m = (input.party ?? []).find(
+        (p) => p.id === id || p.sheet?.id === id,
+      );
+      return m?.sheet?.name ?? id;
+    })
+    .join("、");
+  return `[INCAPACITATED — MANDATORY]\nThese characters failed major-wound CON and cannot make proactive attacks/rituals until treated: ${names}. Narrate accordingly; pause their agency.`;
+}
+
+function buildCheckEconomyBlock(input: ContextAssemblyInput): string | null {
+  const recentChecks = input.recentMessages
+    .filter((m) => m.role === "system" && /需要檢定：/.test(m.content))
+    .slice(-12);
+  if (recentChecks.length < 4) return null;
+  const skillCounts: Record<string, number> = {};
+  for (const m of recentChecks) {
+    const hit = m.content.match(/需要檢定：「[^」]+」([^（\n]+)/);
+    const skill = (hit?.[1] ?? "?").trim().replace(/\s+/g, "");
+    skillCounts[skill] = (skillCounts[skill] ?? 0) + 1;
+  }
+  const total = recentChecks.length;
+  const spot = Object.entries(skillCounts).find(([k]) =>
+    /偵查|Spot/i.test(k),
+  );
+  const spotN = spot?.[1] ?? 0;
+  const dist = Object.entries(skillCounts)
+    .map(([k, n]) => `${k}:${n}`)
+    .join(", ");
+  return (
+    `[CHECK ECONOMY — RECENT ${total}]\n${dist}` +
+    (spotN / total >= 0.4
+      ? `\n偵查占比偏高（${spotN}/${total}）。Prefer other skills or dice-free document/NPC beats; do not spam Spot Hidden.`
+      : "")
+  );
+}
+
+/** Resume 同一 conversation：只送狀態增量 + 本回合行動（避免重播歷史）。 */
+export function assemblePlayerTurnDeltaPrompt(
+  input: ContextAssemblyInput,
+): string {
   const layers: string[] = [];
+  const c = input.character;
+  const hp = c ? `${c.derived.hp.current}/${c.derived.hp.max}` : "N/A";
+  const san = c?.derived.san
+    ? `${c.derived.san.current}/${c.derived.san.max}`
+    : "N/A";
+
+  layers.push(`[MEMORY MODE: DELTA]
+Provider conversation continues — prior turns/tools are already in context. Do NOT request a full history resend.
+${MEMORY_TOOL_HINT}`);
+
+  layers.push(`[SESSION CONTEXT]
+System: ${input.script.system_id ?? "pending"} | Scale: ${normalizeScenarioScale(input.script.scenario_scale)}
+Title: ${input.script.public_summary?.title ?? "（討論中）"} | Turn: ${input.turn}`);
+
+  if (input.extraLayers?.length) {
+    layers.push(...input.extraLayers.filter((l) => l.trim().length > 0));
+  }
+
+  layers.push(`[STATE DELTA]
+- Location: ${input.location || "未知"}
+- Scene: ${input.sceneDirector?.currentSceneId ?? "（未標）"} | Tension: ${input.sceneDirector?.tension ?? "?"}
+- Player: ${c ? `${c.name} id=${c.id}` : "尚未創角"} | HP: ${hp} | SAN: ${san}
+- Clues: ${input.clues.map((x) => x.title).join("、") || "無"}
+- NPCs: ${input.npcs.map((n) => n.name).join("、") || "無"}
+- Inventory: ${c?.inventory.join(", ") || "無"}`);
+
+  const incap = buildIncapacitatedBlock(input);
+  if (incap) layers.push(incap);
+
+  const economy = buildCheckEconomyBlock(input);
+  if (economy) layers.push(economy);
+
+  const companionTrigger = buildCompanionMentionDirective(
+    input.playerAction,
+    input.party ?? [],
+    input.playerMemberId,
+  );
+  if (companionTrigger) layers.push(companionTrigger);
+
+  layers.push(`[User Action]: ${input.playerAction}`);
+  layers.push(buildUxPrefsBlock(input.suggestPlayerActions === true));
+
+  return layers.join("\n\n");
+}
+
+export function assemblePlayerTurnPrompt(input: ContextAssemblyInput): string {
+  const mode: GmPromptMode = input.promptMode ?? "seed";
+  if (mode === "delta") {
+    return assemblePlayerTurnDeltaPrompt(input);
+  }
+
+  const layers: string[] = [];
+
+  layers.push(`[MEMORY MODE: SEED]
+Fresh or compacted provider conversation. This message is the working memory seed.
+${MEMORY_TOOL_HINT}`);
 
   layers.push(`[SESSION CONTEXT]
 Mode: SOLO+PARTY (1 human PC + optional AI companion PCs; never multiple human players)
@@ -374,14 +501,15 @@ ${hr}`);
     );
   }
 
+  // seed：最多留極短近對話；完整歷史改 lookup_history（避免與後續 delta 疊加暴漲）
   const windowMsgs = input.recentMessages
     .filter((m) => m.role === "user" || m.role === "agent")
     .filter((m) => !looksLikeLeakedToolCall(m.content))
     .filter((m) => !isNoiseHistoryNarrative(m.content))
-    .slice(-SLIDING_WINDOW * 2);
+    .slice(-SEED_DIALOGUE_MAX_MSGS);
   if (windowMsgs.length) {
     layers.push(
-      `[RECENT DIALOGUE]\n${windowMsgs
+      `[RECENT DIALOGUE — SHORT SEED]\n${windowMsgs
         .map(
           (m) =>
             `${m.role.toUpperCase()}: ${truncateDialogueContent(m.content)}`,
@@ -395,46 +523,11 @@ ${hr}`);
 
   layers.push(buildSootBlock(input));
 
-  const incapacitated = input.incapacitatedCharacterIds ?? [];
-  if (incapacitated.length) {
-    const names = incapacitated
-      .map((id) => {
-        const m = (input.party ?? []).find(
-          (p) => p.id === id || p.sheet?.id === id,
-        );
-        return m?.sheet?.name ?? id;
-      })
-      .join("、");
-    layers.push(
-      `[INCAPACITATED — MANDATORY]\nThese characters failed major-wound CON and cannot make proactive attacks/rituals until treated: ${names}. Narrate accordingly; pause their agency.`,
-    );
-  }
+  const incap = buildIncapacitatedBlock(input);
+  if (incap) layers.push(incap);
 
-  const recentChecks = input.recentMessages
-    .filter((m) => m.role === "system" && /需要檢定：/.test(m.content))
-    .slice(-12);
-  if (recentChecks.length >= 4) {
-    const skillCounts: Record<string, number> = {};
-    for (const m of recentChecks) {
-      const hit = m.content.match(/需要檢定：「[^」]+」([^（\n]+)/);
-      const skill = (hit?.[1] ?? "?").trim().replace(/\s+/g, "");
-      skillCounts[skill] = (skillCounts[skill] ?? 0) + 1;
-    }
-    const total = recentChecks.length;
-    const spot = Object.entries(skillCounts).find(([k]) =>
-      /偵查|Spot/i.test(k),
-    );
-    const spotN = spot?.[1] ?? 0;
-    const dist = Object.entries(skillCounts)
-      .map(([k, n]) => `${k}:${n}`)
-      .join(", ");
-    layers.push(
-      `[CHECK ECONOMY — RECENT ${total}]\n${dist}` +
-        (spotN / total >= 0.4
-          ? `\n偵查占比偏高（${spotN}/${total}）。Prefer other skills or dice-free document/NPC beats; do not spam Spot Hidden.`
-          : ""),
-    );
-  }
+  const economy = buildCheckEconomyBlock(input);
+  if (economy) layers.push(economy);
 
   const companionTrigger = buildCompanionMentionDirective(
     input.playerAction,
@@ -443,22 +536,7 @@ ${hr}`);
   );
   if (companionTrigger) layers.push(companionTrigger);
 
-  const suggest = input.suggestPlayerActions === true;
-  layers.push(
-    suggest
-      ? `[PLAYER UX PREFS — MANDATORY]
-Suggest player actions: ON
-After this turn's narration (and tools), end with a Traditional Chinese block:
-
-你可以：
-- **短標題**：一句模糊可執行方向（搜／談／逃／戒備／檢查環境）
-- （共 2–4 項；勿替玩家做決定）
-FORBIDDEN in options: puzzle answers, ritual parameters (e.g. 12:00), Win-condition wording, "完成超渡", exact combo solutions.`
-      : `[PLAYER UX PREFS — MANDATORY]
-Suggest player actions: OFF
-Do NOT provide「你可以：」、行動選項清單、或多重選擇式下一步建議。
-Do NOT write fourth-wall UI prompts (e.g.「請輸入您的下一步行動」「請於輸入框輸入」). End in-fiction only; wait silently for player input.`,
-  );
+  layers.push(buildUxPrefsBlock(input.suggestPlayerActions === true));
 
   return layers.join("\n\n");
 }
