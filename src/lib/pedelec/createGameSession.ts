@@ -42,6 +42,7 @@ import { useAiPlayerStore } from "@/lib/aiPlayer/store";
 import { normalizeNarrativeText } from "@/lib/normalizeNarrativeText";
 import {
   isGmMetaOnlyNarrative,
+  isCompanionWaitMeta,
   stripGmMetaPrompts,
   stripLeadingCompanionParaphrase,
 } from "@/lib/stripGmMetaPrompts";
@@ -180,8 +181,13 @@ async function maybeAutoInvokeCompanions() {
   if (!lastNonSystem || lastNonSystem.role === "user") return;
   const lastContent = (lastNonSystem.content ?? "").trim();
   // 內部等待狀態（例如 companion pipeline）不應觸發自動喚起，否則會造成「同拍搶話／重覆等待」的感受
-  if (/Waiting for companion action response\./i.test(lastContent)) return;
-  if (lastContent.startsWith("---") && /Waiting for companion/i.test(lastContent))
+  if (isCompanionWaitMeta(lastContent)) return;
+  if (
+    lastContent.startsWith("---") &&
+    /Waiting for (?:companion|the transition to the carousel)/i.test(
+      lastContent,
+    )
+  )
     return;
 
   let lastUserIdx = -1;
@@ -198,7 +204,7 @@ async function maybeAutoInvokeCompanions() {
     (m) =>
       m.role === "agent" &&
       (m.content ?? "").trim().length > 0 &&
-      !/Waiting for companion action response\./i.test(m.content ?? "") &&
+      !isCompanionWaitMeta(m.content ?? "") &&
       !(m.content ?? "").trim().startsWith("---"),
   );
   // 讓 GM 先結算敘事後才喚起隊友，避免「PC 行動後立刻隊友搶話」
@@ -836,7 +842,8 @@ async function runNarrateStory(args: NarrateStoryArgs) {
   }
 
   if (!a.check_request) {
-    activeCompanionResolveId = null;
+    // 勿在此清除 activeCompanionResolveId：同回合 GM 常先 narrate 再 check_request，
+    // 提早清除會讓隊友檢定落到「玩家擲骰 UI」→ 取消／逾時 → 判定變已取消。
     return { ok: true as const, narrative_recorded: true as const };
   }
 
@@ -874,10 +881,24 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     `需要檢定：${whoLabel}${skillLabel}（${checkRequest.dice_type}）— ${checkRequest.reason}\n${thresholdText}`,
   );
 
-  const roll = await waitForPlayerDice({
+  let roll = await waitForPlayerDice({
     ...checkRequest,
     difficulty: checkRequest.difficulty ?? resolved.difficulty,
   });
+  // 隊友檢定絕不可落到「已取消／不進行」；若誤走玩家 UI 被取消，強制改為自動擲骰
+  if (
+    roll.cancelled &&
+    (activeCompanionResolveId ||
+      isCompanionDiceCheck(checkRequest.character_id))
+  ) {
+    const forcedId =
+      checkRequest.character_id?.trim() || activeCompanionResolveId || null;
+    roll = await waitForPlayerDice({
+      ...checkRequest,
+      character_id: forcedId,
+      difficulty: checkRequest.difficulty ?? resolved.difficulty,
+    });
+  }
   if (!roll.cancelled) {
     pendingPublicDiceRecord = {
       skillName: skillLabel,
@@ -1719,6 +1740,11 @@ export async function sendPlayerAction(
   if (!opts?.companionResolve && store.pendingCompanionHandoff) {
     await resolvePendingCompanionHandoff({ playerSupplement: text });
     return;
+  }
+
+  // 非隊友結算的玩家行動：關閉上一拍隊友 resolve 視窗（避免誤套 character_id）
+  if (!opts?.companionResolve) {
+    activeCompanionResolveId = null;
   }
 
   store.setLastPlayerAction(text);

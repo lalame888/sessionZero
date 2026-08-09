@@ -7,7 +7,12 @@ const META_ONLY_RE =
 
 /** Companion pipeline / GM 內部等待狀態（整段應隱藏） */
 const COMPANION_WAIT_META_RE =
-  /Waiting for companion action response\.|I will wait for the companion(?:'s)? response|等待隊友行動|呼叫隊友.{0,40}(?:配合|前來|協助|回應)/i;
+  /Waiting for companion action response\.|I will wait for the companion(?:'s)? response|No more tools to call\.?(?:\s*Waiting for [^\n]*)?|Waiting for the transition to the carousel(?: and companion action)?\.?|Waiting for the (?:background task|companion response task) to complete[^\n]*|等待隊友行動|呼叫隊友.{0,40}(?:配合|前來|協助|回應)/i;
+
+/** 是否為隊友 pipeline 的內部等待／轉場腔（勿當劇情顯示、勿觸發自動喚起） */
+export function isCompanionWaitMeta(text: string): boolean {
+  return COMPANION_WAIT_META_RE.test(text.trim());
+}
 
 /**
  * Pedelec／Agent 把背景任務、檢定排隊狀態寫進玩家可見氣泡（應整段或整句剝除）
@@ -25,8 +30,9 @@ const COMPANION_TAG_LINE_RE = /^【隊友[·・][^\n]*/;
 const BIBLE_META_INLINE_RE =
   /\bkey_clue\b\s*[:：]?\s*/gi;
 
+/** GM 未真擲骰卻自寫的檢定結果標題腔（含【隊友檢定結果】／【檢定結果：敏捷…】） */
 const COMPANION_CHECK_RESULT_HEADER_RE =
-  /【\s*隊友檢定結果[：:][^】]*】\s*/g;
+  /【\s*(?:隊友)?檢定結果[：:][^】]*】\s*/g;
 
 /**
  * 移除 GM 誤把隊友發言貼進敘事的開頭（【隊友·名】…）。
@@ -103,6 +109,10 @@ function stripPipelineStatusMeta(text: string): string {
       if (/系統將在/.test(L) && /(?:自動|擲骰|推進)/.test(L)) return false;
       if (/已為您發起/.test(L)) return false;
       if (/^\*?等待(?:隊友|主角)/.test(L)) return false;
+      if (/^No more tools to call/i.test(L)) return false;
+      if (/^Waiting for the transition to the carousel/i.test(L)) return false;
+      if (/^Waiting for the (?:background task|companion response task)/i.test(L))
+        return false;
       if (/現場敘事已推進/.test(L)) return false;
       if (/場景已設置完畢/.test(L)) return false;
       return true;
@@ -155,6 +165,9 @@ export function stripGmMetaPrompts(text: string): string {
       .replace(/^\*?等待隊友行動[^*]*\*?\s*$/gim, "")
       .replace(/^I will wait for the companion[^\n]*$/gim, "")
       .replace(/^Waiting for companion[^\n]*$/gim, "")
+      .replace(/^No more tools to call[^\n]*$/gim, "")
+      .replace(/^Waiting for the transition to the carousel[^\n]*$/gim, "")
+      .replace(/^Waiting for the (?:background task|companion response task)[^\n]*$/gim, "")
       .replace(/^呼叫隊友[^\n]*$/gim, "")
       .trim();
     if (!withoutWait || COMPANION_WAIT_META_RE.test(withoutWait)) return "";

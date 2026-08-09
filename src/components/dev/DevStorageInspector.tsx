@@ -636,7 +636,7 @@ function FieldGuideTab({
   );
 }
 
-/** 僅 DEV：檢視前端 localStorage／Zustand 儲存內容 */
+/** 前端儲存檢視（localStorage／Zustand）；正式 build 亦可開啟 */
 export function DevStorageInspector() {
   const [open, setOpen] = useState(false);
   const [tick, setTick] = useState(0);
@@ -645,14 +645,12 @@ export function DevStorageInspector() {
   const dump = useMemo(() => collectFrontendDump(), [tick, open]);
   const refresh = () => setTick((n) => n + 1);
 
-  if (!import.meta.env.DEV) return null;
-
   return (
     <>
       <Button
         size="sm"
         variant="ghost"
-        title="DEV：檢視前端儲存資料"
+        title="檢視前端儲存資料"
         onClick={() => {
           refresh();
           setOpen(true);
