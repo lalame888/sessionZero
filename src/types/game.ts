@@ -56,6 +56,25 @@ export interface UniversalCharacterSheet {
     cash_assets?: string;
   };
 
+  /**
+   * CoC 創角年齡修正狀態（套用後寫入；換屬性／重套用會覆寫）。
+   * MOV 減值由 recomputeDerived 讀取。
+   */
+  coc_age_mod?: {
+    bandId: string;
+    appliedAge: number;
+    /** 套用前的屬性快照（重套用時還原） */
+    baseAttributes: Record<string, number>;
+    allocation: Record<string, number>;
+    eduLog: string[];
+    finalEdu: number;
+    luckRolls?: number[];
+    luckChosen?: number;
+    movPenalty: number;
+    /** 扣點已分配完畢（或本年齡帶無需分配） */
+    complete: boolean;
+  };
+
   /** D&D 專屬 */
   profile_dnd?: {
     race?: string;

@@ -18,6 +18,7 @@ export function inferSkillSpendFromSheet(
       sheet.system_id,
       sk.name,
       sk.base_value,
+      sheet.attributes,
     );
     const val = sheet.skills[sk.name] ?? base;
     const extra = Math.max(0, Math.floor(val - base));
@@ -47,14 +48,17 @@ export function inferExtraSkillsFromSheet(
   for (const name of Object.keys(sheet.skills)) {
     if (schemaNames.has(name)) continue;
     const catalogBase = catalog.get(name);
-    const base =
-      catalogBase ??
-      resolveSkillBaseValue(sheet.system_id, name, undefined);
+    const resolvedBase = resolveSkillBaseValue(
+      sheet.system_id,
+      name,
+      catalogBase,
+      sheet.attributes,
+    );
     extras.push({
       name,
-      base_value: base,
+      base_value: resolvedBase,
       description: "玩家自行加入的職業／個人技能",
-      is_occupational: (sheet.skills[name] ?? 0) > base,
+      is_occupational: (sheet.skills[name] ?? 0) > resolvedBase,
     });
   }
   return extras;

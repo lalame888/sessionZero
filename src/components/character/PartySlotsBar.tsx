@@ -1,10 +1,15 @@
-import { Check, UserRound } from "lucide-react";
+import { Check, Pencil, UserRound } from "lucide-react";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { createBlankCharacter } from "@/engine/formulas";
 
-export function PartySlotsBar() {
+export function PartySlotsBar({
+  onEditSlot,
+}: {
+  /** 進入該席完整創角（數值＋敘事） */
+  onEditSlot?: (slot: number) => void;
+}) {
   const partySize = useGameStore((s) => s.partySize);
   const party = useGameStore((s) => s.party);
   const editingPartySlotIndex = useGameStore((s) => s.editingPartySlotIndex);
@@ -26,14 +31,38 @@ export function PartySlotsBar() {
 
   const readyCount = party.filter((m) => m.creationComplete).length;
 
+  const selectSlot = (slot: number) => {
+    const member = party.find((m) => m.slotIndex === slot);
+    const isPlayer =
+      member?.controller === "player" ||
+      (!member &&
+        playerMemberId == null &&
+        slot === 0 &&
+        !party.some((m) => m.controller === "player"));
+    const hint =
+      member?.roleHint ||
+      hints[slot]?.role_title ||
+      (slot === 0 ? script.public_summary?.protagonist_role : undefined);
+    if (!member) {
+      const blank = createBlankCharacter(systemId);
+      if (hint) blank.role_title = hint;
+      upsertPartyMemberAtSlot(slot, blank, {
+        controller: isPlayer ? "player" : "ai",
+        roleHint: hint,
+        resetCreationMeta: true,
+      });
+    }
+    setEditingPartySlotIndex(slot);
+  };
+
   return (
     <div className="mb-4 space-y-2 rounded-lg border border-border bg-surface/80 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="brand-title text-sm text-ink">
-          隊伍席次（{readyCount}/{partySize} 已就緒）
+          隊伍成員（{readyCount}/{partySize} 已就緒）
         </h3>
         <p className="text-[11px] text-muted">
-          指定「我扮演」後，其餘席次為 AI 隊友（帶入庫角色會佔用）
+          新建角點「創建」；檔案庫角色點「編輯」調幕間銜接；指定「我扮演」後其餘為 AI 隊友
         </p>
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
@@ -46,6 +75,7 @@ export function PartySlotsBar() {
               slot === 0 &&
               !party.some((m) => m.controller === "player"));
           const done = Boolean(member?.creationComplete);
+          const fromLibrary = Boolean(member?.fromLibrary);
           const hint =
             member?.roleHint ||
             hints[slot]?.role_title ||
@@ -57,22 +87,11 @@ export function PartySlotsBar() {
               key={slot}
               role="button"
               tabIndex={0}
-              onClick={() => {
-                if (!member) {
-                  const blank = createBlankCharacter(systemId);
-                  if (hint) blank.role_title = hint;
-                  upsertPartyMemberAtSlot(slot, blank, {
-                    controller: isPlayer ? "player" : "ai",
-                    roleHint: hint,
-                    resetCreationMeta: true,
-                  });
-                }
-                setEditingPartySlotIndex(slot);
-              }}
+              onClick={() => selectSlot(slot)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
-                  (e.currentTarget as HTMLDivElement).click();
+                  selectSlot(slot);
                 }
               }}
               className={cn(
@@ -104,18 +123,19 @@ export function PartySlotsBar() {
                   )}
                 </span>
                 <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium text-ink">
-                        席次 {slot + 1}
-                        {done
-                          ? ` · ${member!.sheet.name}`
-                          : member?.sheet.name?.trim()
-                            ? ` · ${member.sheet.name}（未完成配點）`
-                            : " · 尚未建角"}
-                      </span>
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="font-medium text-ink">
+                      隊員{slot + 1}
+                      {done
+                        ? ` · ${member!.sheet.name}`
+                        : member?.sheet.name?.trim()
+                          ? ` · ${member.sheet.name}（未完成配點）`
+                          : " · 尚未建角"}
+                    </span>
+                    <div className="flex shrink-0 items-center gap-1">
                       <span
                         className={cn(
-                          "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                          "rounded px-1.5 py-0.5 text-[10px] font-medium",
                           done
                             ? "bg-emerald-500/20 text-emerald-300"
                             : "bg-surface-2 text-muted",
@@ -123,7 +143,22 @@ export function PartySlotsBar() {
                       >
                         {done ? "已就緒" : "待完成"}
                       </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="h-6 cursor-pointer px-1.5 text-[10px]"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          selectSlot(slot);
+                          onEditSlot?.(slot);
+                        }}
+                      >
+                        <Pencil className="h-3 w-3" />
+                        {fromLibrary ? "編輯" : done ? "編輯" : "創建"}
+                      </Button>
                     </div>
+                  </div>
                   <div className="mt-1 flex flex-wrap items-center gap-1.5">
                     <span
                       className={cn(
@@ -144,7 +179,11 @@ export function PartySlotsBar() {
                   {!done && hint ? (
                     <p className="mt-1 text-muted line-clamp-2">{hint}</p>
                   ) : null}
-                  {done ? (
+                  {done && fromLibrary ? (
+                    <p className="mt-1 text-[10px] text-emerald-400/90">
+                      已帶入檔案庫角色（編輯可調幕間銜接）
+                    </p>
+                  ) : done ? (
                     <p className="mt-1 text-[10px] text-emerald-400/90">
                       角色設定已保存（含屬性／技能配點）
                     </p>

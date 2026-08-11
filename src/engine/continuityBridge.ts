@@ -51,8 +51,9 @@ export const CONTINUITY_DURATION_LABELS: Record<ContinuityDuration, string> = {
 
 export const CONTINUITY_MODE_HINTS: Record<ContinuityMode, string> = {
   continual: "地城中途、逃亡途中、同一案件下一段——傷勢與資源原樣進場。",
-  interlude: "結案後過一段時間再接新案；依間隔恢復 HP／資源，SAN 恢復較慢。",
-  fresh: "同角換舞台或想清暫時狀態；HP／資源回滿（永久後果仍由履歷敘事保留）。",
+  interlude: "結案後過一段時間再接新案；依間隔恢復 HP／資源，SAN 休養最多回到 POW。",
+  fresh:
+    "同角換舞台或想清暫時狀態；HP／MP 回滿，SAN 回到 POW（起始理智），不會灌到 99。",
 };
 
 function clampStat(n: number, max: number): number {
@@ -66,6 +67,18 @@ function healToward(
 ): { next: number; gained: number } {
   const next = clampStat(current + amount, max);
   return { next, gained: next - current };
+}
+
+/**
+ * CoC 休養／滿狀態的 SAN 回復上限。
+ * SAN 絕對上限仍是 99−神話，但休息不該把人灌到 99；
+ * 「滿狀態」對齊起始理智＝POW（再與 san.max 取較小）。
+ */
+function cocSanRestCap(sheet: UniversalCharacterSheet): number {
+  const pow = Math.max(0, sheet.attributes.POW ?? 0);
+  const sanMax = Math.max(0, sheet.derived.san?.max ?? 0);
+  if (sanMax <= 0) return pow;
+  return Math.min(pow, sanMax);
 }
 
 /** 依上一場結局類型建議預設銜接 */
@@ -106,7 +119,7 @@ function applyCocRecovery(
   const hpMax = next.derived.hp.max;
   let hp = next.derived.hp.current;
   let san = next.derived.san?.current ?? null;
-  const sanMax = next.derived.san?.max ?? null;
+  const sanRestCap = cocSanRestCap(next);
   let mp = next.derived.mp_or_slots?.current ?? null;
   const mpMax = next.derived.mp_or_slots?.max ?? null;
 
@@ -120,9 +133,12 @@ function applyCocRecovery(
       lines.push(`HP ${hp}→${hpMax}`);
       hp = hpMax;
     }
-    if (san != null && sanMax != null && san < sanMax) {
-      lines.push(`SAN ${san}→${sanMax}`);
-      san = sanMax;
+    if (san != null && san < sanRestCap) {
+      lines.push(`SAN ${san}→${sanRestCap}（回到 POW 起始理智）`);
+      san = sanRestCap;
+    } else if (san != null && sanRestCap > 0 && san >= sanRestCap) {
+      // 已達或超過 POW（例如療程曾拉高）：滿狀態不灌到 99，也不強行砍低
+      lines.push(`SAN 維持 ${san}（休養上限為 POW ${sanRestCap}）`);
     }
     if (mp != null && mpMax != null && mp < mpMax) {
       lines.push(`MP ${mp}→${mpMax}`);
@@ -163,20 +179,20 @@ function applyCocRecovery(
       }
     }
 
-    // SAN：慢回；喘息不回；隔日最多 +1；數日約 10% 缺口；數週約 25% 缺口（至少 2）
-    if (san != null && sanMax != null && san < sanMax) {
+    // SAN：慢回，且休養上限＝POW（不朝 99−神話灌滿）
+    if (san != null && san < sanRestCap) {
       let amount = 0;
       if (dur === "breath") amount = 0;
       else if (dur === "overnight") amount = 1;
       else if (dur === "days") {
-        amount = Math.max(1, Math.floor((sanMax - san) * 0.1));
+        amount = Math.max(1, Math.floor((sanRestCap - san) * 0.1));
       } else {
-        amount = Math.max(2, Math.floor((sanMax - san) * 0.25));
+        amount = Math.max(2, Math.floor((sanRestCap - san) * 0.25));
       }
       if (amount > 0) {
-        const { next: n, gained } = healToward(san, sanMax, amount);
+        const { next: n, gained } = healToward(san, sanRestCap, amount);
         if (gained) {
-          lines.push(`SAN ${san}→${n}（休養有限回復）`);
+          lines.push(`SAN ${san}→${n}（休養有限回復，上限 POW）`);
           san = n;
         }
       } else {
@@ -190,7 +206,11 @@ function applyCocRecovery(
   }
 
   next.derived.hp.current = hp;
-  if (next.derived.san && san != null) next.derived.san.current = san;
+  if (next.derived.san && san != null) {
+    // 仍不可超過絕對上限（99−神話）
+    const absMax = next.derived.san.max;
+    next.derived.san.current = clampStat(san, absMax > 0 ? absMax : san);
+  }
   if (next.derived.mp_or_slots && mp != null) {
     next.derived.mp_or_slots.current = mp;
   }
@@ -335,7 +355,7 @@ export function buildContinuityPremiseZh(input: {
     choice.mode === "continual"
       ? "銜接前提：連續冒險——上一場結束後幾乎沒有休息，傷勢與資源原樣承接。"
       : choice.mode === "fresh"
-        ? "銜接前提：全新起點——角色以休養／重整後的滿狀態進入本場（永久後果仍可在敘事中呼應履歷）。"
+        ? "銜接前提：全新起點——角色以休養／重整後上場：HP／MP 回滿，SAN 回到 POW 起始理智（不會灌到 99；永久後果仍可在敘事中呼應履歷）。"
         : `銜接前提：幕間銜接（${durLabel ?? "數日"}）——距上一場冒險已過一段時間，並已套用對應恢復。`;
 
   const body = partyLines

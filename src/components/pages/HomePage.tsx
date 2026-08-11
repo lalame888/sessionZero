@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ChevronDown, FolderOpen, Plus, Trash2, Users } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronDown, FolderOpen, Plus, Trash2, Upload, Users } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
 import { CharacterLibraryPanel } from "@/components/character/CharacterLibraryPanel";
 import { Button } from "@/components/ui/button";
@@ -47,6 +47,7 @@ export function HomePage({
   pedelecReady,
   bootstrapping,
   onCreate,
+  onImportScript,
   onOpen,
   onDelete,
 }: {
@@ -54,14 +55,30 @@ export function HomePage({
   pedelecReady: boolean;
   bootstrapping: boolean;
   onCreate: () => void;
+  onImportScript: (file: File) => void | Promise<void>;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
-  const [tab, setTab] = useState<HomeTab | null>(null);
+  const [tab, setTab] = useState<HomeTab | null>(sessions?.length > 0 ? "sessions" : null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const createDisabled = bootstrapping || !pedelecReady;
 
   const selectTab = (next: HomeTab) => {
     setTab((prev) => (prev === next ? null : next));
   };
+  useEffect(() => {
+    if (sessions?.length > 0) setTab("sessions");
+  }, [sessions]);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [menuOpen]);
 
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col justify-center gap-8 px-2 py-6">
@@ -73,14 +90,54 @@ export function HomePage({
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
-        <Button
-          size="lg"
-          disabled={bootstrapping || !pedelecReady}
-          onClick={onCreate}
-        >
-          <Plus className="h-5 w-5" />
-          創建新劇本
-        </Button>
+        <div className="relative inline-flex" ref={menuRef}>
+          <Button
+            size="lg"
+            className="rounded-r-none"
+            disabled={createDisabled}
+            onClick={onCreate}
+          >
+            <Plus className="h-5 w-5" />
+            創建新劇本
+          </Button>
+          <Button
+            size="lg"
+            className="rounded-l-none border-l border-bg/20 px-2.5"
+            disabled={createDisabled}
+            aria-label="更多開局方式"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((o) => !o)}
+          >
+            <ChevronDown className="h-5 w-5" />
+          </Button>
+          {menuOpen ? (
+            <div className="absolute left-0 top-full z-20 mt-1 min-w-full overflow-hidden rounded-md border border-border bg-surface shadow-lg">
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-ink hover:bg-surface-2"
+                disabled={createDisabled}
+                onClick={() => {
+                  setMenuOpen(false);
+                  fileInputRef.current?.click();
+                }}
+              >
+                <Upload className="h-4 w-4 shrink-0" />
+                匯入劇本 JSON
+              </button>
+            </div>
+          ) : null}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void onImportScript(file);
+            }}
+          />
+        </div>
       </div>
 
       {!pedelecReady && !bootstrapping ? (
@@ -156,7 +213,6 @@ export function HomePage({
 
         {!tab ? (
           <p className="mt-3 text-center text-xs text-muted">
-            點選上方分頁以展開存檔列表或角色檔案庫（再點一次可收合）。
           </p>
         ) : (
           <section

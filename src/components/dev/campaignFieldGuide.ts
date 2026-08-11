@@ -147,7 +147,7 @@ export const CAMPAIGN_FIELD_GROUPS: FieldGuideGroup[] = [
       {
         path: "script.recommended_creation_mode",
         label: "建議創角模式",
-        meaning: "AI 建議的創角方式（DICE／ARRAY／POINT_BUY／SKILL_ALLOC）。",
+        meaning: "AI 建議的屬性決定方式（DICE／ARRAY／POINT_BUY；舊 SKILL_ALLOC 會正規化成 DICE）。",
         getValue: (c) => c.script.recommended_creation_mode ?? "—",
       },
       {

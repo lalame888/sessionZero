@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Library, Play, Sparkles, UserPlus } from "lucide-react";
+import { ArrowLeft, Library, Play, Sparkles, UserPlus } from "lucide-react";
 import { PartySlotsBar } from "@/components/character/PartySlotsBar";
 import { CharacterStage } from "@/components/stages/CharacterStage";
 import { ReturningCharacterConfirm } from "@/components/stages/ReturningCharacterConfirm";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { loadCampaignIndex } from "@/lib/campaignStorage";
-import { loadLibraryCharacters } from "@/lib/storage";
+import { getLibraryCharacter, loadLibraryCharacters } from "@/lib/storage";
 import type { LibraryCharacter } from "@/types/characterLibrary";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
@@ -30,6 +30,7 @@ export function CharacterPage() {
   const confirmCharacterAndPlay = useGameStore(
     (s) => s.confirmCharacterAndPlay,
   );
+  const backToScriptPhase = useGameStore((s) => s.backToScriptPhase);
   const appendSystem = useGameStore((s) => s.appendSystem);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
   const isTyping = useGameStore((s) => s.isTyping);
@@ -94,6 +95,46 @@ export function CharacterPage() {
   const canStartAdventure =
     partyFullyReady && sessionStatus === "idle" && !isTyping;
 
+  const openSlotEditor = (slot: number) => {
+    setEditingPartySlotIndex(slot);
+    const member = useGameStore
+      .getState()
+      .party.find((m) => m.slotIndex === slot);
+    const libId = member?.sheet.id;
+    const fromLib =
+      Boolean(member?.fromLibrary) ||
+      (libId ? Boolean(getLibraryCharacter(libId)) : false);
+
+    if (member && fromLib && libId) {
+      const entry =
+        getLibraryCharacter(libId) ??
+        ({
+          sheet: member.sheet,
+          career: [],
+          activeCampaignId: null,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        } satisfies LibraryCharacter);
+      // 數值以檔案庫為準（幕間恢復由此套用）；敘事／背包帶上席次上已改過的內容
+      setSelected({
+        ...entry,
+        sheet: {
+          ...entry.sheet,
+          name: member.sheet.name,
+          role_title: member.sheet.role_title,
+          appearance: member.sheet.appearance,
+          personal_bio: member.sheet.personal_bio,
+          inventory: [...member.sheet.inventory],
+        },
+      });
+      setPath("returning");
+      return;
+    }
+
+    setSelected(null);
+    setPath("new");
+  };
+
   if (path === "new") {
     return (
       <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col overflow-hidden rounded-lg border border-border bg-surface/70 p-4">
@@ -101,7 +142,7 @@ export function CharacterPage() {
           <div>
             <h2 className="brand-title text-xl text-ink">
               {multiParty
-                ? `創建角色 · 席次 ${editingPartySlotIndex + 1}`
+                ? `創建角色 · 隊員${editingPartySlotIndex + 1}`
                 : "創建新角色"}
             </h2>
             <p className="mt-1 text-sm text-muted">
@@ -109,27 +150,32 @@ export function CharacterPage() {
                 ? `劇本「${script.public_summary.title}」`
                 : "目前劇本"}
               {systemId ? ` · ${systemId}` : ""}
-              {editingIsPlayer ? " · 玩家席" : " · AI 隊友（不進角色庫）"}
+              {editingIsPlayer ? " · 玩家席" : " · AI 隊友"}
             </p>
           </div>
           <Button size="sm" variant="ghost" onClick={() => setPath("gate")}>
             返回隊伍
           </Button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-hidden">
           <CharacterStage
             allowLibrarySave={editingIsPlayer}
             onSlotSaved={() => {
-              const st = useGameStore.getState();
-              const next = Array.from(
-                { length: st.partySize },
-                (_, i) => i,
-              ).find((i) => {
-                const m = st.party.find((p) => p.slotIndex === i);
-                return !(m?.creationComplete);
-              });
-              if (next != null) setEditingPartySlotIndex(next);
+              // 先離開創角頁（unmount），再切下一空席，避免 cleanup 寫錯席
               setPath("gate");
+              queueMicrotask(() => {
+                const st = useGameStore.getState();
+                const next = Array.from(
+                  { length: st.partySize },
+                  (_, i) => i,
+                ).find((i) => {
+                  const m = st.party.find((p) => p.slotIndex === i);
+                  return !(m?.creationComplete);
+                });
+                if (next != null) {
+                  useGameStore.getState().setEditingPartySlotIndex(next);
+                }
+              });
             }}
           />
         </div>
@@ -146,8 +192,8 @@ export function CharacterPage() {
             沿用既有屬性與技能（CoC 幕間歸隊）。
             {multiParty
               ? editingIsPlayer
-                ? "將帶入「我扮演」席次（佔用此卡）；確認後請繼續完成其餘席次。"
-                : "將帶入 AI 隊友席次（佔用此卡，一角同時僅一場；結局可選寫回檔案庫）。"
+                ? "將帶入「我扮演」隊員（佔用此卡）；確認後請繼續完成其餘隊員。"
+                : "將帶入 AI 隊友（佔用此卡，一角同時僅一場；結局可選寫回檔案庫）。"
               : "確認後開始冒險。"}
           </p>
         </div>
@@ -159,18 +205,27 @@ export function CharacterPage() {
               setSelected(null);
               setPath("gate");
             }}
-            onAssigned={() => {
-              const st = useGameStore.getState();
-              const next = Array.from(
-                { length: st.partySize },
-                (_, i) => i,
-              ).find((i) => {
-                const m = st.party.find((p) => p.slotIndex === i);
-                return !(m?.creationComplete);
-              });
-              if (next != null) setEditingPartySlotIndex(next);
+            onCancelSelection={() => {
+              clearPartyMemberByCharacterId(selected.sheet.id);
               setSelected(null);
               setPath("gate");
+            }}
+            onAssigned={() => {
+              setSelected(null);
+              setPath("gate");
+              queueMicrotask(() => {
+                const st = useGameStore.getState();
+                const next = Array.from(
+                  { length: st.partySize },
+                  (_, i) => i,
+                ).find((i) => {
+                  const m = st.party.find((p) => p.slotIndex === i);
+                  return !(m?.creationComplete);
+                });
+                if (next != null) {
+                  useGameStore.getState().setEditingPartySlotIndex(next);
+                }
+              });
             }}
           />
         </div>
@@ -180,23 +235,39 @@ export function CharacterPage() {
 
   return (
     <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col overflow-hidden rounded-lg border border-border bg-surface/70 p-4">
-      <div className="mb-4 shrink-0">
-        <h2 className="brand-title text-xl text-ink">
-          {multiParty ? "組建隊伍" : "選擇角色"}
-        </h2>
-        <p className="mt-1 text-sm text-muted">
-          {script.public_summary?.title
-            ? `劇本「${script.public_summary.title}」`
-            : "目前劇本"}
-          {systemId ? ` · ${systemId}` : ""}
-          {multiParty
-            ? ` · 需 ${partySize} 名成員（1 名玩家 + AI 隊友）`
-            : "。可創建新角色，或帶入檔案庫中同系統的調查員。"}
-        </p>
+      <div className="mb-4 flex shrink-0 flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 className="brand-title text-xl text-ink">
+            {multiParty ? "組建隊伍" : "選擇角色"}
+          </h2>
+          <p className="mt-1 text-sm text-muted">
+            {script.public_summary?.title
+              ? `劇本「${script.public_summary.title}」`
+              : "目前劇本"}
+            {systemId ? ` · ${systemId}` : ""}
+            {multiParty
+              ? ` · 需 ${partySize} 名成員（1 名玩家 + AI 隊友）`
+              : "。可創建新角色，或帶入檔案庫中同系統的調查員。"}
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => backToScriptPhase()}
+        >
+          <ArrowLeft className="h-4 w-4" />
+          返回劇本討論
+        </Button>
       </div>
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto">
-        {multiParty ? <PartySlotsBar /> : null}
+        {multiParty ? (
+          <PartySlotsBar
+            onEditSlot={(slot) => {
+              openSlotEditor(slot);
+            }}
+          />
+        ) : null}
 
         {partyFullyReady ? (
           <div className="space-y-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4">
@@ -226,44 +297,40 @@ export function CharacterPage() {
           </div>
         ) : multiParty ? (
           <p className="text-xs text-muted">
-            請為每一席次完成創建或帶入角色卡；全部就緒後將出現「開始冒險」。
+            點各隊員右上角「創建／編輯」完成角色，或從下方帶入檔案庫角色卡；全部就緒後將出現「開始冒險」。
           </p>
         ) : null}
 
-        <button
-          type="button"
-          onClick={() => {
-            setEditingPartySlotIndex(editingPartySlotIndex);
-            setPath("new");
-          }}
-          className={cn(
-            "group w-full cursor-pointer rounded-xl border border-border bg-surface px-5 py-6 text-left",
-            "transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out",
-            "hover:border-accent/55 hover:bg-accent/[0.07] hover:shadow-[0_0_0_1px_color-mix(in_oklab,var(--accent)_22%,transparent),0_8px_24px_-12px_color-mix(in_oklab,var(--accent)_35%,transparent)]",
-            "active:translate-y-px",
-          )}
-        >
-          <div className="flex items-start gap-4">
-            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border bg-bg text-accent transition-colors group-hover:border-accent/40 group-hover:bg-accent/10">
-              <UserPlus className="h-6 w-6" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-accent opacity-80" />
-                <span className="brand-title text-lg text-ink">
-                  {multiParty
-                    ? `編輯席次 ${editingPartySlotIndex + 1}`
-                    : "創建新角色"}
-                </span>
+        {!multiParty ? (
+          <button
+            type="button"
+            onClick={() => {
+              setEditingPartySlotIndex(editingPartySlotIndex);
+              setPath("new");
+            }}
+            className={cn(
+              "group w-full cursor-pointer rounded-xl border border-border bg-surface px-5 py-6 text-left",
+              "transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out",
+              "hover:border-accent/55 hover:bg-accent/[0.07] hover:shadow-[0_0_0_1px_color-mix(in_oklab,var(--accent)_22%,transparent),0_8px_24px_-12px_color-mix(in_oklab,var(--accent)_35%,transparent)]",
+              "active:translate-y-px",
+            )}
+          >
+            <div className="flex items-start gap-4">
+              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border bg-bg text-accent transition-colors group-hover:border-accent/40 group-hover:bg-accent/10">
+                <UserPlus className="h-6 w-6" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-accent opacity-80" />
+                  <span className="brand-title text-lg text-ink">創建新角色</span>
+                </div>
+                <p className="mt-1 text-sm text-muted">
+                  完整創角（數值＋敘事）。此席為你扮演。
+                </p>
               </div>
-              <p className="mt-1 text-sm text-muted">
-                {editingIsPlayer
-                  ? "完整創角（數值＋敘事）。此席為你扮演。"
-                  : "為 AI 隊友新建，或帶入檔案庫角色（會佔用；結局可選寫回）。"}
-              </p>
             </div>
-          </div>
-        </button>
+          </button>
+        ) : null}
 
         <section>
           <div className="mb-2 flex items-center gap-2 text-ink">
@@ -333,7 +400,7 @@ export function CharacterPage() {
                           {onEditingSlot
                             ? " · 再點可取消此席帶入"
                             : inParty
-                              ? ` · 點擊可改帶入席次 ${editingPartySlotIndex + 1}`
+                              ? ` · 點擊可改帶入隊員${editingPartySlotIndex + 1}`
                               : busy && c.activeCampaignId
                                 ? ` · 進行中：${sessionTitles[c.activeCampaignId] ?? "其他 Session"}`
                                 : ""}
@@ -350,7 +417,7 @@ export function CharacterPage() {
                         )}
                       >
                         {inParty && partyMember
-                          ? `已在隊伍中-席次${partyMember.slotIndex + 1}`
+                          ? `已在隊伍中-隊員${partyMember.slotIndex + 1}`
                           : busy
                             ? "占用中"
                             : "選擇"}
@@ -369,21 +436,21 @@ export function CharacterPage() {
         onOpenChange={(open) => {
           if (!open) setReassignPrompt(null);
         }}
-        title="改帶入席次"
+        title="改帶入隊員"
       >
         {reassignPrompt ? (
           <div className="space-y-4 text-sm">
             <p className="text-ink">
-              「{reassignPrompt.entry.sheet.name || "未命名"}」目前在席次{" "}
-              {reassignPrompt.fromSlot + 1}。要改成帶入席次{" "}
+              「{reassignPrompt.entry.sheet.name || "未命名"}」目前在隊員
+              {reassignPrompt.fromSlot + 1}。要改成帶入隊員
               {editingPartySlotIndex + 1} 嗎？
             </p>
             <p className="text-xs text-muted">
-              確認後會清空席次 {reassignPrompt.fromSlot + 1}
+              確認後會清空隊員{reassignPrompt.fromSlot + 1}
               {party.some((m) => m.slotIndex === editingPartySlotIndex)
-                ? `，並取代席次 ${editingPartySlotIndex + 1} 現有角色`
+                ? `，並取代隊員${editingPartySlotIndex + 1} 現有角色`
                 : ""}
-              。若要取消帶入，請先選席次 {reassignPrompt.fromSlot + 1}{" "}
+              。若要取消帶入，請先選隊員{reassignPrompt.fromSlot + 1}{" "}
               再點一次此卡。
             </p>
             <div className="flex flex-wrap justify-end gap-2">
@@ -405,7 +472,7 @@ export function CharacterPage() {
                     occupied.sheet.id !== reassignPrompt.entry.sheet.id
                   ) {
                     appendSystem(
-                      `席次 ${editingPartySlotIndex + 1} 原角色「${occupied.sheet.name || "未命名"}」已替換。`,
+                      `隊員${editingPartySlotIndex + 1} 原角色「${occupied.sheet.name || "未命名"}」已替換。`,
                     );
                   }
                   movePartyMemberToSlot(
@@ -416,7 +483,7 @@ export function CharacterPage() {
                   setReassignPrompt(null);
                 }}
               >
-                改帶入席次 {editingPartySlotIndex + 1}
+                改帶入隊員{editingPartySlotIndex + 1}
               </Button>
             </div>
           </div>

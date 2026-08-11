@@ -82,7 +82,7 @@ export function attributeTooltipContent(
     lines.push("標準陣列：從此模式提供的互斥分數中擇一指派，不可重複使用同一格。");
   } else if (opts?.mode === "POINT_BUY") {
     lines.push("購點制：在預算內調整分數；花費依分數表計算，較高分數較貴。");
-  } else if (opts?.mode === "DICE" || opts?.mode === "SKILL_ALLOC") {
+  } else if (opts?.mode === "DICE") {
     lines.push("擲骰鎖定：結果由骰式產生後寫入角色卡，不可任意手填。");
   }
 
@@ -151,14 +151,29 @@ export function buildDerivedTooltipRows(
         `代入：floor((${con}＋${siz})/10)＝${hpMax}`,
       ].join("\n"),
     });
+    const mythos = Math.max(
+      0,
+      Math.floor(Number(sheet.skills["克蘇魯神話"] ?? 0) || 0),
+    );
     rows.push({
       id: "san",
       label: "SAN",
       display: `${sheet.derived.san?.current ?? 0}/${sanMax}`,
       content: [
         "理智值：面對超自然衝擊時消耗；歸零會陷入崩潰。",
-        "公式：起始 SAN＝POW（最大值通常亦為 POW）",
-        `代入：POW ${pow} → SAN 上限 ${sanMax}`,
+        "起始 SAN＝POW；SAN 上限＝99−克蘇魯神話（CoC 7e）。",
+        `代入：POW ${pow}，克蘇魯神話 ${mythos}% → 上限 max(0, 99−${mythos})＝${sanMax}`,
+        `目前 ${sheet.derived.san?.current ?? 0}／${sanMax}`,
+      ].join("\n"),
+    });
+    rows.push({
+      id: "mythos",
+      label: "克蘇魯神話",
+      display: `${mythos}%`,
+      content: [
+        "技能（非屬性衍生）。創角通常為 0，冒險中經遭遇／秘典成長。",
+        "提高神話％會降低 SAN 上限（99−神話）。",
+        `目前 ${mythos}% → SAN 上限 ${Math.max(0, 99 - mythos)}`,
       ].join("\n"),
     });
     rows.push({
@@ -176,10 +191,16 @@ export function buildDerivedTooltipRows(
       label: "閃避",
       display: String(dodge),
       content: [
-        "閃避基礎％：創角時若技能尚未分配，會同步寫入技能「閃避」。",
+        "derived.dodge 為公式基礎值 floor(DEX/2)。",
+        "技能「閃避」可在創角時用職業／興趣點再提升，檢定以技能％為準。",
         "公式：floor(DEX/2)",
         `代入：floor(${dex}/2)＝${dodge}`,
-      ].join("\n"),
+        sheet.skills["閃避"] != null && sheet.skills["閃避"] !== dodge
+          ? `目前技能「閃避」＝${sheet.skills["閃避"]}%`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
     });
     rows.push({
       id: "mov",
@@ -191,8 +212,13 @@ export function buildDerivedTooltipRows(
         "• STR 與 DEX 都＜SIZ → MOV 7",
         "• STR 與 DEX 都＞SIZ → MOV 9",
         "• 其餘（含相等）→ MOV 8",
+        sheet.coc_age_mod?.movPenalty
+          ? `年齡修正：基礎 MOV 再 −${sheet.coc_age_mod.movPenalty}`
+          : null,
         `代入：STR ${str}、DEX ${dex}、SIZ ${siz} → MOV ${mov || "—"}`,
-      ].join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n"),
     });
     rows.push({
       id: "build",

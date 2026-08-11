@@ -21,12 +21,13 @@ import {
   createEmptyCharacterShell,
   defaultAttributeDefs,
   defaultModeConfig,
-  defaultPointBuy,
   enrichCharacterSheetMeta,
   filterKeyClueInventoryItems,
   clampSkillsToSystemBases,
+  normalizeAttrFormula,
   normalizeBackgroundQuestions,
   normalizeCreationMode,
+  resolvePointBuyConfig,
   resolveSkillBaseValue,
   resolveStandardArray,
 } from "@/engine/creation";
@@ -362,6 +363,8 @@ interface GameStore {
   setTimelineIndex: (idx: number | null) => void;
   confirmCharacterAndPlay: () => void;
   advanceToCharacterPhase: () => void;
+  /** 自創角／組建隊伍退回 Session 0 劇本討論（保留已創角色草稿） */
+  backToScriptPhase: () => void;
   setLastPlayerAction: (action: string) => void;
   applyGrowthResult: (
     skill: string,
@@ -539,7 +542,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
         system_id,
         public_summary: args.public_summary,
         hidden_full_script: args.hidden_full_script,
-        recommended_creation_mode: args.recommended_creation_mode,
+        recommended_creation_mode: normalizeCreationMode(
+          args.recommended_creation_mode,
+          system_id === "DND_5E" ? "DND_5E" : "COC_7E",
+        ),
         revealed: false,
         scenario_scale,
         tone_examples: args.tone_examples?.filter((t) => t.trim()).slice(0, 4),
@@ -599,9 +605,38 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const size = get().partySize;
     const slot = Math.max(0, Math.min(size - 1, idx));
     const existing = get().party.find((m) => m.slotIndex === slot);
-    set({
-      editingPartySlotIndex: slot,
-      character: existing?.sheet ?? get().character,
+    if (existing) {
+      set({
+        editingPartySlotIndex: slot,
+        character: existing.sheet,
+      });
+      return;
+    }
+
+    // 空席必須新 ID／空白卡，不可沿用上一席 character（否則兩席同 id 開打會合併）
+    const systemId =
+      get().script.system_id === "DND_5E" ? "DND_5E" : "COC_7E";
+    const hints = get().script.party_role_hints ?? [];
+    const hint =
+      hints[slot]?.role_title ||
+      (slot === 0
+        ? get().script.public_summary?.protagonist_role
+        : undefined) ||
+      undefined;
+    const blank = createBlankCharacter(systemId);
+    if (hint) blank.role_title = hint;
+
+    const hasPlayer = get().party.some((m) => m.controller === "player");
+    const controller: "player" | "ai" =
+      !hasPlayer && (slot === 0 || get().playerMemberId == null)
+        ? "player"
+        : "ai";
+
+    set({ editingPartySlotIndex: slot });
+    get().upsertPartyMemberAtSlot(slot, blank, {
+      controller,
+      roleHint: hint,
+      resetCreationMeta: true,
     });
   },
 
@@ -724,9 +759,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
           ? (nextPlayer?.id ?? null)
           : s0.viewedPartyMemberId,
     });
-    get().appendSystem(
-      `已取消帶入「${member.sheet.name || "未命名"}」（席次 ${member.slotIndex + 1} 已清空）。`,
-    );
   },
 
   movePartyMemberToSlot: (characterId, toSlotIndex, opts) => {
@@ -877,9 +909,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }),
 
   setCharacterSchema: (schema) => {
-    const mode = normalizeCreationMode(schema.creation_mode);
     const systemId =
       schema.system_id === "DND_5E" ? "DND_5E" : "COC_7E";
+    const mode = normalizeCreationMode(schema.creation_mode, systemId);
     const defs =
       schema.attribute_defs?.length > 0
         ? schema.attribute_defs
@@ -900,15 +932,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
       ...baseMode,
       ...schema.mode_config,
       standard_array: resolvedArray.array,
+      occupational_point_formula: schema.mode_config?.occupational_point_formula
+        ? normalizeAttrFormula(schema.mode_config.occupational_point_formula)
+        : schema.mode_config?.occupational_point_formula,
+      interest_point_formula: schema.mode_config?.interest_point_formula
+        ? normalizeAttrFormula(schema.mode_config.interest_point_formula)
+        : schema.mode_config?.interest_point_formula,
     };
-    const pointBuyFallback = defaultPointBuy(systemId);
-    const point_buy =
-      schema.point_buy ??
-      {
-        budget: mode_config.point_buy_pool ?? pointBuyFallback.budget,
-        min_score: mode_config.min_score ?? pointBuyFallback.min_score,
-        max_score: mode_config.max_score ?? pointBuyFallback.max_score,
-      };
+    const point_buy = resolvePointBuyConfig(
+      systemId,
+      schema.point_buy,
+      mode_config,
+    );
 
     const normalized: CharacterSchemaState = {
       ...schema,
@@ -942,6 +977,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
     };
 
     const prev = get().character;
+    const editingSlot = get().editingPartySlotIndex;
+    const slotMember = get().party.find((m) => m.slotIndex === editingSlot);
+    // 僅當「目前編輯席」與 store.character 同一張卡時才沿用 id／敘事，避免席次2吃到席次1
+    const canReuseIdentity = Boolean(
+      prev && slotMember && slotMember.sheet.id === prev.id,
+    );
     const shell = createEmptyCharacterShell(systemId, defs);
     const skills: Record<string, number> = {};
     for (const sk of normalized.recommended_skills) {
@@ -954,7 +995,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
         : shell.attributes;
 
     const prevHooks =
-      prev?.backstory_hooks && Object.keys(prev.backstory_hooks).length
+      canReuseIdentity &&
+      prev?.backstory_hooks &&
+      Object.keys(prev.backstory_hooks).length
         ? prev.backstory_hooks
         : {};
 
@@ -965,12 +1008,22 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { kept: inventory, removed: strippedKeys } =
       filterKeyClueInventoryItems(rawInv, keyClues);
 
+    const reuseId =
+      canReuseIdentity && prev
+        ? prev.id
+        : slotMember && !slotMember.creationComplete
+          ? slotMember.sheet.id
+          : shell.id;
+
     const sheet = recomputeDerived({
       ...shell,
-      id: prev?.id ?? shell.id,
-      name: prev?.name ?? "",
+      id: reuseId,
+      name: canReuseIdentity && prev ? prev.name ?? "" : "",
       role_title:
-        prev?.role_title || normalized.role_title_suggestion || "",
+        (canReuseIdentity && prev?.role_title) ||
+        slotMember?.roleHint ||
+        normalized.role_title_suggestion ||
+        "",
       attributes: { ...shell.attributes, ...attrs },
       skills: clampSkillsToSystemBases(systemId, skills),
       inventory,
@@ -1593,6 +1646,44 @@ export const useGameStore = create<GameStore>((set, get) => ({
       return;
     }
 
+    // 防衛：若兩席誤共用同一 id，為後者重新發號，避免開打後被 sync 合併
+    {
+      const seen = new Set<string>();
+      let repaired = false;
+      const fixed = [...s0.party]
+        .sort((a, b) => a.slotIndex - b.slotIndex)
+        .map((m) => {
+          if (!seen.has(m.id) && !seen.has(m.sheet.id)) {
+            seen.add(m.id);
+            seen.add(m.sheet.id);
+            return m;
+          }
+          repaired = true;
+          const newId = crypto.randomUUID();
+          return {
+            ...m,
+            id: newId,
+            sheet: { ...m.sheet, id: newId },
+          };
+        });
+      if (repaired) {
+        const playerId =
+          fixed.find((m) => m.controller === "player")?.id ??
+          s0.playerMemberId;
+        set({
+          party: fixed,
+          playerMemberId: playerId,
+          character:
+            fixed.find((m) => m.id === playerId)?.sheet ??
+            fixed[0]?.sheet ??
+            s0.character,
+        });
+        get().appendSystem(
+          "偵測到隊伍成員共用同一角色 ID，已自動為重複席次重新編號。",
+        );
+      }
+    }
+
     void (async () => {
       const session = getActiveSession();
       if (!session || session.getStatus() !== "idle") {
@@ -1674,7 +1765,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         workingParty.find((m) => m.id === player.id)?.sheet ??
         player.sheet;
 
-      // CoC 創角硬限制：克蘇魯神話 0、閃避=DEX/2
+      // CoC 創角硬限制：克蘇魯神話 0；閃避不得低於 DEX/2（保留加點）
       workingParty = workingParty.map((m) => {
         const { sheet: normalized, forcedMythosToZero } =
           normalizeCocCreationSheet(m.sheet);
@@ -1833,6 +1924,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
       partySize > 1
         ? `已確認劇本與房規，進入創角（隊伍 ${partySize} 人）。請為每位完成完整角色卡；各席次均可新建或帶入檔案庫（帶入會佔用該卡，一角同時僅一場；結局可選寫回）。自庫帶入時可設定幕間銜接。僅「我扮演」席次冒險中會自動結算寫回。`
         : "已確認劇本與房規，進入創角階段。可創建新角色，或帶入檔案庫中同系統的角色卡（帶入時可選擇幕間銜接／連續冒險／全新起點）。",
+    );
+  },
+
+  backToScriptPhase: () => {
+    if (get().phase !== "CHARACTER") return;
+    set({ phase: "SESSION_0" });
+    get().appendSystem(
+      "已返回劇本討論。可調整劇本／房規／人數後，再按「前往選擇／創建角色」。已建立的隊伍草稿會保留。",
     );
   },
 

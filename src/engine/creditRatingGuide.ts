@@ -70,12 +70,50 @@ export const CREDIT_LIFESTYLE_BANDS: CreditLifestyleBand[] = [
 ];
 
 export const CREDIT_RATING_TOOLTIP = [
-  "信用評級是 CoC 技能（％），表示社會地位與可動用的金錢／信用，不是自由描述欄。",
+  "信用評級是 CoC 技能（％），表示社會地位與可動用的金錢／信用。",
+  "正規創角：依職業建議區間，用職業點（必要時興趣點）配置此技能；再依％對應生活水準與現金／資產敘事。",
   "檢定用途：借錢、打通關係、被當成「有頭有臉」時。",
-  "創角建議：先選生活水準區間，或依職業包建議範圍，再用職業／興趣點調整。",
-  "請與「現金／資產」「資產概況」敘事大致對齊；本欄與技能列表的「信用評級」是同一數值。",
   "常見區間：落魄 0–5、溫飽 6–15、一般 16–39、小康 40–59、富裕 60–79、名流 80–99。",
 ].join("\n\n");
+
+/** 依信用評級區間產生建議的資產概況／現金敘事（可覆寫） */
+export function suggestedWealthCopy(band: CreditLifestyleBand): {
+  wealth: string;
+  cash_assets: string;
+} {
+  switch (band.id) {
+    case "destitute":
+      return {
+        wealth: "落魄／幾乎無固定收入",
+        cash_assets: "僅有零用現金，借貸困難，無可靠存款。",
+      };
+    case "poor":
+      return {
+        wealth: "溫飽／僅能糊口",
+        cash_assets: "月薪勉強夠用，少有積蓄，資產有限。",
+      };
+    case "average":
+      return {
+        wealth: "一般薪水族水準",
+        cash_assets: "有固定收入與少量存款，可應付日常開銷。",
+      };
+    case "comfortable":
+      return {
+        wealth: "小康／穩定中產",
+        cash_assets: "專業收入穩定，有存款與基本資產，信用良好。",
+      };
+    case "wealthy":
+      return {
+        wealth: "富裕／體面資產",
+        cash_assets: "易取得信用與融資，持有可觀存款或不動產。",
+      };
+    case "rich":
+      return {
+        wealth: "名流／高層社會",
+        cash_assets: "豪門或大亨級資產，金錢幾乎不是限制。",
+      };
+  }
+}
 
 export function bandForCredit(score: number): CreditLifestyleBand | null {
   if (!Number.isFinite(score)) return null;

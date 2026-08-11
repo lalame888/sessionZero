@@ -280,23 +280,11 @@ export function PlayPage({
           ) : null}
         </div>
         <div className="min-h-0 flex-1 overflow-hidden">
-          {phase === "PLAYING" &&
-          !messages.some((m) => m.role === "agent") ? (
-            <div className="flex h-full flex-col gap-3 overflow-y-auto px-2 py-4">
-              <PlayTitleCard />
-              {messages.length ? (
-                <StoryLog
-                  onAddSelectionToNote={openCreateNote}
-                  narrativeControls={false}
-                />
-              ) : null}
-            </div>
-          ) : (
-            <StoryLog
-              onAddSelectionToNote={openCreateNote}
-              narrativeControls={phase === "PLAYING"}
-            />
-          )}
+          <StoryLog
+            header={phase === "PLAYING" ? <PlayTitleCard /> : undefined}
+            onAddSelectionToNote={openCreateNote}
+            narrativeControls={phase === "PLAYING"}
+          />
         </div>
         <div className="shrink-0">
           <Composer disabled={composerDisabled} onRegenerate={onRegenerate} />

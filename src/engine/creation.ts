@@ -74,10 +74,10 @@ export function resolveAttributeDef(
 }
 
 export function defaultStandardArray(systemId: GameSystemID): number[] {
-  // 規格：D&D [15,14,13,12,10,8]；CoC [80,70,60,60,50,50,40,40]
+  // D&D 5e Standard Array；CoC 7e Quick-Fire Method（Investigator Handbook）
   return systemId === "DND_5E"
     ? [15, 14, 13, 12, 10, 8]
-    : [80, 70, 60, 60, 50, 50, 40, 40];
+    : [80, 70, 60, 60, 50, 50, 50, 40];
 }
 
 /**
@@ -134,7 +134,107 @@ export function defaultPointBuy(systemId: GameSystemID): PointBuyConfig {
   if (systemId === "DND_5E") {
     return { budget: 27, min_score: 8, max_score: 15 };
   }
+  // CoC 7e Investigator Handbook：八項特性合計 460，每項 40–90
   return { budget: 460, min_score: 40, max_score: 90 };
+}
+
+/**
+ * 正規化購點設定。CoC／D&D 規則書區間若被 AI 帶歪（如 CoC min=15），改回系統預設。
+ */
+export function resolvePointBuyConfig(
+  systemId: GameSystemID,
+  candidate?: Partial<PointBuyConfig> | null,
+  modeConfig?: CreationModeConfig | null,
+): PointBuyConfig {
+  const fallback = defaultPointBuy(systemId);
+  const raw: PointBuyConfig = {
+    budget:
+      candidate?.budget ??
+      modeConfig?.point_buy_pool ??
+      fallback.budget,
+    min_score:
+      candidate?.min_score ?? modeConfig?.min_score ?? fallback.min_score,
+    max_score:
+      candidate?.max_score ?? modeConfig?.max_score ?? fallback.max_score,
+    cost_table: candidate?.cost_table,
+  };
+
+  if (systemId === "COC_7E") {
+    const minOk =
+      Number.isFinite(raw.min_score) &&
+      raw.min_score >= 30 &&
+      raw.min_score <= 50;
+    const maxOk =
+      Number.isFinite(raw.max_score) &&
+      raw.max_score >= 80 &&
+      raw.max_score <= 99;
+    const budgetOk =
+      Number.isFinite(raw.budget) && raw.budget >= 400 && raw.budget <= 520;
+    return {
+      budget: budgetOk ? Math.round(raw.budget) : fallback.budget,
+      min_score: minOk ? Math.round(raw.min_score) : fallback.min_score,
+      max_score: maxOk ? Math.round(raw.max_score) : fallback.max_score,
+      ...(raw.cost_table ? { cost_table: raw.cost_table } : {}),
+    };
+  }
+
+  if (systemId === "DND_5E") {
+    const minOk =
+      Number.isFinite(raw.min_score) &&
+      raw.min_score >= 6 &&
+      raw.min_score <= 10;
+    const maxOk =
+      Number.isFinite(raw.max_score) &&
+      raw.max_score >= 13 &&
+      raw.max_score <= 18;
+    const budgetOk =
+      Number.isFinite(raw.budget) && raw.budget >= 20 && raw.budget <= 40;
+    return {
+      budget: budgetOk ? Math.round(raw.budget) : fallback.budget,
+      min_score: minOk ? Math.round(raw.min_score) : fallback.min_score,
+      max_score: maxOk ? Math.round(raw.max_score) : fallback.max_score,
+      ...(raw.cost_table ? { cost_table: raw.cost_table } : {}),
+    };
+  }
+
+  return raw;
+}
+
+/**
+ * 單項屬性花費。
+ * - D&D 5e：官方累進表（8=0 … 15=9）
+ * - CoC 7e：特性值本身即花費（1:1），八項合計須等於 budget（預設 460）
+ */
+export function pointBuyCost(
+  score: number,
+  config: PointBuyConfig,
+  systemId?: GameSystemID | null,
+): number {
+  if (config.cost_table && config.cost_table[String(score)] != null) {
+    return Number(config.cost_table[String(score)]);
+  }
+  const sid =
+    systemId ??
+    (config.max_score <= 20 && config.min_score <= 10 ? "DND_5E" : "COC_7E");
+  if (sid === "DND_5E") {
+    if (DND_POINT_BUY_COST[score] != null) return DND_POINT_BUY_COST[score];
+    return Math.max(0, score - config.min_score);
+  }
+  // CoC：分數＝花費
+  return Math.max(0, score);
+}
+
+export function totalPointBuySpent(
+  scores: Record<string, number>,
+  keys: string[],
+  config: PointBuyConfig,
+  systemId?: GameSystemID | null,
+): number {
+  return keys.reduce(
+    (sum, key) =>
+      sum + pointBuyCost(scores[key] ?? config.min_score, config, systemId),
+    0,
+  );
 }
 
 export function defaultModeConfig(systemId: GameSystemID): CreationModeConfig {
@@ -287,32 +387,23 @@ export function rollCreationFormula(formula: string): {
   return { total: plain.total, detail: plain.detail };
 }
 
-export function pointBuyCost(score: number, config: PointBuyConfig): number {
-  if (config.cost_table && config.cost_table[String(score)] != null) {
-    return Number(config.cost_table[String(score)]);
-  }
-  if (DND_POINT_BUY_COST[score] != null) return DND_POINT_BUY_COST[score];
-  return Math.max(0, score - config.min_score);
+/** 安全評估如 EDU*4、INT*2（相容 AI 常寫的 ×、x 乘號） */
+export function normalizeAttrFormula(formula: string): string {
+  return formula
+    .replace(/[×✕✖✱＊]/g, "*")
+    .replace(/(?<=\d|\w)\s*[xX]\s*(?=\d|\w)/g, " * ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-export function totalPointBuySpent(
-  scores: Record<string, number>,
-  keys: string[],
-  config: PointBuyConfig,
-): number {
-  return keys.reduce(
-    (sum, key) => sum + pointBuyCost(scores[key] ?? config.min_score, config),
-    0,
-  );
-}
-
-/** 安全評估如 EDU*4、INT*2 */
 export function evalAttrFormula(
   formula: string,
   attributes: Record<string, number>,
 ): number {
   try {
-    const result = evaluate(formula, attributes);
+    const normalized = normalizeAttrFormula(formula);
+    if (!normalized) return 0;
+    const result = evaluate(normalized, attributes);
     const n = typeof result === "number" ? result : Number(result);
     return Number.isFinite(n) ? Math.floor(n) : 0;
   } catch {
@@ -376,19 +467,47 @@ export function createEmptyCharacterShell(
   };
 }
 
+/**
+ * 各系統可選的「決定屬性」方式。
+ * - CoC 7e：規則書／Investigator Handbook 的擲骰、Quick-Fire、購點（460）。
+ *   職業／興趣技能點是屬性之後的固定步驟，不是獨立創角模式。
+ * - D&D 5e：擲骰、Standard Array、Point Buy。
+ * SKILL_ALLOC 僅保留型別相容；舊存檔會正規化成 DICE。
+ */
+export function creationModesForSystem(
+  systemId: GameSystemID,
+): CreationMode[] {
+  if (systemId === "COC_7E") {
+    return ["DICE", "ARRAY", "POINT_BUY"];
+  }
+  return ["DICE", "ARRAY", "POINT_BUY"];
+}
+
 export function normalizeCreationMode(
   mode: string | undefined | null,
+  systemId?: GameSystemID | null,
 ): CreationMode {
   const m = (mode ?? "DICE").toUpperCase();
+  let normalized: CreationMode = "DICE";
   if (
     m === "ARRAY" ||
     m === "POINT_BUY" ||
     m === "SKILL_ALLOC" ||
     m === "DICE"
   ) {
-    return m;
+    normalized = m;
   }
-  return "DICE";
+  // 非官方獨立模式：技能配點永遠跟在屬性之後，舊值改回擲骰
+  if (normalized === "SKILL_ALLOC") {
+    normalized = "DICE";
+  }
+  if (systemId) {
+    const allowed = creationModesForSystem(systemId);
+    if (!allowed.includes(normalized)) {
+      return allowed[0] ?? "DICE";
+    }
+  }
+  return normalized;
 }
 
 export const CREATION_MODE_LABELS: Record<CreationMode, string> = {
@@ -402,8 +521,39 @@ export const CREATION_MODE_HINTS: Record<CreationMode, string> = {
   DICE: "以系統公式擲出屬性；結果鎖定不可手改（D&D 可再分配擲出池）。",
   ARRAY: "從固定陣列互斥分配到各屬性，每個分數只能用一次。",
   POINT_BUY: "在預算內加減屬性；超出區間的按鈕會停用。",
-  SKILL_ALLOC: "先備妥屬性後，分別花費職業點與興趣點提升技能。",
+  SKILL_ALLOC: "（已併入正規流程）屬性就緒後再分配職業／興趣技能點。",
 };
+
+/** 依系統覆寫顯示名稱（CoC Quick-Fire ≠ D&D Standard Array 語意） */
+export function creationModeLabel(
+  mode: CreationMode,
+  systemId?: GameSystemID | null,
+): string {
+  if (systemId === "COC_7E") {
+    if (mode === "DICE") return "擲骰決定特性";
+    if (mode === "ARRAY") return "快速創角（Quick Fire）";
+    if (mode === "POINT_BUY") return "購點制";
+  }
+  return CREATION_MODE_LABELS[mode];
+}
+
+export function creationModeHint(
+  mode: CreationMode,
+  systemId?: GameSystemID | null,
+): string {
+  if (systemId === "COC_7E") {
+    if (mode === "DICE") {
+      return "依公式擲出八項特性並鎖定；之後再分配職業點與興趣點（規則固定步驟）。";
+    }
+    if (mode === "ARRAY") {
+      return "Quick-Fire：將 80,70,60,60,50,50,50,40 互斥指派到八項特性；之後再配技能點。";
+    }
+    if (mode === "POINT_BUY") {
+      return "以 460 點在 40–90 間購買八項特性；之後再分配職業／興趣技能點。";
+    }
+  }
+  return CREATION_MODE_HINTS[mode];
+}
 
 /** CoC 常見技能預設基礎值；AI 若回傳 0 則回退到此表 */
 export const COC_SKILL_BASE_DEFAULTS: Record<string, number> = {
@@ -461,6 +611,7 @@ export function resolveSkillBaseValue(
   systemId: GameSystemID,
   name: string,
   baseValue: number | undefined,
+  attributes?: Record<string, number> | null,
 ): number {
   if (systemId !== "COC_7E") return Math.max(0, baseValue ?? 0);
   // 模糊匹配：技能名包含預設表 key（如「語言(古希臘語)」→「語言」）
@@ -470,6 +621,13 @@ export function resolveSkillBaseValue(
       catalog = val;
       break;
     }
+  }
+  // 閃避系統基礎＝floor(DEX/2)
+  if (name === "閃避" || name.startsWith("閃避")) {
+    const dexBase = Math.floor((attributes?.DEX ?? 0) / 2);
+    const fromAi =
+      typeof baseValue === "number" && baseValue >= 0 ? baseValue : 0;
+    return Math.max(catalog, fromAi, dexBase);
   }
   // 不可低於系統基礎值（避免 AI 把心理學設成 5% 等）
   if (typeof baseValue === "number" && baseValue >= 0) {
@@ -540,11 +698,15 @@ export const COC_SYSTEM_SKILL_DESCRIPTIONS: Record<string, string> = {
     "檢定用途：被打時選擇閃避、某些需要靈活躲閃的場面。",
   ].join("\n\n"),
   信用評級: [
-    "信用評級：社會地位與可動用金錢／信用的技能（％），不是自由描述欄。",
-    "系統常駐：基礎通常為 0，依職業包建議範圍用職業／興趣點配置。",
+    "信用評級：社會地位與可動用金錢／信用的技能（％）。",
+    "正規創角：依職業建議區間，用職業／興趣點配置；再對應生活水準與現金／資產敘事。",
     "檢定用途：借錢、打通關係、被當成「有頭有臉」時。",
-    "請與「現金／資產」「資產概況」敘事大致對齊。",
     "常見區間：落魄 0–5、溫飽 6–15、一般 16–39、小康 40–59、富裕 60–79、名流 80–99。",
+  ].join("\n\n"),
+  克蘇魯神話: [
+    "克蘇魯神話：對神話真相的理解（技能％），創角通常為 0。",
+    "不可在開場前用職業／興趣點提升；冒險中經遭遇、秘典等成長。",
+    "連動：SAN 上限＝99−克蘇魯神話。",
   ].join("\n\n"),
 };
 

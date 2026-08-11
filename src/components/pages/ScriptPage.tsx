@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { Sparkles } from "lucide-react";
+import { Download, Sparkles } from "lucide-react";
 import { TypingIndicator } from "@/components/chat/StoryLog";
 import { Composer } from "@/components/chat/Composer";
 import { TaskFeedback } from "@/components/pedelec/TaskFeedback";
@@ -10,14 +10,16 @@ import { HoverTooltip } from "@/components/ui/hover-tooltip";
 import { Modal } from "@/components/ui/modal";
 import { sendPlayerAction, sendGmText, getActiveSession } from "@/lib/pedelec/createGameSession";
 import { loadRecentScriptDesigns } from "@/lib/campaignStorage";
+import { exportScriptPackDownload } from "@/lib/campaignPack";
 import {
   buildAutoGenerateCocScriptPrompt,
   formatPriorScriptDesignsForPrompt,
 } from "@/prompts/gmDirectives";
 import { useGameStore } from "@/store/useGameStore";
 import {
-  CREATION_MODE_HINTS,
-  CREATION_MODE_LABELS,
+  creationModeHint,
+  creationModeLabel,
+  creationModesForSystem,
   normalizeCreationMode,
   resolveSkillBaseValue,
 } from "@/engine/creation";
@@ -73,11 +75,19 @@ export function ScriptPage({
     el.scrollTop = el.scrollHeight;
   }, [userMessages.length, isTyping]);
 
+  const systemId =
+    characterSchema?.system_id ?? script.system_id ?? "COC_7E";
+
   const recommendedMode = useMemo(() => {
     return script.recommended_creation_mode
-      ? normalizeCreationMode(script.recommended_creation_mode)
+      ? normalizeCreationMode(script.recommended_creation_mode, systemId)
       : null;
-  }, [script.recommended_creation_mode]);
+  }, [script.recommended_creation_mode, systemId]);
+
+  const availableCreationModes = useMemo(
+    () => creationModesForSystem(systemId === "DND_5E" ? "DND_5E" : "COC_7E"),
+    [systemId],
+  );
 
   const requestCreationBlueprint = async (chosenMode: CreationMode) => {
     const session = getActiveSession();
@@ -85,18 +95,23 @@ export function ScriptPage({
       appendSystem("Session 未就緒，無法產生創角藍圖。");
       return;
     }
+    const resolvedSystem =
+      systemId === "DND_5E" ? "DND_5E" : "COC_7E";
+    const mode = normalizeCreationMode(chosenMode, resolvedSystem);
     setGeneratingBlueprint(true);
     try {
       await sendGmText(
         `此步驟是 Session 0「創角藍圖預覽」：請呼叫 generate_character_schema。` +
-          `creation_mode 必須是 ${chosenMode}。` +
+          `system_id 必須是 ${resolvedSystem}；creation_mode 必須是 ${mode}。` +
           `請提供 attribute_defs（含繁中 label 與 dice_formula）、` +
-          `mode_config（ARRAY 給 standard_array，長度必須等於屬性數：D&D 六項 [15,14,13,12,10,8]、CoC 八項 [80,70,60,60,50,50,40,40]，勿混用；POINT_BUY 給 point_buy_pool/min/max；` +
-          `SKILL_ALLOC 給 occupational_point_formula 與 interest_point_formula）、` +
+          `mode_config（ARRAY 給 standard_array，長度必須等於屬性數：D&D 六項 [15,14,13,12,10,8]、CoC Quick-Fire 八項 [80,70,60,60,50,50,50,40]，勿混用；POINT_BUY 給 point_buy_pool/min/max；` +
+          (resolvedSystem === "COC_7E"
+            ? `CoC 無論何種屬性模式都必須給 occupational_point_formula 與 interest_point_formula（預設 EDU*4、INT*2）；`
+            : "") +
           `recommended_skills（name/description 繁中；CoC 請標約 8 項 is_occupational=true 的職業技能，否則職業點花不完）。` +
           `background_questions 請回傳為物件陣列 {id, category, question}。` +
           `starting_inventory、role_title_suggestion、mode_instructions 也請提供。` +
-          `此為藍圖預覽：請不要在文字中給出最終屬性數字；最終數值由前端按藍圖規則處理（DICE/ARRAY/POINT_BUY/SKILL_ALLOC）。`,
+          `此為藍圖預覽：請不要在文字中給出最終屬性數字；最終數值由前端按藍圖規則處理（DICE/ARRAY/POINT_BUY）。`,
       );
     } catch (err) {
       appendSystem(
@@ -230,20 +245,37 @@ export function ScriptPage({
 
       <Tabs.Root defaultValue="story" asChild>
         <main className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-surface/70 p-3">
-          <Tabs.List className="mb-3 flex shrink-0 gap-1 border-b border-border/60 pb-2">
-            <Tabs.Trigger
-              value="story"
-              className="rounded px-3 py-1.5 text-sm text-muted data-[state=active]:bg-surface-2 data-[state=active]:text-ink"
-            >
-              劇情與藍圖
-            </Tabs.Trigger>
-            <Tabs.Trigger
-              value="houserules"
-              className="rounded px-3 py-1.5 text-sm text-muted data-[state=active]:bg-surface-2 data-[state=active]:text-ink"
-            >
-              房規設定
-            </Tabs.Trigger>
-          </Tabs.List>
+          <div className="mb-3 flex shrink-0 items-center gap-2 border-b border-border/60 pb-2">
+            <Tabs.List className="flex min-w-0 flex-1 gap-1">
+              <Tabs.Trigger
+                value="story"
+                className="rounded px-3 py-1.5 text-sm text-muted data-[state=active]:bg-surface-2 data-[state=active]:text-ink"
+              >
+                劇情與藍圖
+              </Tabs.Trigger>
+              <Tabs.Trigger
+                value="houserules"
+                className="rounded px-3 py-1.5 text-sm text-muted data-[state=active]:bg-surface-2 data-[state=active]:text-ink"
+              >
+                房規設定
+              </Tabs.Trigger>
+            </Tabs.List>
+            {script.public_summary ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="shrink-0"
+                onClick={() => {
+                  const data = useGameStore.getState().toPersist();
+                  exportScriptPackDownload(data);
+                }}
+              >
+                <Download className="h-4 w-4" />
+                匯出劇本 JSON
+              </Button>
+            ) : null}
+          </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto">
             <Tabs.Content value="story" className="space-y-3">
@@ -328,7 +360,7 @@ export function ScriptPage({
                           .map((h, i) => (
                             <li key={`${h.role_title}-${i}`}>
                               <span className="text-muted">
-                                席次 {i + 1}
+                              隊員{i + 1}
                                 {i === 0 ? "（建議玩家）" : ""}：
                               </span>
                               {h.role_title}
@@ -375,10 +407,10 @@ export function ScriptPage({
                     <>
                       AI 推薦模式：{" "}
                       <strong className="text-ink">
-                        {CREATION_MODE_LABELS[recommendedMode]}
+                        {creationModeLabel(recommendedMode, systemId)}
                       </strong>
                       {" — "}
-                      <span>{CREATION_MODE_HINTS[recommendedMode]}</span>
+                      <span>{creationModeHint(recommendedMode, systemId)}</span>
                     </>
                   ) : (
                     "尚未取得 AI 推薦模式。"
@@ -389,10 +421,10 @@ export function ScriptPage({
                   <div className="space-y-2 rounded-md border border-border/40 bg-surface/40 p-3 pt-2">
 
                     <div className="flex flex-wrap gap-2">
-                      {(Object.keys(CREATION_MODE_LABELS) as CreationMode[]).map(
-                        (mode) => {
+                      {availableCreationModes.map((mode) => {
                           const currentMode = normalizeCreationMode(
                             characterSchema.creation_mode,
+                            systemId,
                           );
                           const isActive = mode === currentMode;
                           return (
@@ -424,12 +456,11 @@ export function ScriptPage({
                                   setModeSwitchOpen(true);
                                 }}
                               >
-                                {CREATION_MODE_LABELS[mode]}
+                                {creationModeLabel(mode, systemId)}
                               </Button>
                             </div>
                           );
-                        },
-                      )}
+                        })}
                     </div>
                   </div>
                 ) : null}
@@ -442,9 +473,13 @@ export function ScriptPage({
                   <div className="space-y-2 rounded-md border border-border/60 bg-bg/30 p-2 text-sm">
                     <div className="font-medium text-ink">
                       目前藍圖模式：
-                      {CREATION_MODE_LABELS[
-                        normalizeCreationMode(characterSchema.creation_mode)
-                      ]}
+                      {creationModeLabel(
+                        normalizeCreationMode(
+                          characterSchema.creation_mode,
+                          systemId,
+                        ),
+                        systemId,
+                      )}
                     </div>
 
                     <div>
@@ -459,6 +494,7 @@ export function ScriptPage({
                             <span className="text-muted">
                               {normalizeCreationMode(
                                 characterSchema.creation_mode,
+                                systemId,
                               ) === "ARRAY"
                                 ? "—"
                                 : d.dice_formula ?? ""}
@@ -468,11 +504,17 @@ export function ScriptPage({
                       </div>
                     </div>
 
-                    {normalizeCreationMode(characterSchema.creation_mode) ===
-                      "ARRAY" &&
+                    {normalizeCreationMode(
+                      characterSchema.creation_mode,
+                      systemId,
+                    ) === "ARRAY" &&
                     (characterSchema.standard_array?.length ?? 0) > 0 ? (
                       <div>
-                        <div className="text-muted">標準陣列</div>
+                        <div className="text-muted">
+                          {systemId === "COC_7E"
+                            ? "快速創角陣列（Quick Fire）"
+                            : "標準陣列"}
+                        </div>
                         <div className="mt-1 flex flex-wrap items-center gap-2">
                           <span>
                             {characterSchema.standard_array?.join(", ")}
@@ -492,29 +534,32 @@ export function ScriptPage({
                       </div>
                     ) : null}
 
-                    {normalizeCreationMode(characterSchema.creation_mode) ===
-                    "POINT_BUY" ? (
+                    {normalizeCreationMode(
+                      characterSchema.creation_mode,
+                      systemId,
+                    ) === "POINT_BUY" ? (
                       <div>
                         <div className="text-muted">點數購買（Point Buy）</div>
                         <div className="mt-1">
-                          予算 {characterSchema.point_buy?.budget ?? "—"}，範圍{" "}
+                          預算 {characterSchema.point_buy?.budget ?? "—"}，範圍{" "}
                           {characterSchema.point_buy?.min_score ?? "—"}–
                           {characterSchema.point_buy?.max_score ?? "—"}
                         </div>
                       </div>
                     ) : null}
 
-                    {normalizeCreationMode(characterSchema.creation_mode) ===
-                    "SKILL_ALLOC" ? (
+                    {systemId === "COC_7E" ? (
                       <div>
-                        <div className="text-muted">技能分配（雙點池）</div>
+                        <div className="text-muted">
+                          技能點（屬性就緒後固定步驟）
+                        </div>
                         <div className="mt-1">
                           職業點：
                           {characterSchema.mode_config
-                            ?.occupational_point_formula ?? "—"}
+                            ?.occupational_point_formula ?? "EDU * 4"}
                           ，興趣點：
                           {characterSchema.mode_config
-                            ?.interest_point_formula ?? "—"}
+                            ?.interest_point_formula ?? "INT * 2"}
                         </div>
                       </div>
                     ) : null}
@@ -623,7 +668,7 @@ export function ScriptPage({
             是否要改成使用{" "}
             <span className="text-ink">
               {pendingCreationMode
-                ? CREATION_MODE_LABELS[pendingCreationMode]
+                ? creationModeLabel(pendingCreationMode, systemId)
                 : ""}
             </span>
             模式創角？AI 會重新評估角色的數值規則。
@@ -633,7 +678,7 @@ export function ScriptPage({
             <div className="rounded-md border border-border/40 bg-surface/40 p-3">
               <div className="text-sm font-medium text-ink">模式說明</div>
               <div className="mt-1 text-sm text-muted">
-                {CREATION_MODE_HINTS[pendingCreationMode]}
+                {creationModeHint(pendingCreationMode, systemId)}
               </div>
             </div>
           ) : null}
@@ -672,10 +717,10 @@ export function ScriptPage({
           style={{ left: tooltipAnchor.x, top: tooltipAnchor.y }}
         >
           <div className="mb-1 border-b border-border/50 pb-1 text-sm font-medium text-ink">
-            {CREATION_MODE_LABELS[hoveredCreationMode]}
+            {creationModeLabel(hoveredCreationMode, systemId)}
           </div>
           <div className="text-sm text-ink">
-            {CREATION_MODE_HINTS[hoveredCreationMode]}
+            {creationModeHint(hoveredCreationMode, systemId)}
           </div>
         </div>
       ) : null}

@@ -21,7 +21,12 @@ import {
   persistAgentPrefsFromStore,
   saveCampaign,
   type CampaignMeta,
+  type CampaignPersist,
 } from "@/lib/campaignStorage";
+import {
+  parseScriptPackImport,
+  readJsonFile,
+} from "@/lib/campaignPack";
 import { useAiPlayerStore } from "@/lib/aiPlayer";
 import {
   createGameSession,
@@ -246,8 +251,9 @@ export default function App() {
   );
 
   const enterCampaign = async (opts: {
-    mode: "new" | "open";
+    mode: "new" | "open" | "import";
     id?: string;
+    importData?: CampaignPersist;
   }) => {
     const attempt = ++connectAttemptRef.current;
     setBootstrapping(true);
@@ -286,6 +292,19 @@ export default function App() {
             .appendSystem("新劇本 Session 已開始。描述你想玩的故事吧。");
           persistActiveCampaign();
         }
+      } else if (opts.mode === "import") {
+        if (!opts.importData) return;
+        if (screen === "campaign") persistActiveCampaign();
+        saveCampaign(opts.importData);
+        hydrateCampaign(opts.importData);
+        await ensureSession();
+        if (attempt !== connectAttemptRef.current) return;
+        useGameStore
+          .getState()
+          .appendSystem(
+            `已匯入劇本「${opts.importData.title}」。可檢視藍圖後前往創角。`,
+          );
+        persistActiveCampaign();
       } else {
         if (!opts.id) return;
         if (screen === "campaign") persistActiveCampaign();
@@ -309,6 +328,22 @@ export default function App() {
       setShowSettings(true);
     } finally {
       setBootstrapping(false);
+    }
+  };
+
+  const importScriptFile = async (file: File) => {
+    try {
+      const raw = await readJsonFile(file);
+      const parsed = parseScriptPackImport(raw);
+      if (!parsed.ok) {
+        window.alert(parsed.message);
+        return;
+      }
+      await enterCampaign({ mode: "import", importData: parsed.campaign });
+    } catch (err) {
+      window.alert(
+        `匯入失敗：${err instanceof Error ? err.message : "無法解析 JSON"}`,
+      );
     }
   };
 
@@ -484,6 +519,7 @@ export default function App() {
             pedelecReady={preflight.ready}
             bootstrapping={bootstrapping}
             onCreate={() => void enterCampaign({ mode: "new" })}
+            onImportScript={(file) => void importScriptFile(file)}
             onOpen={(id) => void enterCampaign({ mode: "open", id })}
             onDelete={removeCampaign}
           />

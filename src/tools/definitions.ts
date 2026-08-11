@@ -186,7 +186,8 @@ export const setupScriptTool = defineTool({
       },
       recommended_creation_mode: {
         type: "string",
-        description: "DICE | ARRAY | POINT_BUY | SKILL_ALLOC",
+        description:
+          "決定屬性方式：DICE | ARRAY | POINT_BUY（CoC／D&D 皆同；勿用 SKILL_ALLOC——技能點是屬性後的固定步驟）",
       },
       tone_examples: {
         type: "array",
@@ -207,14 +208,15 @@ export const setupScriptTool = defineTool({
 export const generateCharacterSchemaTool = defineTool({
   name: "generate_character_schema",
   description:
-    "產生雙軌創角規則（數值 Stats + 劇情鉤子 Hooks）。SSOT 由前端依 creation_mode 擲骰／互斥陣列／購點／雙技能點池完成，禁止在對話中直接給定最終屬性數字。所有 label／技能名／說明／鉤子問題用繁體中文。",
+    "產生雙軌創角規則（數值 Stats + 劇情鉤子 Hooks）。SSOT 由前端依 creation_mode 擲骰／陣列／購點完成；CoC 屬性就緒後固定再分配職業／興趣技能點。禁止在對話中直接給定最終屬性數字。所有 label／技能名／說明／鉤子問題用繁體中文。",
   argsSchema: {
     type: "object",
     properties: {
       system_id: { type: "string", description: "COC_7E 或 DND_5E" },
       creation_mode: {
         type: "string",
-        description: "DICE | ARRAY | POINT_BUY | SKILL_ALLOC",
+        description:
+          "DICE | ARRAY | POINT_BUY（勿用 SKILL_ALLOC；CoC 技能點公式放 mode_config）",
       },
       attribute_defs: {
         type: "array",
@@ -235,20 +237,26 @@ export const generateCharacterSchemaTool = defineTool({
         type: "object",
         description: "依模式的點池／陣列／技能點公式",
         properties: {
-          point_buy_pool: { type: "number", description: "購點池上限" },
+          point_buy_pool: {
+            type: "number",
+            description:
+              "購點池：D&D 預設 27；CoC 預設 460（八項特性值加總）",
+          },
           standard_array: {
             type: "array",
             items: { type: "number" },
             description:
-              "標準陣列，長度必須等於 attribute_defs。D&D 六項：[15,14,13,12,10,8]；CoC 八項：[80,70,60,60,50,50,40,40]。禁止把 D&D 陣列用在 CoC。",
+              "標準陣列，長度必須等於 attribute_defs。D&D 六項：[15,14,13,12,10,8]；CoC Quick-Fire 八項：[80,70,60,60,50,50,50,40]。禁止把 D&D 陣列用在 CoC。",
           },
           occupational_point_formula: {
             type: "string",
-            description: "職業點公式，如 EDU * 4",
+            description:
+              "職業點公式，必須用 ASCII 星號 * 乘法（如 EDU * 4），禁止使用 × 或 x",
           },
           interest_point_formula: {
             type: "string",
-            description: "興趣點公式，如 INT * 2",
+            description:
+              "興趣點公式，必須用 ASCII 星號 * 乘法（如 INT * 2），禁止使用 × 或 x",
           },
           min_score: { type: "number" },
           max_score: { type: "number" },
@@ -258,10 +266,12 @@ export const generateCharacterSchemaTool = defineTool({
         type: "array",
         items: { type: "number" },
         description:
-          "ARRAY 模式可分配數值（可與 mode_config.standard_array 擇一）。長度必須＝屬性數；CoC 用 [80,70,60,60,50,50,40,40]，勿用 D&D 的 [15,14,13,12,10,8]。",
+          "ARRAY 模式可分配數值（可與 mode_config.standard_array 擇一）。長度必須＝屬性數；CoC Quick-Fire 用 [80,70,60,60,50,50,50,40]，勿用 D&D 的 [15,14,13,12,10,8]。",
       },
       point_buy: {
         type: "object",
+        description:
+          "購點設定。D&D：budget 27、min 8、max 15（累進花費表）。CoC：budget 460、min 40、max 90（花費＝特性值，八項加總＝460）。",
         properties: {
           budget: { type: "number" },
           min_score: { type: "number" },

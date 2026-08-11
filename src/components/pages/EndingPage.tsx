@@ -1,5 +1,8 @@
+import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EndingStage } from "@/components/stages/EndingStage";
+import { exportSessionZipDownload } from "@/lib/campaignPack";
+import { useGameStore } from "@/store/useGameStore";
 
 export function EndingPage({ onHome }: { onHome: () => void }) {
   return (
@@ -11,9 +14,21 @@ export function EndingPage({ onHome }: { onHome: () => void }) {
             完成成長檢定或儲存角色結果後會自動存檔；已結算過的場次再進來會直接進入回放。
           </p>
         </div>
-        <Button variant="secondary" onClick={onHome}>
-          返回首頁
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => {
+              const data = useGameStore.getState().toPersist();
+              exportSessionZipDownload(data);
+            }}
+          >
+            <Download className="h-4 w-4" />
+            匯出儲存
+          </Button>
+          <Button variant="secondary" onClick={onHome}>
+            返回首頁
+          </Button>
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <EndingStage />

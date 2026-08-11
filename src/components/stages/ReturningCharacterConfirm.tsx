@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { ArrowLeft, Play } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowLeft, Play, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   CONTINUITY_DURATION_LABELS,
@@ -30,12 +30,15 @@ export function ReturningCharacterConfirm({
   entry,
   onBack,
   onAssigned,
+  onCancelSelection,
   asPlayer = true,
 }: {
   entry: LibraryCharacter;
   onBack: () => void;
   /** 多人隊伍：帶入後回呼，不立刻開打 */
   onAssigned?: () => void;
+  /** 取消此卡帶入／清空對應隊員席 */
+  onCancelSelection?: () => void;
   /** false = AI 隊友席（仍佔用原卡；結局可選寫回） */
   asPlayer?: boolean;
 }) {
@@ -59,6 +62,17 @@ export function ReturningCharacterConfirm({
     ...entry.sheet,
     inventory: [...entry.sheet.inventory],
   }));
+  const [inventoryDraft, setInventoryDraft] = useState(() =>
+    entry.sheet.inventory.join("\n"),
+  );
+
+  useEffect(() => {
+    setSheet({
+      ...entry.sheet,
+      inventory: [...entry.sheet.inventory],
+    });
+    setInventoryDraft(entry.sheet.inventory.join("\n"));
+  }, [entry.sheet.id]);
 
   const suggested = useMemo(
     () => suggestContinuityBridge(lastCareerEndingType(entry.career)),
@@ -137,7 +151,11 @@ export function ReturningCharacterConfirm({
     setSheet((s) => ({ ...s, [key]: value }));
   };
 
-  const inventoryText = sheet.inventory.join("\n");
+  const parseInventoryDraft = (text: string) =>
+    text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
 
   const canConfirm =
     Boolean(sheet.name.trim()) &&
@@ -145,10 +163,7 @@ export function ReturningCharacterConfirm({
     !isTyping;
 
   const handleConfirm = () => {
-    const inventory = inventoryText
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
+    const inventory = parseInventoryDraft(inventoryDraft);
     const narrative = { ...sheet, inventory };
     const recovered = applyContinuityToLibrarySheet(
       {
@@ -190,23 +205,31 @@ export function ReturningCharacterConfirm({
       CONTINUITY_MODE_LABELS[normalizeContinuityChoice(choice).mode];
     appendSystem(
       asPlayer
-        ? `已帶入調查員「${next.name}」至席次 ${editingPartySlotIndex + 1}（${modeLabel}；開始冒險後將佔用此卡）。`
-        : `已帶入「${next.name}」至席次 ${editingPartySlotIndex + 1} 作為 AI 隊友（${modeLabel}；將佔用此卡；結局可選是否寫回檔案庫）。`,
+        ? `已帶入調查員「${next.name}」至隊員${editingPartySlotIndex + 1}（${modeLabel}；開始冒險後將佔用此卡）。`
+        : `已帶入「${next.name}」至隊員${editingPartySlotIndex + 1} 作為 AI 隊友（${modeLabel}；將佔用此卡；結局可選是否寫回檔案庫）。`,
     );
     if (partySize <= 1) {
       confirmCharacterAndPlay();
     } else {
-      appendSystem("請繼續完成其餘席次後再開始冒險。");
+      appendSystem("請繼續完成其餘隊員後再開始冒險。");
       onAssigned?.();
     }
   };
 
   return (
     <div className="space-y-4">
-      <Button size="sm" variant="ghost" onClick={onBack}>
-        <ArrowLeft className="h-3.5 w-3.5" />
-        返回選擇
-      </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="ghost" onClick={onBack}>
+          <ArrowLeft className="h-3.5 w-3.5" />
+          返回選擇
+        </Button>
+        {onCancelSelection ? (
+          <Button size="sm" variant="secondary" onClick={onCancelSelection}>
+            <X className="h-3.5 w-3.5" />
+            取消角色卡選擇
+          </Button>
+        ) : null}
+      </div>
 
       <div className="rounded-lg border border-border bg-surface p-4">
         <h3 className="brand-title text-lg text-ink">{sheet.name}</h3>
@@ -369,13 +392,13 @@ export function ReturningCharacterConfirm({
           <span className="text-muted">背包（每行一項）</span>
           <textarea
             className="min-h-[88px] w-full rounded-md border border-border bg-bg px-3 py-2 text-sm"
-            value={inventoryText}
-            onChange={(e) =>
-              updateField(
-                "inventory",
-                e.target.value.split("\n").map((l) => l.trim()).filter(Boolean),
-              )
-            }
+            value={inventoryDraft}
+            onChange={(e) => setInventoryDraft(e.target.value)}
+            onBlur={() => {
+              const inventory = parseInventoryDraft(inventoryDraft);
+              setInventoryDraft(inventory.join("\n"));
+              updateField("inventory", inventory);
+            }}
           />
         </label>
       </div>
@@ -386,7 +409,7 @@ export function ReturningCharacterConfirm({
         onClick={handleConfirm}
       >
         <Play className="h-4 w-4" />
-        {partySize > 1 ? "確認帶入此席次" : "確認上場，開始冒險"}
+        {partySize > 1 ? "確認帶入此隊員" : "確認上場，開始冒險"}
       </Button>
       {!canConfirm && sessionStatus !== "idle" ? (
         <p className="text-xs text-muted">Session 未就緒，請稍候再上場。</p>

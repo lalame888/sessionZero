@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { StickyNote, RefreshCw, CornerDownRight } from "lucide-react";
 import { MarkdownContent } from "@/components/chat/MarkdownContent";
 import { Button } from "@/components/ui/button";
@@ -38,10 +38,13 @@ type SelectionToolbar = {
 export function StoryLog({
   onAddSelectionToNote,
   narrativeControls,
+  header,
 }: {
   onAddSelectionToNote?: (seed: { content: string }) => void;
   /** PLAYING 階段啟用重抽／續寫 */
   narrativeControls?: boolean;
+  /** 置於訊息列表頂端（例：開場扉頁），隨紀錄捲動但不因 GM 開場而移除 */
+  header?: ReactNode;
 } = {}) {
   const messages = useGameStore((s) => s.messages);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
@@ -187,7 +190,8 @@ export function StoryLog({
       ref={containerRef}
       className="relative flex h-full max-h-full flex-col gap-3 overflow-y-auto overscroll-contain px-1 py-2"
     >
-      {visibleMessages.length === 0 ? (
+      {header ? <div className="shrink-0 px-1 py-2">{header}</div> : null}
+      {visibleMessages.length === 0 && !header ? (
         <p className="story-text text-sm text-muted">
           歡迎來到 SessionZero。描述你想玩的故事氛圍，GM 會與你討論劇本、系統與房規。
         </p>

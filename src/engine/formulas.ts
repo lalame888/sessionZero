@@ -112,9 +112,21 @@ export function recomputeDerived(
     // 專業 CoC 7e：HP = floor((CON+SIZ)/10)
     const maxHp = ready ? evaluateFormula(`floor((${con}+${siz})/10)`) : 0;
     const maxMp = ready ? evaluateFormula(`floor(${pow}/5)`) : 0;
-    const maxSan = ready ? pow : 0;
+    const mythos = Math.max(
+      0,
+      Math.floor(Number(sheet.skills["克蘇魯神話"] ?? 0) || 0),
+    );
+    // CoC 7e：起始 SAN＝POW；SAN 上限＝99−克蘇魯神話
+    const maxSan = ready ? Math.max(0, 99 - mythos) : 0;
+    const startingSan = ready ? Math.min(pow, maxSan) : 0;
     const dodge = dex > 0 ? evaluateFormula(`floor(${dex}/2)`) : 0;
-    const mov = cocMoveRate(str, dex, siz);
+    const baseMov = cocMoveRate(str, dex, siz);
+    const ageMovPenalty = Math.max(
+      0,
+      Math.floor(Number(sheet.coc_age_mod?.movPenalty ?? 0) || 0),
+    );
+    const mov =
+      baseMov > 0 ? Math.max(1, baseMov - ageMovPenalty) : 0;
     const { build, damage_bonus } = cocBuildAndDamageBonus(str, siz);
 
     /** 資源池同步：首次初始化或原本已滿 → 補滿；已消耗則保留並 clamp */
@@ -131,10 +143,31 @@ export function recomputeDerived(
       return Math.min(cur, nextMax);
     };
 
+    /** SAN：上限變大時不自動回滿（避免舊存檔 max=POW 被抬到 99 時整池補滿） */
+    const syncSan = (
+      prevCurrent: number | undefined,
+      prevMax: number | undefined,
+      nextMax: number,
+      initial: number,
+    ) => {
+      if (nextMax <= 0) return 0;
+      const max = prevMax ?? 0;
+      if (max <= 0) return Math.min(initial, nextMax);
+      const cur = prevCurrent ?? initial;
+      return Math.min(cur, nextMax);
+    };
+
     const skills = { ...sheet.skills };
     if (dodge > 0) {
-      // CoC：閃避技能與 derived.dodge 對齊為 DEX/2
-      skills["閃避"] = dodge;
+      // 閃避基礎＝DEX/2；可用職業／興趣點再提升，不可被 derived 重算蓋掉
+      const current = skills["閃避"];
+      if (current == null || current < dodge) {
+        skills["閃避"] = dodge;
+      }
+    }
+    // 創角／重算時確保神話技能欄存在（預設 0）
+    if (skills["克蘇魯神話"] == null) {
+      skills["克蘇魯神話"] = 0;
     }
 
     return {
@@ -159,10 +192,11 @@ export function recomputeDerived(
           max: maxMp,
         },
         san: {
-          current: syncResource(
+          current: syncSan(
             sheet.derived.san?.current,
             sheet.derived.san?.max,
             maxSan,
+            startingSan,
           ),
           max: maxSan,
         },
@@ -255,7 +289,7 @@ export function themeForSystem(
   return "neutral";
 }
 
-/** 進入冒險前：克蘇魯神話強制 0，閃避對齊 DEX/2 */
+/** 進入冒險前：克蘇魯神話強制 0；閃避不得低於 DEX/2（可保留創角加點） */
 export function normalizeCocCreationSheet(
   sheet: UniversalCharacterSheet,
 ): { sheet: UniversalCharacterSheet; forcedMythosToZero: boolean } {
@@ -268,8 +302,10 @@ export function normalizeCocCreationSheet(
     克蘇魯神話: 0,
   };
   const dex = sheet.attributes.DEX ?? 0;
-  const dodge = Math.floor(dex / 2);
-  if (dodge > 0) skills["閃避"] = dodge;
+  const dodgeBase = Math.floor(dex / 2);
+  if (dodgeBase > 0) {
+    skills["閃避"] = Math.max(skills["閃避"] ?? 0, dodgeBase);
+  }
   return {
     sheet: recomputeDerived({ ...sheet, skills }),
     forcedMythosToZero,
