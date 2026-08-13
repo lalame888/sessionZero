@@ -252,7 +252,8 @@ export const CAMPAIGN_FIELD_GROUPS: FieldGuideGroup[] = [
       {
         path: "npcs",
         label: "NPC 狀態",
-        meaning: "冒險中追蹤的 NPC：關係、生死／失蹤狀態與描述。",
+        meaning:
+          "冒險中追蹤的 NPC：關係、生死／失蹤狀態與描述。knownToPlayer=false 表示尚未登場，側欄不顯示。",
         getValue: (c) => c.npcs,
       },
       {

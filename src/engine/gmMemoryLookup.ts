@@ -39,6 +39,9 @@ export function formatLookupGameState(input: {
   party?: PartyMember[];
   playerMemberId?: string | null;
   incapacitatedCharacterIds?: string[];
+  /** 當前 phase 已註冊的 app tools（name + 短說明） */
+  availableTools?: { name: string; description: string }[];
+  toolsetLabel?: string;
 }): string {
   const c = input.character;
   const hp = c ? `${c.derived.hp.current}/${c.derived.hp.max}` : "N/A";
@@ -58,10 +61,71 @@ export function formatLookupGameState(input: {
     : "scene_id=（未標）";
   const incap = (input.incapacitatedCharacterIds ?? []).join(", ") || "無";
 
+  const pub = input.script.public_summary;
+  const hints = input.script.party_role_hints ?? [];
+  const scriptLines: string[] = [
+    `Title: ${pub?.title ?? "（未定）"}`,
+  ];
+  if (pub) {
+    scriptLines.push(`Genre: ${clip(pub.genre ?? "", 80) || "—"}`);
+    scriptLines.push(
+      `Protagonist role: ${clip(pub.protagonist_role ?? "", 160) || "—"}`,
+    );
+    if (pub.background) {
+      scriptLines.push(`Background: ${clip(pub.background, 360)}`);
+    }
+    if (pub.player_hook) {
+      scriptLines.push(`Player hook: ${clip(pub.player_hook, 200)}`);
+    }
+    if (pub.geography) {
+      scriptLines.push(`Geography: ${clip(pub.geography, 160)}`);
+    }
+    if (pub.known_facts?.length) {
+      scriptLines.push(
+        `Known facts: ${pub.known_facts
+          .slice(0, 6)
+          .map((f) => clip(f, 80))
+          .join("；")}`,
+      );
+    }
+  } else {
+    scriptLines.push("Public summary: （尚未 setup_script）");
+  }
+  if (input.script.recommended_creation_mode) {
+    scriptLines.push(
+      `Recommended creation_mode: ${input.script.recommended_creation_mode}`,
+    );
+  }
+  if (input.script.recommended_party_size != null || hints.length) {
+    scriptLines.push(
+      `Party design: size=${input.script.recommended_party_size ?? "?"} | hints=${
+        hints.length
+          ? hints
+              .map(
+                (h, i) =>
+                  `${i + 1}.${clip(h.role_title, 40)}（${clip(h.brief, 80)}）`,
+              )
+              .join("；")
+          : "無"
+      }`,
+    );
+  }
+
+  const toolLines =
+    input.availableTools && input.availableTools.length > 0
+      ? [
+          `Available tools (${input.toolsetLabel ?? "current phase"}; only call these):`,
+          ...input.availableTools.map(
+            (t) => `- ${t.name}: ${clip(t.description, 100)}`,
+          ),
+        ]
+      : [];
+
   return [
     "[lookup_game_state]",
     `Turn: ${input.turn} | System: ${input.script.system_id ?? "UNSET"} | Scale: ${input.script.scenario_scale ?? "?"}`,
-    `Title: ${input.script.public_summary?.title ?? "（未定）"}`,
+    ...scriptLines,
+    ...toolLines,
     `Location: ${input.location || "未知"} | ${scene}`,
     `Tension: ${input.sceneDirector?.tension ?? "?"} | Goal: ${clip(input.sceneDirector?.sceneGoal ?? "", 160) || "—"}`,
     `Player: ${c ? `${c.name} id=${c.id}` : "尚未創角"} | HP ${hp} | SAN ${san}`,

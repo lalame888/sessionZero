@@ -16,9 +16,13 @@ import { formatPartyRosterForGm } from "@/engine/partyNarrativeBrief";
 import { buildStructuredChapterSummary } from "@/engine/chapterSummary";
 import {
   formatScenarioTurnCanon,
+  resolveCanonicalSceneId,
 } from "@/engine/scenarioLorebook";
 import { lookupSrdEntries } from "@/engine/srdLorebook";
-import { SCENARIO_BIBLE_READ_HINT } from "@/lib/pedelec/sessionAssets";
+import {
+  GM_STANDING_RULES_READ_HINT,
+  SCENARIO_BIBLE_READ_HINT,
+} from "@/lib/pedelec/sessionAssets";
 import { isNoiseHistoryNarrative } from "@/lib/historyHygiene";
 import { looksLikeLeakedToolCall } from "@/lib/pedelec/leakedToolCall";
 import {
@@ -41,8 +45,27 @@ const BIO_FIELD_MAX = 220;
 /** seed 模式最多帶回幾則近對話（避免與 provider history 雙重疊加） */
 const SEED_DIALOGUE_MAX_MSGS = 4;
 
-const MEMORY_TOOL_HINT = `If unsure of facts: call lookup_game_state, lookup_history, or lookup_scenario_term. Do not invent sheet/bible facts. Never dump GM-only canon to the player.`;
+const MEMORY_TOOL_HINT = `If unsure of facts or live tools: call lookup_game_state (includes Available tools + script/SSOT). Continuity: lookup_history. Proper nouns / win/truth/timeline: lookup_scenario_term({ query, kind: "core" }). ${GM_STANDING_RULES_READ_HINT} Do not invent sheet/bible facts. Never dump GM-only canon to the player.`;
 
+
+function seedAlreadyHasScaleRequirements(input: ContextAssemblyInput): boolean {
+  const blob = [input.playerAction, ...(input.extraLayers ?? [])].join("\n");
+  return /SCENARIO SCALE\s*=/.test(blob);
+}
+
+/** 近對話不要回放正在送出的 User Action（Session 0 生成指令尤甚） */
+function messageDuplicatesPlayerAction(
+  content: string,
+  playerAction: string,
+): boolean {
+  const a = content.trim();
+  const b = playerAction.trim();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length >= 80 && b.includes(a)) return true;
+  if (b.length >= 80 && a.includes(b)) return true;
+  return false;
+}
 
 function truncateDialogueContent(text: string, max = DIALOGUE_LINE_MAX): string {
   const t = text.trim();
@@ -150,9 +173,13 @@ function buildSceneDirectorBlock(
 ): string | null {
   const d = input.sceneDirector;
   const scenes = input.script.hidden_full_script?.scenes ?? [];
+  const sceneId = resolveCanonicalSceneId(
+    scenes,
+    d?.currentSceneId,
+    input.location,
+  );
   const scene =
-    (d?.currentSceneId &&
-      scenes.find((s) => s.id === d.currentSceneId)) ||
+    (sceneId && scenes.find((s) => s.id === sceneId)) ||
     scenes.find((s) =>
       input.location &&
       (s.name.includes(input.location) ||
@@ -429,7 +456,10 @@ Scenario scale: ${normalizeScenarioScale(input.script.scenario_scale)}
 Public Title: ${input.script.public_summary?.title ?? "（討論中）"}
 Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
 
-  if (!input.script.public_summary) {
+  if (
+    !input.script.public_summary &&
+    !seedAlreadyHasScaleRequirements(input)
+  ) {
     layers.push(
       scenarioScaleRequirements(
         normalizeScenarioScale(input.script.scenario_scale),
@@ -506,6 +536,7 @@ ${hr}`);
     .filter((m) => m.role === "user" || m.role === "agent")
     .filter((m) => !looksLikeLeakedToolCall(m.content))
     .filter((m) => !isNoiseHistoryNarrative(m.content))
+    .filter((m) => !messageDuplicatesPlayerAction(m.content, input.playerAction))
     .slice(-SEED_DIALOGUE_MAX_MSGS);
   if (windowMsgs.length) {
     layers.push(

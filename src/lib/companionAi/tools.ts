@@ -39,7 +39,47 @@ export const passCompanionTurnTool = defineTool({
   },
 });
 
+export const companionLookupGameStateTool = defineTool({
+  name: "lookup_game_state",
+  description:
+    "查詢目前公開遊戲狀態（與人類玩家已知資訊相同）：劇本摘要、地點、隊伍、你的角色卡、線索、已知 NPC、玩家筆記、房規。決策前若不清楚現況請先呼叫。",
+  argsSchema: {
+    type: "object",
+    properties: {
+      focus: {
+        type: "string",
+        description: "可選：想確認的焦點（例如 clues、npcs、party）",
+      },
+    },
+  },
+});
+
+export const companionLookupHistoryTool = defineTool({
+  name: "lookup_history",
+  description:
+    "查詢章節摘要與／或近期對話。需要劇情連貫、回想剛才發生什麼時呼叫。",
+  argsSchema: {
+    type: "object",
+    properties: {
+      scope: {
+        type: "string",
+        description: "chapters | recent | both（預設 both）",
+      },
+      query: {
+        type: "string",
+        description: "可選關鍵詞過濾",
+      },
+      limit: {
+        type: "number",
+        description: "最多幾則（1–20，預設 8）",
+      },
+    },
+  },
+});
+
 export const companionAgentTools = [
+  companionLookupGameStateTool,
+  companionLookupHistoryTool,
   submitCompanionActionTool,
   passCompanionTurnTool,
 ] as const;

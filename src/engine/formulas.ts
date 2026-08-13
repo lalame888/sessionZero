@@ -3,6 +3,7 @@ import {
   clampSkillsToSystemBases,
   createEmptyCharacterShell,
 } from "@/engine/creation";
+import { mergeAliasedCocSkills } from "@/engine/skillCheck";
 import type { GameSystemID, UniversalCharacterSheet } from "@/types/game";
 
 export function abilityModifier(score: number): number {
@@ -296,9 +297,10 @@ export function normalizeCocCreationSheet(
   if (sheet.system_id !== "COC_7E") {
     return { sheet, forcedMythosToZero: false };
   }
-  const forcedMythosToZero = (sheet.skills["克蘇魯神話"] ?? 0) > 0;
+  const merged = mergeAliasedCocSkills(sheet.skills ?? {});
+  const forcedMythosToZero = (merged["克蘇魯神話"] ?? 0) > 0;
   const skills: Record<string, number> = {
-    ...sheet.skills,
+    ...merged,
     克蘇魯神話: 0,
   };
   const dex = sheet.attributes.DEX ?? 0;

@@ -15,7 +15,7 @@ import {
   extractEndingTitleFromNarrative,
   looksLikeEndingNarrative,
 } from "@/lib/endingDetect";
-import { shouldOfferOpeningRetry, findLatestOpeningFailure, hadPriorOpeningAttempt } from "@/lib/openingRetry";
+import { shouldOfferOpeningRetry, findLatestOpeningFailure, hadPriorOpeningAttempt, hasAgentNarrative } from "@/lib/openingRetry";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
 
@@ -59,10 +59,12 @@ export function PlayPage({
   composerDisabled,
   onRegenerate,
   onRetry,
+  onResendLastPlayer,
 }: {
   composerDisabled: boolean;
   onRegenerate?: () => void;
   onRetry?: () => void | Promise<void>;
+  onResendLastPlayer?: () => void | Promise<void>;
 }) {
   const suggestPlayerActions = useGameStore((s) => s.suggestPlayerActions);
   const setSuggestPlayerActions = useGameStore((s) => s.setSuggestPlayerActions);
@@ -131,12 +133,24 @@ export function PlayPage({
   useEffect(() => {
     if (phase !== "PLAYING") return;
     if (lastPlayerAction.trim()) return;
+    if (hasAgentNarrative(messages) && !offerOpeningRetry) {
+      if (retryAction?.kind === "opening") setRetryAction(null);
+      return;
+    }
     if (retryAction?.kind === "opening") return;
     setRetryAction({
       kind: "opening",
       label: isOpeningRetry ? "重試開場敘事" : "述說開場敘事",
     });
-  }, [phase, lastPlayerAction, retryAction?.kind, setRetryAction, isOpeningRetry]);
+  }, [
+    phase,
+    lastPlayerAction,
+    retryAction?.kind,
+    setRetryAction,
+    isOpeningRetry,
+    messages,
+    offerOpeningRetry,
+  ]);
 
   // sessionError 被清掉時，從系統訊息還原，讓開場失敗橫幅能顯示錯誤碼
   useEffect(() => {
@@ -284,10 +298,15 @@ export function PlayPage({
             header={phase === "PLAYING" ? <PlayTitleCard /> : undefined}
             onAddSelectionToNote={openCreateNote}
             narrativeControls={phase === "PLAYING"}
+            onResendLastPlayer={onResendLastPlayer}
           />
         </div>
         <div className="shrink-0">
-          <Composer disabled={composerDisabled} onRegenerate={onRegenerate} />
+          <Composer
+            disabled={composerDisabled}
+            onRegenerate={onRegenerate}
+            onResendLastPlayer={onResendLastPlayer}
+          />
           <AiPlayerToggle />
         </div>
       </main>

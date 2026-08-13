@@ -1,7 +1,9 @@
 import {
   listCocSkillCatalog,
+  resolveCocCatalogSkillDescription,
   resolveSkillBaseValue,
 } from "@/engine/creation";
+import { canonicalCocSkillName } from "@/engine/skillCheck";
 import type { RecommendedSkill, UniversalCharacterSheet } from "@/types/game";
 import type { CharacterCreationDraft } from "@/types/party";
 
@@ -57,7 +59,7 @@ export function inferExtraSkillsFromSheet(
     extras.push({
       name,
       base_value: resolvedBase,
-      description: "玩家自行加入的職業／個人技能",
+      description: resolveCocCatalogSkillDescription(name),
       is_occupational: (sheet.skills[name] ?? 0) > resolvedBase,
     });
   }
@@ -119,6 +121,67 @@ export function hydrateUiFromDraft(
     assignments: draft?.assignments ?? {},
     rolledPool: draft?.rolledPool ?? [],
   };
+}
+
+/** 將 AI 為此席重推的技能包轉成草稿覆寫＋基礎技能值（不改屬性配點方式） */
+export function buildSlotSkillBlueprint(
+  sheet: UniversalCharacterSheet,
+  schemaSkills: RecommendedSkill[],
+  aiSkills: RecommendedSkill[],
+): {
+  extraSkills: RecommendedSkill[];
+  occOverrides: Record<string, boolean>;
+  skills: Record<string, number>;
+} {
+  const canon = (name: string) =>
+    sheet.system_id === "COC_7E" ? canonicalCocSkillName(name) : name.trim();
+
+  const normalize = (sk: RecommendedSkill): RecommendedSkill => {
+    const name = canon(sk.name);
+    return {
+      ...sk,
+      name,
+      base_value: resolveSkillBaseValue(
+        sheet.system_id,
+        name,
+        sk.base_value,
+        sheet.attributes,
+      ),
+      is_occupational: Boolean(sk.is_occupational),
+    };
+  };
+
+  const normalizedSchema = schemaSkills.map(normalize);
+  const schemaNames = new Set(normalizedSchema.map((s) => s.name));
+
+  const aiByName = new Map<string, RecommendedSkill>();
+  for (const sk of aiSkills) {
+    if (!sk.name?.trim()) continue;
+    const next = normalize(sk);
+    aiByName.set(next.name, next);
+  }
+
+  const extraSkills = [...aiByName.values()].filter(
+    (sk) => !schemaNames.has(sk.name),
+  );
+
+  const occOverrides: Record<string, boolean> = {};
+  for (const sk of normalizedSchema) {
+    occOverrides[sk.name] = false;
+  }
+  for (const sk of aiByName.values()) {
+    occOverrides[sk.name] = Boolean(sk.is_occupational);
+  }
+
+  const skills: Record<string, number> = {};
+  for (const sk of normalizedSchema) {
+    skills[sk.name] = sk.base_value;
+  }
+  for (const sk of extraSkills) {
+    skills[sk.name] = sk.base_value;
+  }
+
+  return { extraSkills, occOverrides, skills };
 }
 
 /** 姓名＋屬性皆就緒 → 視為此席已建完（顯示用） */

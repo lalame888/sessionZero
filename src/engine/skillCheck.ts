@@ -81,12 +81,69 @@ export function resolveCocAttributeValueFromSheet(
 }
 
 const SKILL_ALIASES: Record<string, string[]> = {
-  神秘學: ["神祕學", "occult", "knowledgeoccult", "knowledge(occult)"],
+  神秘學: [
+    "神祕學",
+    "神話學",
+    "occult",
+    "knowledgeoccult",
+    "knowledge(occult)",
+  ],
+  閃避: ["閃躲", "dodge"],
   心理學: ["psychology"],
   偵查: ["侦查", "spothidden", "spothidden"],
   聆聽: ["listen"],
   圖書館使用: ["libraryuse", "library use"],
 };
+
+/** AI／舊卡常用的非官方技能名 → CoC 7e 正式名 */
+const COC_SKILL_CANON: Record<string, string> = {
+  神話學: "神秘學",
+  神祕學: "神秘學",
+  閃躲: "閃避",
+};
+
+export function canonicalCocSkillName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return trimmed;
+  if (COC_SKILL_CANON[trimmed]) return COC_SKILL_CANON[trimmed]!;
+  const key = normalizeSkillKey(trimmed);
+  for (const [from, to] of Object.entries(COC_SKILL_CANON)) {
+    if (normalizeSkillKey(from) === key) return to;
+  }
+  for (const [canon, aliases] of Object.entries(SKILL_ALIASES)) {
+    const group = [canon, ...aliases].map(normalizeSkillKey);
+    if (group.includes(key)) return canon;
+  }
+  return trimmed;
+}
+
+/** 合併別名技能（取較高％），避免「神話學」另開一欄繞過神秘學／克蘇魯神話 */
+export function mergeAliasedCocSkills(
+  skills: Record<string, number>,
+): Record<string, number> {
+  const next: Record<string, number> = {};
+  for (const [name, value] of Object.entries(skills)) {
+    const canon = canonicalCocSkillName(name);
+    const v = typeof value === "number" && Number.isFinite(value) ? value : 0;
+    next[canon] = Math.max(next[canon] ?? 0, v);
+  }
+  return next;
+}
+
+export function canonicalizeCocSheetSkills(
+  sheet: UniversalCharacterSheet,
+): UniversalCharacterSheet {
+  if (sheet.system_id !== "COC_7E") return sheet;
+  const skills = mergeAliasedCocSkills(sheet.skills ?? {});
+  const descriptions = sheet.skill_descriptions;
+  if (!descriptions) return { ...sheet, skills };
+  const nextDesc: Record<string, string> = {};
+  for (const [name, text] of Object.entries(descriptions)) {
+    const canon = canonicalCocSkillName(name);
+    if (!nextDesc[canon]?.trim()) nextDesc[canon] = text;
+  }
+  return { ...sheet, skills, skill_descriptions: nextDesc };
+}
 
 function aliasKeysFor(normalized: string): string[] {
   const keys = [normalized];

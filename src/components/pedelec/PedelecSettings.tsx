@@ -4,7 +4,11 @@ import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { persistAgentPrefsFromStore } from "@/lib/campaignStorage";
-import { listProviderOptions, loadPedelecSettings } from "@/lib/pedelec/preflight";
+import {
+  listProviderOptions,
+  loadPedelecSettings,
+  probePedelecAppConnected,
+} from "@/lib/pedelec/preflight";
 import { useGameStore } from "@/store/useGameStore";
 
 type DesktopSettings = {
@@ -24,6 +28,12 @@ export function PedelecSettingsPanel({
   const savedModel = useGameStore((s) => s.selectedModel);
   const setProvider = useGameStore((s) => s.setProvider);
   const setModel = useGameStore((s) => s.setModel);
+  const inspectOutgoingPrompt = useGameStore((s) => s.inspectOutgoingPrompt);
+  const setInspectOutgoingPrompt = useGameStore(
+    (s) => s.setInspectOutgoingPrompt,
+  );
+  const setShowInstallGuide = useGameStore((s) => s.setShowInstallGuide);
+  const setPreflight = useGameStore((s) => s.setPreflight);
 
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [desktop, setDesktop] = useState<DesktopSettings>({
@@ -36,6 +46,9 @@ export function PedelecSettingsPanel({
   const [error, setError] = useState<string | null>(null);
   const [savedProviderUnavailable, setSavedProviderUnavailable] =
     useState(false);
+  const [desktopConnected, setDesktopConnected] = useState<boolean | null>(
+    null,
+  );
 
   const availableProviders = useMemo(
     () => providers.filter((p) => p.available),
@@ -60,9 +73,24 @@ export function PedelecSettingsPanel({
       : undefined;
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setDesktopConnected(null);
+      return;
+    }
     setError(null);
+    setDesktopConnected(null);
     void (async () => {
+      const connected = await probePedelecAppConnected();
+      setDesktopConnected(connected);
+      if (!connected) {
+        setProviders([]);
+        setDesktop({ defaultProvider: null, defaultModels: {} });
+        setProviderDraft("");
+        setModelDraft(savedModel);
+        setSavedProviderUnavailable(false);
+        return;
+      }
+
       const [list, settings] = await Promise.all([
         listProviderOptions(),
         loadPedelecSettings(),
@@ -88,10 +116,52 @@ export function PedelecSettingsPanel({
     })();
   }, [open, savedModel, savedProvider]);
 
-  const canSave = providerDraft
-    ? availableProviders.some((p) => p.code === providerDraft) ||
-      (savedProviderUnavailable && providerDraft === savedProvider)
-    : Boolean(desktopDefault);
+  const canSave =
+    desktopConnected === true &&
+    (providerDraft
+      ? availableProviders.some((p) => p.code === providerDraft) ||
+        (savedProviderUnavailable && providerDraft === savedProvider)
+      : Boolean(desktopDefault));
+
+  if (open && desktopConnected === null) {
+    return (
+      <Modal open={open} onOpenChange={setOpen} title="Pedelec Provider / Model">
+        <p className="text-sm text-muted">正在確認 Desktop 連線…</p>
+      </Modal>
+    );
+  }
+
+  if (desktopConnected === false) {
+    return (
+      <Modal open={open} onOpenChange={setOpen} title="Pedelec 未連線">
+        <div className="space-y-4 text-sm">
+          <p className="text-ink">
+            Pedelec Desktop 目前未連線，無法讀取 Provider／Model。請先啟動
+            Desktop，再按「前往重新連線」。
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              onClick={() => {
+                setPreflight({
+                  ready: false,
+                  reason: "DESKTOP_DISCONNECTED",
+                  message:
+                    "Pedelec Desktop 未連線。請啟動 Desktop App 後按「重新檢查」。",
+                });
+                setOpen(false);
+                setShowInstallGuide(true);
+              }}
+            >
+              前往重新連線
+            </Button>
+            <Button variant="secondary" onClick={() => setOpen(false)}>
+              關閉
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal open={open} onOpenChange={setOpen} title="Pedelec Provider / Model">
@@ -156,6 +226,22 @@ export function PedelecSettingsPanel({
           />
         </div>
         {error ? <p className="text-danger">{error}</p> : null}
+        <div className="rounded-md border border-border bg-bg/60 px-3 py-3">
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              className="mt-1 h-4 w-4 accent-[var(--accent)]"
+              checked={inspectOutgoingPrompt}
+              onChange={(e) => setInspectOutgoingPrompt(e.target.checked)}
+            />
+            <span className="min-w-0">
+              <span className="block text-sm text-ink">檢視送出文字</span>
+              <span className="mt-0.5 block text-xs text-muted">
+                開啟後，每次實際送出給 AI 前會跳出預覽（字數與全文），確認後才送。
+              </span>
+            </span>
+          </label>
+        </div>
         <div className="flex gap-2">
           <Button
             disabled={!canSave || busy}
@@ -182,6 +268,8 @@ export function PedelecSettingsPanel({
                   selectedModel: overrideModel ?? "",
                   suggestPlayerActions:
                     useGameStore.getState().suggestPlayerActions,
+                  inspectOutgoingPrompt:
+                    useGameStore.getState().inspectOutgoingPrompt,
                   scenarioScale:
                     useGameStore.getState().script.scenario_scale,
                 });

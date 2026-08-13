@@ -465,7 +465,11 @@ export function GameSidebar({
   onRequestCreateNote: (seed?: { title?: string; content?: string }) => void;
 }) {
   const character = useGameStore((s) => s.character);
-  const npcs = useGameStore((s) => s.npcs);
+  const allNpcs = useGameStore((s) => s.npcs);
+  const npcs = useMemo(
+    () => allNpcs.filter((n) => n.knownToPlayer),
+    [allNpcs],
+  );
 
   return (
     <Tabs.Root defaultValue="sheet" className="flex h-full flex-col">

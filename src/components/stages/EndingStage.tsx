@@ -22,6 +22,7 @@ import {
 } from "@/engine/inventoryReturn";
 import { requestStorySynopsis } from "@/lib/adventureSynopsis/requestStorySynopsis";
 import { parseHistoryActorInput } from "@/lib/historySpeaker";
+import { isCthulhuMythosSkillName } from "@/engine/mythosGrowth";
 import { successQualityLabel } from "@/engine/skillCheck";
 import { resolveAvailableProvider } from "@/lib/pedelec/resolveProvider";
 import {
@@ -111,7 +112,7 @@ export function TimelineScrubber() {
           <div className="mt-3 rounded bg-bg/50 p-2 text-xs">
             <div>
               骰子：{entry.diceRecord.skillName}{" "}
-              {entry.diceRecord.isSecret ? "（原暗骰，現已揭曉）" : ""}
+              {entry.diceRecord.isSecret ? "（原暗骰）" : ""}
             </div>
             <div>
               {entry.diceRecord.diceType} → {entry.diceRecord.diceResult}（
@@ -294,7 +295,9 @@ export function EndingStage() {
           ]
         : [];
     }
-    const pending = [...(sheet.markedSkillsForGrowth ?? [])];
+    const pending = [...(sheet.markedSkillsForGrowth ?? [])].filter(
+      (s) => !isCthulhuMythosSkillName(s),
+    );
     if (!pending.length) {
       return ["本局沒有可成長的標記技能。"];
     }
@@ -415,7 +418,9 @@ export function EndingStage() {
     }
   }, [alreadySettled, campaignId, markEndingCharacterSettled]);
 
-  const marked = character?.markedSkillsForGrowth ?? [];
+  const marked = (character?.markedSkillsForGrowth ?? []).filter(
+    (s) => !isCthulhuMythosSkillName(s),
+  );
   const isCoc = character?.system_id === "COC_7E";
   const isDnd = character?.system_id === "DND_5E";
   const hasCharacter = Boolean(character?.name?.trim());
@@ -519,7 +524,9 @@ export function EndingStage() {
   const runCocGrowth = () => {
     const sheet = useGameStore.getState().character;
     if (!sheet) return;
-    const pending = [...(sheet.markedSkillsForGrowth ?? [])];
+    const pending = [...(sheet.markedSkillsForGrowth ?? [])].filter(
+      (s) => !isCthulhuMythosSkillName(s),
+    );
     if (!pending.length) {
       finishSettlement(["本局沒有可成長的標記技能。"]);
       return;
@@ -1026,7 +1033,9 @@ export function EndingStage() {
                   const saveLabel = fromLib
                     ? "寫回檔案庫（含履歷）"
                     : "存入檔案庫（含履歷）";
-                  const pending = m.sheet.markedSkillsForGrowth ?? [];
+                  const pending = (m.sheet.markedSkillsForGrowth ?? []).filter(
+                    (s) => !isCthulhuMythosSkillName(s),
+                  );
                   return (
                     <li
                       key={m.id}

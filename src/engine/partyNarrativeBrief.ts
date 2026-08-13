@@ -45,7 +45,7 @@ function isSlotConfigured(m: PartyMember | undefined): boolean {
 }
 
 /**
- * 創角「請 AI 設計角色敘事」用：摘要已就緒隊友與空席建議，供避免重複／平衡隊伍。
+ * 創角「請 AI 設計角色」用：摘要已就緒隊友與空席建議，供避免重複／平衡隊伍。
  */
 export function buildPartyNarrativeDesignContext(input: {
   party: PartyMember[];
@@ -162,7 +162,7 @@ export function formatPartyRosterForGm(
   ).length;
   return [
     `[PARTY ROSTER — ${sorted.length} 人同行；其中 AI 隊友 ${aiCount} 名]`,
-    "開場與場景敘事必須讓這些人在場可見（點名／同行／分工）；需要某 AI 隊友行動時呼叫 request_companion_action(companion_id=其 id)。玩家點名／指示隊友時必須喚起，勿自行代寫隊友言行。隊友是完整 PC：以其宣告為準，勿用第三人稱當 NPC 重述；結算檢定必須帶 character_id。",
+    "開場與場景敘事必須讓這些人在場可見（點名／同行／分工）。開場第一則禁止 request_companion_action（隊友靜態在場即可）。玩家點名／指示隊友時必須喚起，勿自行代寫隊友言行。隊友是完整 PC：以其宣告為準，勿用第三人稱當 NPC 重述；結算檢定必須帶 character_id。",
     ...lines,
   ].join("\n");
 }
@@ -189,6 +189,6 @@ export function buildOpeningPartyDirective(
     `【隊伍開場・強制】本場共 ${party.length} 人：1 名玩家 PC + ${companions.length} 名 AI 隊友。`,
     `開場 narrate_story 必須點名介紹所有同行者（至少姓名與職稱／定位），描述他們與玩家一同在場；隊友可有靜態姿態（坐下、整理裝備），但不可替玩家 PC 決定行動／對話／意圖。`,
     `AI 隊友：${names}`,
-    "之後場景預設他們仍同行；需要其專長／分頭行動時用 request_companion_action。",
+    "開場禁止 request_companion_action。之後場景預設他們仍同行；需要其專長／分頭行動或玩家點名時才用 request_companion_action。",
   ].join("\n");
 }

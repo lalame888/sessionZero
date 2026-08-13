@@ -4,6 +4,7 @@ export const setupScriptTool = defineTool({
   name: "setup_script",
   description:
     "初始化或更新劇本設定與（依 scenario_scale）正規劇本備註。Call when Session 0 premise is clear, and again when the solo player revises settings. Design for 1 player PC + optional AI companion PCs (recommended_party_size 1–4). Respect the player's chosen scenario_scale depth.",
+  timeoutMs: 90_000,
   argsSchema: {
     type: "object",
     properties: {
@@ -208,7 +209,7 @@ export const setupScriptTool = defineTool({
 export const generateCharacterSchemaTool = defineTool({
   name: "generate_character_schema",
   description:
-    "產生雙軌創角規則（數值 Stats + 劇情鉤子 Hooks）。SSOT 由前端依 creation_mode 擲骰／陣列／購點完成；CoC 屬性就緒後固定再分配職業／興趣技能點。禁止在對話中直接給定最終屬性數字。所有 label／技能名／說明／鉤子問題用繁體中文。",
+    "產生雙軌創角規則（數值 Stats + 劇情鉤子 Hooks）。SSOT 由前端依 creation_mode 擲骰／陣列／購點完成；CoC 屬性就緒後固定再分配職業／興趣技能點。禁止在對話中直接給定最終屬性數字。所有 label／技能名／說明／鉤子問題用繁體中文。若已在創角頁且藍圖存在：creation_mode／attribute_defs／mode_config 必須沿用現有值（全隊固定），僅可重推 recommended_skills（職業包／技能設計）與建議職稱／背包。",
   argsSchema: {
     type: "object",
     properties: {
@@ -350,7 +351,7 @@ export const generateCharacterSchemaTool = defineTool({
 export const fillCharacterNarrativeTool = defineTool({
   name: "fill_character_narrative",
   description:
-    "依目前劇本、創角藍圖與（若有）已完成的隊友敘事，一次填滿本席角色卡所有「敘事／身分」開放欄位。若訊息含隊伍現況：避免與已完成隊友撞名／撞職／撞背景，並讓職能互補以平衡隊伍。禁止填寫屬性點數或技能配點／技能％。必須填寫完整；僅在玩家明確要求時呼叫。所有文字必須繁體中文。",
+    "依目前劇本、創角藍圖與（若有）已完成的隊友敘事，一次填滿本席角色卡所有「敘事／身分」開放欄位。若訊息含隊伍現況：避免與已完成隊友撞名／撞職／撞背景，並讓職能互補以平衡隊伍。禁止填寫屬性點數或技能配點／技能％。可另給 recommended_skills 重推本席職業／技能設計（前端會清空既有配點；配點方式仍跟全隊藍圖）。必須填寫完整；僅在玩家明確要求時呼叫。所有文字必須繁體中文。",
   argsSchema: {
     type: "object",
     properties: {
@@ -447,6 +448,30 @@ export const fillCharacterNarrativeTool = defineTool({
         type: "string",
         description: "給玩家看的一句設計說明（繁中，可選）",
       },
+      recommended_skills: {
+        type: "array",
+        description:
+          "可選：為此席重推技能／職業包（name/description 繁中；CoC 約 8 項 is_occupational=true）。不要填技能％或配點數字；前端會套用並清空本席既有配點。",
+        items: {
+          type: "object",
+          properties: {
+            name: {
+              type: "string",
+              description: "技能顯示名稱，必須為繁體中文",
+            },
+            base_value: { type: "number" },
+            is_occupational: {
+              type: "boolean",
+              description: "是否為職業技能（可花職業點）",
+            },
+            description: {
+              type: "string",
+              description: "技能說明，必須為繁體中文",
+            },
+          },
+          required: ["name", "base_value", "description"],
+        },
+      },
     },
     required: [
       "name",
@@ -482,7 +507,8 @@ export const narrateStoryTool = defineTool({
       },
       scene_id: {
         type: "string",
-        description: "對應 bible scenes[].id（若可知）",
+        description:
+          "必須是 bible scenes[].id 原樣（例如 s02_inn）。禁止自創後綴（s02_inn_lobby）。若不確定，先 lookup_scenario_term。",
       },
       scene_goal: {
         type: "string",
@@ -498,7 +524,8 @@ export const narrateStoryTool = defineTool({
       },
       npc_updates: {
         type: "array",
-        description: "首次會面或狀態變化的 NPC，寫入側欄",
+        description:
+          "僅填玩家已見面、可公開知道的 NPC。relation/description 用玩家可見態度，禁止寫感染／神話／隱藏身分。未登場者不要列。",
         items: {
           type: "object",
           properties: {
@@ -585,7 +612,7 @@ export const secretCheckRequestTool = defineTool({
 export const updateGameStatsTool = defineTool({
   name: "update_game_stats",
   description:
-    "修改角色數值、血量或背包。預設為玩家 PC；若變更 AI 隊友請帶 character_id。",
+    "修改角色數值、血量或背包。預設為玩家 PC；若變更 AI 隊友請帶 character_id。CoC：因神話遭遇扣 SAN 時 reason 須含神話／克蘇魯／禁書／古神等，引擎會自動把克蘇魯神話 + 等量％並重算 SAN 上限；讀禁書另可直接 key=克蘇魯神話 加％。禁止用 mark_skill_success 處理克蘇魯神話。",
   argsSchema: {
     type: "object",
     properties: {
@@ -614,7 +641,8 @@ export const updateGameStatsTool = defineTool({
 
 export const markSkillSuccessTool = defineTool({
   name: "mark_skill_success",
-  description: "標記成功檢定的技能，以便在遊戲結束時進行成長升級檢定。",
+  description:
+    "標記成功檢定的技能，以便在遊戲結束時進行成長升級檢定。不可用於「克蘇魯神話」（該技能在遭遇／禁書當下以 update_game_stats 即時增加）。",
   argsSchema: {
     type: "object",
     properties: {
@@ -667,7 +695,8 @@ export const triggerMadnessTool = defineTool({
 
 export const registerNpcTool = defineTool({
   name: "register_npc",
-  description: "登記登場 NPC 的名字、態度與生死狀態。",
+  description:
+    "登記玩家已見面的 NPC（名字、公開態度、生死）。禁止寫入感染／神話等隱藏資訊；未登場者不要登記。不會對玩家顯示系統訊息。",
   argsSchema: {
     type: "object",
     properties: {
@@ -768,7 +797,7 @@ export const lookupScenarioTermTool = defineTool({
 export const lookupGameStateTool = defineTool({
   name: "lookup_game_state",
   description:
-    "查詢目前遊戲 SSOT 快照（地點、HP/SAN、物品、線索標題、已知 NPC、隊伍、場景導演）。DELTA 回合不確定狀態時呼叫；勿對玩家貼出完整內部快照。",
+    "查詢目前遊戲 SSOT：劇本公開摘要、地點、HP/SAN、物品、線索、NPC、隊伍，以及「Available tools」（當前 phase 已註冊的 app tools）。Session 0／DELTA 不確定狀態或工具清單時呼叫；勿對玩家貼出完整內部快照。",
   argsSchema: {
     type: "object",
     properties: {
@@ -803,6 +832,26 @@ export const lookupHistoryTool = defineTool({
   },
 });
 
+/** Session 0：按需取回既有劇本壓縮摘要，避免第一則 -p 塞爆 */
+export const lookupPriorScriptDesignTool = defineTool({
+  name: "lookup_prior_script_design",
+  description:
+    "Session 0 only. Fetch one prior campaign's compressed design summary (truth/clues/win/scenes) by id or 1-based catalog index. Use after reading PRIOR SCRIPT CATALOG when you need detail to avoid repeating a plot. Do not fetch all ten unless necessary.",
+  argsSchema: {
+    type: "object",
+    properties: {
+      id: {
+        type: "string",
+        description: "Campaign id from the PRIOR SCRIPT CATALOG line (id=…)",
+      },
+      index: {
+        type: "number",
+        description: "1-based index from the catalog (1–10)",
+      },
+    },
+  },
+});
+
 export const allSessionTools = [
   setupScriptTool,
   generateCharacterSchemaTool,
@@ -820,4 +869,34 @@ export const allSessionTools = [
   lookupScenarioTermTool,
   lookupGameStateTool,
   lookupHistoryTool,
+  lookupPriorScriptDesignTool,
 ] as const;
+
+/** PLAYING／ENDING：卸下 Session 0 專用 tools，避免誤 call 與縮小 -p tool 目錄 */
+export const playingSessionTools = [
+  narrateStoryTool,
+  secretCheckRequestTool,
+  updateGameStatsTool,
+  markSkillSuccessTool,
+  recordClueTool,
+  triggerMadnessTool,
+  registerNpcTool,
+  endGameSessionTool,
+  requestCompanionActionTool,
+  lookupRuleTool,
+  lookupScenarioTermTool,
+  lookupGameStateTool,
+  lookupHistoryTool,
+] as const;
+
+export type SessionToolName = (typeof allSessionTools)[number]["name"];
+
+/** lookup_game_state 用的短工具目錄 */
+export function listToolsForLookup(
+  tools: readonly { name: string; description: string }[],
+): { name: string; description: string }[] {
+  return tools.map((t) => ({
+    name: t.name,
+    description: t.description,
+  }));
+}

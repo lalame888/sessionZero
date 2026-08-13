@@ -347,9 +347,18 @@ export function normalizeBackgroundQuestions(
 /** 解析：4d6dl1 | 3d6x5 | 2d6+6x5 | NdM */
 export function rollCreationFormula(formula: string): {
   total: number;
+  /** 完整說明（含公式），供系統訊息／幸運記錄（純文字，無粗體標記） */
   detail: string;
+  /**
+   * 僅結果段；骰面以 *n* 標粗（UI 渲染為粗體）。
+   * 例：([*4*, *5*, *2*] = 11)×5 = 55
+   */
+  resultDetail: string;
 } {
   const f = formula.trim().toLowerCase().replace(/\s+/g, "");
+  const boldFaces = (rolls: number[]) =>
+    rolls.map((n) => `*${n}*`).join(", ");
+  const stripBoldMarks = (s: string) => s.replace(/\*(\d+)\*/g, "$1");
 
   const dl = f.match(/^(\d*)d(\d+)dl(\d+)$/);
   if (dl) {
@@ -362,29 +371,45 @@ export function rollCreationFormula(formula: string): {
     ).sort((a, b) => a - b);
     const kept = rolls.slice(drop);
     const total = kept.reduce((s, n) => s + n, 0);
+    const resultDetail = `([${boldFaces(rolls)}] → [${boldFaces(kept)}] = ${total})`;
     return {
       total,
-      detail: `${formula} [${rolls.join(",")}]→[${kept.join(",")}] = ${total}`,
+      resultDetail,
+      detail: `${formula} ${stripBoldMarks(resultDetail)}`,
     };
   }
 
-  const mul = f.match(/^(\d*)d(\d+)(?:\+(\d+))?x(\d+)$/);
+  // CoC 常見寫法：
+  // - 3d6x5（目前專案最常用）
+  // - 3d6*5 / 3d6×5（AI / 使用者可能改寫乘號）
+  // 支援括號寫法：如 (2d6+6)*5
+  // - 左邊可能被包在括號：(...)xN 或 (...) * N
+  const mul = f.match(
+    /^\(?(\d*)d(\d+)(?:\+(\d+))?\)?([x*×✕✖＊])(\d+)$/,
+  );
   if (mul) {
     const count = Number(mul[1] || 1);
     const sides = Number(mul[2]);
     const add = Number(mul[3] || 0);
-    const times = Number(mul[4]);
+    const times = Number(mul[5]);
     const rolled = rollDice(`${count}d${sides}`);
-    const inner = rolled.total + add;
-    const total = inner * times;
+    const faceSum = rolled.rolls.reduce((s, n) => s + n, 0);
+    const total = (faceSum + add) * times;
+    const resultDetail = `([${boldFaces(rolled.rolls)}] = ${faceSum}${add ? `+${add}` : ""})×${times} = ${total}`;
     return {
       total,
-      detail: `${formula} (${rolled.detail}${add ? `+${add}` : ""})×${times} = ${total}`,
+      resultDetail,
+      detail: `${formula} ${stripBoldMarks(resultDetail)}`,
     };
   }
 
   const plain = rollDice(f.includes("d") ? f : "3d6");
-  return { total: plain.total, detail: plain.detail };
+  const resultDetail = `([${boldFaces(plain.rolls)}] = ${plain.total})`;
+  return {
+    total: plain.total,
+    resultDetail,
+    detail: `${formula} ${stripBoldMarks(resultDetail)}`,
+  };
 }
 
 /** 安全評估如 EDU*4、INT*2（相容 AI 常寫的 ×、x 乘號） */
@@ -626,11 +651,15 @@ export function resolveSkillBaseValue(
   if (name === "閃避" || name.startsWith("閃避")) {
     const dexBase = Math.floor((attributes?.DEX ?? 0) / 2);
     const fromAi =
-      typeof baseValue === "number" && baseValue >= 0 ? baseValue : 0;
+      typeof baseValue === "number" &&
+      baseValue >= 0 &&
+      baseValue <= 40
+        ? baseValue
+        : 0;
     return Math.max(catalog, fromAi, dexBase);
   }
-  // 不可低於系統基礎值（避免 AI 把心理學設成 5% 等）
-  if (typeof baseValue === "number" && baseValue >= 0) {
+  // 不可低於系統基礎值；但拒絕把「建議最終％」（如 60、81）誤當基礎抬高
+  if (typeof baseValue === "number" && baseValue >= 0 && baseValue <= 40) {
     return Math.max(catalog, baseValue);
   }
   return catalog;
@@ -704,11 +733,25 @@ export const COC_SYSTEM_SKILL_DESCRIPTIONS: Record<string, string> = {
     "常見區間：落魄 0–5、溫飽 6–15、一般 16–39、小康 40–59、富裕 60–79、名流 80–99。",
   ].join("\n\n"),
   克蘇魯神話: [
-    "克蘇魯神話：對神話真相的理解（技能％），創角通常為 0。",
-    "不可在開場前用職業／興趣點提升；冒險中經遭遇、秘典等成長。",
-    "連動：SAN 上限＝99−克蘇魯神話。",
+    "克蘇魯神話：對宇宙中禁忌真相、古神與跨維存在之理解的程度（技能％）。",
+    "創角：開場固定 0%，不可使用職業點或興趣點提升。",
+    "局中成長（非結局成長檢定）：因神話遭遇損失多少 SAN，即時 + 等量克蘇魯神話％；讀禁書／儀式則依標定％立刻增加。",
+    "與理智（SAN）連動：起始 SAN＝POW；SAN 上限＝99−克蘇魯神話（神話越高，精神崩潰後難以恢復的極限越低）。",
+    "與神秘學的差異：神秘學是民間傳說與未驗證秘術；克蘇魯神話是親眼面對真相後無法抹除的認知烙印。",
+    "檢定用途：辨識神話符號、儀式、怪物與禁典內容；理解超越人智的現象。",
   ].join("\n\n"),
 };
+
+/** 自行加入技能（非藍圖）的預設占位說明；有系統常駐說明時應優先使用後者 */
+export const COC_GENERIC_EXTRA_SKILL_DESCRIPTION =
+  "玩家自行加入的職業／個人技能";
+
+/** 創角目錄／自行加入技能：系統常駐說明優先，否則回退占位文字 */
+export function resolveCocCatalogSkillDescription(name: string): string {
+  return (
+    COC_SYSTEM_SKILL_DESCRIPTIONS[name] ?? COC_GENERIC_EXTRA_SKILL_DESCRIPTION
+  );
+}
 
 /** 解析技能說明：角色卡 → 藍圖 → 系統常駐 */
 export function resolveSkillDescription(
@@ -720,11 +763,18 @@ export function resolveSkillDescription(
   },
 ): string {
   const fromSheet = opts?.sheetDescriptions?.[skillName]?.trim();
-  if (fromSheet) return fromSheet;
+  if (
+    fromSheet &&
+    fromSheet !== COC_GENERIC_EXTRA_SKILL_DESCRIPTION
+  ) {
+    return fromSheet;
+  }
 
   const fromSchema = opts?.schemaSkills?.find((s) => s.name === skillName)
     ?.description?.trim();
-  if (fromSchema) return fromSchema;
+  if (fromSchema && fromSchema !== COC_GENERIC_EXTRA_SKILL_DESCRIPTION) {
+    return fromSchema;
+  }
 
   if (opts?.systemId === "COC_7E" || opts?.systemId == null) {
     const system = COC_SYSTEM_SKILL_DESCRIPTIONS[skillName];
@@ -750,16 +800,21 @@ export function enrichCharacterSheetMeta(
     skill_descriptions[sk.name] = desc;
   }
 
-  // 補上系統常駐技能說明（藍圖未提供時）
+  // 補上系統常駐技能說明（藍圖未提供時；占位文字可被系統說明覆寫）
   if (sheet.system_id === "COC_7E") {
+    const shouldReplaceWithSystem = (existing: string | undefined) =>
+      !existing?.trim() ||
+      existing.trim() === COC_GENERIC_EXTRA_SKILL_DESCRIPTION;
+
     for (const name of Object.keys(sheet.skills ?? {})) {
-      if (skill_descriptions[name]?.trim()) continue;
+      if (!shouldReplaceWithSystem(skill_descriptions[name])) continue;
       const systemDesc = COC_SYSTEM_SKILL_DESCRIPTIONS[name];
       if (systemDesc) skill_descriptions[name] = systemDesc;
     }
-    // 即使尚未出現在 skills 也預寫（信用評級／閃避常為系統固定）
+    // 即使尚未出現在 skills 也預寫（信用評級／閃避／克蘇魯神話等常為系統固定）
     for (const [name, desc] of Object.entries(COC_SYSTEM_SKILL_DESCRIPTIONS)) {
-      if (!skill_descriptions[name]?.trim()) skill_descriptions[name] = desc;
+      if (!shouldReplaceWithSystem(skill_descriptions[name])) continue;
+      skill_descriptions[name] = desc;
     }
   }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { StickyNote, RefreshCw, CornerDownRight } from "lucide-react";
+import { StickyNote, RefreshCw, CornerDownRight, RotateCw } from "lucide-react";
 import { MarkdownContent } from "@/components/chat/MarkdownContent";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,6 +10,11 @@ import { isCorruptedNarrativeFragment } from "@/lib/narrativeDedupe";
 import { parseHistoryActorInput } from "@/lib/historySpeaker";
 import { looksLikeLeakedToolCall } from "@/lib/pedelec/leakedToolCall";
 import { isGmMetaOnlyNarrative, stripGmMetaPrompts } from "@/lib/stripGmMetaPrompts";
+import {
+  isHiddenDuplicatePlayerMessage,
+  isPlayerVisibleSystemMessage,
+  playerMessageNeedsResend,
+} from "@/lib/playTurnState";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
 
@@ -39,28 +44,35 @@ export function StoryLog({
   onAddSelectionToNote,
   narrativeControls,
   header,
+  onResendLastPlayer,
 }: {
   onAddSelectionToNote?: (seed: { content: string }) => void;
   /** PLAYING 階段啟用重抽／續寫 */
   narrativeControls?: boolean;
   /** 置於訊息列表頂端（例：開場扉頁），隨紀錄捲動但不因 GM 開場而移除 */
   header?: ReactNode;
+  onResendLastPlayer?: () => void | Promise<void>;
 } = {}) {
   const messages = useGameStore((s) => s.messages);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
+  const sessionError = useGameStore((s) => s.sessionError);
+  const phase = useGameStore((s) => s.phase);
   const pendingDice = useGameStore((s) => s.pendingDice);
   const containerRef = useRef<HTMLDivElement>(null);
   const isTyping = useGameStore((s) => s.isTyping);
   const [toolbar, setToolbar] = useState<SelectionToolbar | null>(null);
-  const [busy, setBusy] = useState<"regen" | "continue" | null>(null);
+  const [busy, setBusy] = useState<"regen" | "continue" | "resend" | null>(null);
 
   const visibleMessages = messages.filter(
     (m) =>
       !(
-        m.role === "agent" &&
-        (looksLikeLeakedToolCall(m.content) ||
-          isCorruptedNarrativeFragment(m.content) ||
-          isGmMetaOnlyNarrative(m.content))
+        (m.role === "agent" &&
+          (!(m.content ?? "").trim() ||
+            looksLikeLeakedToolCall(m.content) ||
+            isCorruptedNarrativeFragment(m.content) ||
+            isGmMetaOnlyNarrative(m.content))) ||
+        (m.role === "system" && !isPlayerVisibleSystemMessage(m.content)) ||
+        isHiddenDuplicatePlayerMessage(messages, m.id)
       ),
   );
 
@@ -185,6 +197,16 @@ export function StoryLog({
     }
   };
 
+  const runResend = async () => {
+    if (!onResendLastPlayer || busy != null || isTyping) return;
+    setBusy("resend");
+    try {
+      await onResendLastPlayer();
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div
       ref={containerRef}
@@ -237,6 +259,29 @@ export function StoryLog({
                 {isCompanion ? companionParsed!.body : m.content}
               </div>
             )}
+            {onResendLastPlayer &&
+            playerMessageNeedsResend(messages, m.id, {
+              sessionStatus,
+              sessionError,
+              isTyping,
+              phase,
+            }) ? (
+              <div className="mt-2 flex justify-end border-t border-border/50 pt-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="h-7 gap-1 px-2 text-[11px]"
+                  disabled={busy != null}
+                  onClick={() => void runResend()}
+                >
+                  <RotateCw
+                    className={`h-3 w-3 ${busy === "resend" ? "animate-spin" : ""}`}
+                  />
+                  {busy === "resend" ? "重新發送中…" : "重新發送"}
+                </Button>
+              </div>
+            ) : null}
             {narrativeControls &&
             m.role === "agent" &&
             m.id === lastAgentId ? (

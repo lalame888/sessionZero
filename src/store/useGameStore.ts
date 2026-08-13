@@ -11,6 +11,18 @@ import {
   themeForSystem,
 } from "@/engine/formulas";
 import {
+  canonicalCocSkillName,
+  canonicalizeCocSheetSkills,
+  resolveCocAttributeKeyFromCheckName,
+} from "@/engine/skillCheck";
+import {
+  CTHULHU_MYTHOS_SKILL,
+  clampCthulhuMythos,
+  computeAutoMythosGain,
+  isCthulhuMythosSkillName,
+} from "@/engine/mythosGrowth";
+import { resolveCanonicalSceneId } from "@/engine/scenarioLorebook";
+import {
   badEndingWinConflictWarning,
   emptyWinProgress,
   noteClueForWinProgress,
@@ -31,7 +43,7 @@ import {
   resolveSkillBaseValue,
   resolveStandardArray,
 } from "@/engine/creation";
-import { resolveCocAttributeKeyFromCheckName } from "@/engine/skillCheck";
+import { buildSlotSkillBlueprint } from "@/engine/creationDraft";
 import {
   campaignTitleFromState,
   createEmptyCampaignPersist,
@@ -64,6 +76,7 @@ import type {
   PreflightState,
   RetryAction,
   RuleLookupResult,
+  RecommendedSkill,
   ScenarioScale,
   SceneDirectorState,
   ScriptState,
@@ -73,6 +86,15 @@ import type {
 } from "@/types/game";
 import type { CharacterStatSnapshot } from "@/types/characterLibrary";
 import { captureStatSnapshot } from "@/engine/adventureDossier";
+import {
+  npcNameMentionedInText,
+  toStoredNpc,
+} from "@/engine/npcPublic";
+import { uniqueNarrativeSuffix } from "@/lib/narrativeDedupe";
+import {
+  isBlockingPlayerMessage,
+  isCompanionChatMessage,
+} from "@/lib/playTurnState";
 import {
   bindCharacterToCampaign,
   getLibraryCharacter,
@@ -137,6 +159,8 @@ interface GameStore {
   composerDraft: string;
   lastPlayerAction: string;
   suggestPlayerActions: boolean;
+  /** 送出前預覽即將 session.sendText 的全文 */
+  inspectOutgoingPrompt: boolean;
   showInstallGuide: boolean;
   showSettings: boolean;
   isTyping: boolean;
@@ -208,6 +232,7 @@ interface GameStore {
   setModel: (m: string) => void;
   setComposerDraft: (v: string) => void;
   setSuggestPlayerActions: (v: boolean) => void;
+  setInspectOutgoingPrompt: (v: boolean) => void;
   setShowInstallGuide: (v: boolean) => void;
   setShowSettings: (v: boolean) => void;
   setIsTyping: (v: boolean) => void;
@@ -221,6 +246,7 @@ interface GameStore {
   replaceLastNarrative: (narrative: string) => void;
   /** 移除最近一則 agent 敘事訊息（重抽前） */
   removeLastAgentMessage: () => void;
+  removeLastUserMessage: () => void;
 
   setupScript: (args: {
     system_id: string;
@@ -279,11 +305,21 @@ interface GameStore {
   ) => void;
   togglePresetRule: (rule: string) => void;
   setCharacterSchema: (schema: CharacterSchemaState) => void;
+  /**
+   * 創角頁為「目前席次」套用 AI 重推的技能／職業包。
+   * 不改 creation_mode／屬性配點方式；清空本席技能配點。
+   */
+  applySlotSkillBlueprint: (payload: {
+    recommended_skills: RecommendedSkill[];
+    starting_inventory?: string[];
+    role_title_suggestion?: string;
+    silent?: boolean;
+  }) => void;
   setCharacter: (sheet: UniversalCharacterSheet) => void;
   updateCharacterField: (
     updater: (sheet: UniversalCharacterSheet) => UniversalCharacterSheet,
   ) => void;
-  /** AI 填入敘事欄位；不更動屬性／技能配點 */
+  /** AI 填入敘事欄位；不更動屬性配點。若帶 recommended_skills 則重設本席技能藍圖並清空配點 */
   applyCharacterNarrative: (payload: {
     name?: string;
     role_title?: string;
@@ -308,6 +344,7 @@ interface GameStore {
     backstory_hooks?: { id: string; answer: string }[];
     inventory?: string[];
     player_note?: string;
+    recommended_skills?: RecommendedSkill[];
   }) => void;
   applyStatChanges: (
     changes: { key: string; change_amount: number; reason: string }[],
@@ -329,7 +366,9 @@ interface GameStore {
   ) => void;
   removePlayerNote: (note_id: string) => void;
   triggerMadness: (madness: MadnessStatus) => void;
-  registerNpc: (npc: NPCItem) => void;
+  registerNpc: (npc: NPCItem, opts?: { mentionText?: string }) => void;
+  /** 敘事點到名字時，將已登記 NPC 標為玩家已知 */
+  revealNpcsMentionedIn: (text: string) => void;
   setPendingDice: (dice: PendingDice | null, resolver?: GameStore["diceResolver"]) => void;
   clearDiceResolver: () => void;
   setSecretRollActive: (v: boolean) => void;
@@ -342,6 +381,8 @@ interface GameStore {
   narrateFromTool: (narrative: string, systemNotice?: string) => void;
   /** 合併同輪檢定後重寫的重複 GM 訊息 */
   collapseNarrativeRewrites: () => void;
+  /** 隊友氣泡之後若 GM 重貼上一則敘事，只留新段落 */
+  trimAgentRewriteAfterCompanion: () => void;
   /** 玩家尚未行動時，清掉不完整開場敘事（供首次／重試開場） */
   clearIncompleteOpening: (mode?: "first" | "retry") => void;
   endGame: (ending: EndingState) => void;
@@ -400,6 +441,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   composerDraft: "",
   lastPlayerAction: "",
   suggestPlayerActions: false,
+  inspectOutgoingPrompt: false,
   showInstallGuide: false,
   showSettings: false,
   isTyping: false,
@@ -470,6 +512,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setModel: (m) => set({ selectedModel: m }),
   setComposerDraft: (v) => set({ composerDraft: v }),
   setSuggestPlayerActions: (v) => set({ suggestPlayerActions: v }),
+  setInspectOutgoingPrompt: (v) => set({ inspectOutgoingPrompt: v }),
   setShowInstallGuide: (v) => set({ showInstallGuide: v }),
   setShowSettings: (v) => set({ showSettings: v }),
   setIsTyping: (v) => set({ isTyping: v }),
@@ -632,7 +675,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         ? "player"
         : "ai";
 
-    set({ editingPartySlotIndex: slot });
+    set({ editingPartySlotIndex: slot, character: blank });
     get().upsertPartyMemberAtSlot(slot, blank, {
       controller,
       roleHint: hint,
@@ -651,10 +694,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
           | "ai",
       }));
       const player = party.find((m) => m.slotIndex === slot);
+      const playerId = player?.id ?? s.playerMemberId;
+      const playerSheet = getPlayerSheet(party, playerId, s.character);
       return {
         party,
-        playerMemberId: player?.id ?? s.playerMemberId,
-        character: player?.sheet ?? s.character,
+        playerMemberId: playerId,
+        character: playerSheet ?? player?.sheet ?? s.character,
         viewedPartyMemberId: player?.id ?? s.viewedPartyMemberId,
       };
     });
@@ -715,12 +760,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
             : party.find((m) => m.controller === "player")?.id ??
               s.playerMemberId;
       const playerSheet =
-        getPlayerSheet(party, playerId, migrated) ?? migrated;
+        getPlayerSheet(party, playerId, s.character) ??
+        (controller === "player" ? migrated : s.character);
+      const syncCharacterToEditor =
+        s.phase !== "PLAYING" && s.editingPartySlotIndex === slot;
       return {
         party,
         playerMemberId: playerId,
-        character:
-          s.editingPartySlotIndex === slot || controller === "player"
+        character: controller === "player"
+          ? migrated
+          : syncCharacterToEditor
             ? migrated
             : playerSheet,
         viewedPartyMemberId: s.viewedPartyMemberId ?? playerId,
@@ -890,7 +939,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         party.find((m) => m.id === next.id)?.controller === "player";
       return {
         party,
-        character: isPlayer || s.character?.id === next.id ? next : s.character,
+        character: isPlayer ? next : s.character,
       };
     });
   },
@@ -955,21 +1004,45 @@ export const useGameStore = create<GameStore>((set, get) => ({
       standard_array: resolvedArray.array,
       point_buy,
       skill_points: schema.skill_points,
-      recommended_skills: (schema.recommended_skills ?? [])
-        .filter((sk) => {
+      recommended_skills: (() => {
+        const raw = (schema.recommended_skills ?? []).filter((sk) => {
           if (systemId !== "COC_7E") return true;
           // 屬性名不可當技能（避免「敏捷:5」蓋掉 DEX 檢定）
           return !resolveCocAttributeKeyFromCheckName(sk.name);
-        })
-        .map((sk) => ({
-        ...sk,
-        base_value: resolveSkillBaseValue(
-          systemId,
-          sk.name,
-          sk.base_value,
-        ),
-        is_occupational: sk.is_occupational ?? false,
-      })),
+        });
+        const mapped = raw.map((sk) => {
+          const name =
+            systemId === "COC_7E" ? canonicalCocSkillName(sk.name) : sk.name;
+          const isMythos = systemId === "COC_7E" && name === "克蘇魯神話";
+          return {
+            ...sk,
+            name,
+            base_value: isMythos
+              ? 0
+              : resolveSkillBaseValue(systemId, name, sk.base_value),
+            is_occupational: isMythos
+              ? false
+              : (sk.is_occupational ?? false),
+          };
+        });
+        if (systemId !== "COC_7E") return mapped;
+        const byName = new Map<string, (typeof mapped)[number]>();
+        for (const sk of mapped) {
+          const prev = byName.get(sk.name);
+          if (!prev) {
+            byName.set(sk.name, sk);
+            continue;
+          }
+          byName.set(sk.name, {
+            ...prev,
+            is_occupational: Boolean(
+              prev.is_occupational || sk.is_occupational,
+            ),
+            description: prev.description || sk.description,
+          });
+        }
+        return [...byName.values()];
+      })(),
       background_questions: normalizeBackgroundQuestions(
         schema.background_questions,
         systemId,
@@ -1045,6 +1118,61 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
   },
 
+  applySlotSkillBlueprint: (payload) => {
+    const schema = get().characterSchema;
+    const slot = get().editingPartySlotIndex;
+    const current =
+      get().party.find((m) => m.slotIndex === slot)?.sheet ?? get().character;
+    if (!schema || !current) return;
+    if (!payload.recommended_skills?.length) return;
+
+    const { extraSkills, occOverrides, skills } = buildSlotSkillBlueprint(
+      current,
+      schema.recommended_skills ?? [],
+      payload.recommended_skills,
+    );
+
+    let inventory = current.inventory;
+    if (payload.starting_inventory?.length) {
+      const raw = payload.starting_inventory.map((x) => x.trim()).filter(Boolean);
+      const { kept, removed } = filterKeyClueInventoryItems(
+        raw,
+        get().script.hidden_full_script?.key_clues,
+      );
+      inventory = kept;
+      if (removed.length) {
+        get().appendSystem(
+          `已自起始背包移除關鍵物證（應於冒險中發現）：${removed.join("、")}`,
+        );
+      }
+    }
+
+    const role_title =
+      payload.role_title_suggestion?.trim() || current.role_title;
+    const sheet = recomputeDerived({
+      ...current,
+      skills,
+      inventory,
+      role_title,
+    });
+
+    const existing = get().party.find((m) => m.slotIndex === slot);
+    get().upsertPartyMemberAtSlot(slot, sheet, {
+      creationDraft: {
+        skillSpend: {},
+        occOverrides,
+        extraSkills,
+        assignments: existing?.creationDraft?.assignments ?? {},
+        rolledPool: existing?.creationDraft?.rolledPool ?? [],
+      },
+    });
+    if (!payload.silent) {
+      get().appendSystem(
+        "已依 AI 建議重設本席職業／技能設計，配點已清空（屬性擲骰／陣列／購點方式不變）。",
+      );
+    }
+  },
+
   setCharacter: (sheet) => {
     const migrated = migrateCharacterSheet(sheet);
     const slot = get().editingPartySlotIndex;
@@ -1061,7 +1189,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   applyCharacterNarrative: (payload) => {
-    const current = get().character;
+    if (payload.recommended_skills?.length) {
+      get().applySlotSkillBlueprint({
+        recommended_skills: payload.recommended_skills,
+        silent: true,
+      });
+    }
+    const slot = get().editingPartySlotIndex;
+    const current =
+      get().party.find((m) => m.slotIndex === slot)?.sheet ?? get().character;
     if (!current) return;
 
     const pick = (v: string | undefined, fallback: string | undefined) => {
@@ -1194,13 +1330,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const note = payload.player_note?.trim();
     if (missing.length) {
       get().appendSystem(
-        `AI 已寫入角色敘事，但仍缺：${missing.join("、")}。可再按「請 AI 設計角色敘事」補齊。`,
+        `AI 已寫入角色敘事，但仍缺：${missing.join("、")}。可再按「請 AI 設計角色」補齊。`,
       );
     } else {
       get().appendSystem(
         note
           ? `AI 已完整填入角色敘事欄位：${note}`
-          : `AI 已完整填入「${next.name}」的敘事／身分欄位（未改動屬性／技能配點）。可再手動修改。`,
+          : payload.recommended_skills?.length
+            ? `AI 已完整填入「${next.name}」的敘事／身分欄位，並重設本席技能藍圖（配點已清空；屬性配點方式不變）。可再手動修改。`
+            : `AI 已完整填入「${next.name}」的敘事／身分欄位（未改動屬性配點方式）。可再手動修改。`,
       );
     }
   },
@@ -1234,6 +1372,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const hpMax = sheet.derived.hp.max;
     const sanBefore = sheet.derived.san?.current ?? null;
 
+    const autoMythosGain =
+      sheet.system_id === "COC_7E" ? computeAutoMythosGain(allowed) : 0;
+
     get().updateSheetById(targetId, (base) => {
       const next = structuredClone(base);
       for (const ch of allowed) {
@@ -1264,9 +1405,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
           next.derived.ac += ch.change_amount;
         } else if (key in next.attributes) {
           next.attributes[key] += ch.change_amount;
+        } else if (isCthulhuMythosSkillName(key)) {
+          next.skills[CTHULHU_MYTHOS_SKILL] = clampCthulhuMythos(
+            (next.skills[CTHULHU_MYTHOS_SKILL] ?? 0) + ch.change_amount,
+          );
         } else if (key in next.skills) {
           next.skills[key] += ch.change_amount;
         }
+      }
+      if (autoMythosGain > 0) {
+        next.skills[CTHULHU_MYTHOS_SKILL] = clampCthulhuMythos(
+          (next.skills[CTHULHU_MYTHOS_SKILL] ?? 0) + autoMythosGain,
+        );
       }
       let inv = [...next.inventory, ...inventory_add];
       for (const rem of inventory_remove) {
@@ -1277,12 +1427,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
       next.skills = clampSkillsToSystemBases(next.system_id, next.skills);
       return next;
     });
-    if (allowed.length) {
+    if (allowed.length || autoMythosGain > 0) {
       const who =
         get().getSheetById(targetId)?.name?.trim() || "角色";
-      get().appendSystem(
-        `狀態更新（${who}）：${allowed.map((c) => `${c.key}${c.change_amount >= 0 ? "+" : ""}${c.change_amount}（${c.reason}）`).join("；")}`,
+      const parts = allowed.map(
+        (c) =>
+          `${c.key}${c.change_amount >= 0 ? "+" : ""}${c.change_amount}（${c.reason}）`,
       );
+      if (autoMythosGain > 0) {
+        parts.push(
+          `${CTHULHU_MYTHOS_SKILL}+${autoMythosGain}（神話 SAN 損失即時成長）`,
+        );
+      }
+      get().appendSystem(`狀態更新（${who}）：${parts.join("；")}`);
     }
 
     const after = get().getSheetById(targetId);
@@ -1311,6 +1468,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
   markSkillSuccess: (skill_name, character_id = null) => {
     const sheet = get().getSheetById(character_id);
     if (!sheet) return;
+    if (isCthulhuMythosSkillName(skill_name)) {
+      get().appendSystem(
+        "「克蘇魯神話」不走結局成長檢定；請以 update_game_stats 在遭遇／禁書當下增加。",
+      );
+      return;
+    }
     let newlyMarked = false;
     get().updateSheetById(character_id ?? sheet.id, (base) => {
       const marked = new Set(base.markedSkillsForGrowth ?? []);
@@ -1380,11 +1543,30 @@ export const useGameStore = create<GameStore>((set, get) => ({
     );
   },
 
-  registerNpc: (npc) => {
+  registerNpc: (npc, opts) => {
+    const prev = get().npcs.find((n) => n.npc_id === npc.npc_id);
+    const known = prev?.knownToPlayer === true || npc.knownToPlayer === true;
+    const stored = toStoredNpc(
+      { ...npc, knownToPlayer: known },
+      get().messages,
+      opts?.mentionText ?? "",
+    );
     set((s) => ({
-      npcs: [...s.npcs.filter((n) => n.npc_id !== npc.npc_id), npc],
+      npcs: [...s.npcs.filter((n) => n.npc_id !== npc.npc_id), stored],
     }));
-    get().appendSystem(`NPC 更新：${npc.name}（${npc.relation}/${npc.status}）`);
+    // 不寫入聊天系統訊息：未接觸 NPC／感染等隱藏資訊不可曝光
+  },
+
+  revealNpcsMentionedIn: (text) => {
+    if (!text.trim()) return;
+    const next = get().npcs.map((n) =>
+      n.knownToPlayer || npcNameMentionedInText(n.name, text)
+        ? { ...n, knownToPlayer: true }
+        : n,
+    );
+    if (next.some((n, i) => n.knownToPlayer !== get().npcs[i]?.knownToPlayer)) {
+      set({ npcs: next });
+    }
   },
 
   setPendingDice: (dice, resolver) =>
@@ -1405,14 +1587,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   narrateFromTool: (narrative, systemNotice) => {
     if (systemNotice) get().appendSystem(systemNotice);
+    if (narrative.trim()) get().revealNpcsMentionedIn(narrative);
     const msgs = get().messages;
     // 同輪若與既有 GM 敘事近重複：更新那則，並丟掉其後重複的 GM 訊息
+    // 隊友氣泡不算切開同輪（開場後隊友插話，GM 又重寫開場）
     const trailingAgents: { id: string; content: string; index: number }[] =
       [];
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i];
       if (!m) continue;
-      if (m.role === "user") break;
+      if (isBlockingPlayerMessage(m)) break;
       if (m.role === "agent") {
         trailingAgents.push({ id: m.id, content: m.content, index: i });
       }
@@ -1440,13 +1624,51 @@ export const useGameStore = create<GameStore>((set, get) => ({
     get().collapseNarrativeRewrites();
   },
 
+  trimAgentRewriteAfterCompanion: () => {
+    const msgs = get().messages;
+    let lastAgentIdx = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i]?.role === "agent" && (msgs[i]?.content ?? "").trim()) {
+        lastAgentIdx = i;
+        break;
+      }
+    }
+    if (lastAgentIdx < 0) return;
+    let prevAgentIdx = -1;
+    let sawCompanion = false;
+    for (let i = lastAgentIdx - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m) continue;
+      if (isCompanionChatMessage(m)) {
+        sawCompanion = true;
+        continue;
+      }
+      if (isBlockingPlayerMessage(m)) break;
+      if (m.role === "agent" && m.content.trim()) {
+        prevAgentIdx = i;
+        break;
+      }
+    }
+    if (!sawCompanion || prevAgentIdx < 0) return;
+    const prev = msgs[prevAgentIdx]!;
+    const last = msgs[lastAgentIdx]!;
+    const unique = uniqueNarrativeSuffix(prev.content, last.content);
+    if (!unique) {
+      set({ messages: msgs.filter((m) => m.id !== last.id) });
+      return;
+    }
+    if (unique !== last.content.trim()) {
+      get().updateMessage(last.id, unique);
+    }
+  },
+
   collapseNarrativeRewrites: () => {
     const msgs = get().messages;
     const trailing: { id: string; content: string; index: number }[] = [];
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i];
       if (!m) continue;
-      if (m.role === "user") break;
+      if (isBlockingPlayerMessage(m)) break;
       if (m.role === "agent") {
         trailing.push({ id: m.id, content: m.content, index: i });
       }
@@ -1462,6 +1684,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
         const other = oldestFirst[j];
         if (!other || remove.has(other.id)) continue;
         if (!areDuplicateNarratives(keep.content, other.content)) continue;
+        const companionBetween = msgs
+          .slice(keep.index + 1, other.index)
+          .some((m) => isCompanionChatMessage(m));
+        if (companionBetween) {
+          // 開場後隊友插話再重寫開場：保留先寫的那則，丟掉複讀
+          remove.add(other.id);
+          continue;
+        }
         get().updateMessage(keep.id, other.content);
         keep.content = other.content;
         remove.add(other.id);
@@ -1534,6 +1764,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
       if (!m) continue;
       if (m.role === "user") break;
       if (m.role === "agent") {
+        set({ messages: msgs.filter((x) => x.id !== m.id) });
+        return;
+      }
+    }
+  },
+
+  removeLastUserMessage: () => {
+    const msgs = get().messages;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m) continue;
+      if (m.role === "user") {
         set({ messages: msgs.filter((x) => x.id !== m.id) });
         return;
       }
@@ -1835,6 +2077,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
         return { ...m, controller: "ai" as const };
       });
 
+      const boundPlayerSheet =
+        getPlayerSheet(party, enriched.id, enriched) ?? enriched;
       const bridgeNote =
         get().continuityBridge?.appliedSummaries
           ?.map((s) => `${s.name}（${s.lines.join("；")}）`)
@@ -1842,12 +2086,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
       set({
         phase: "PLAYING",
-        character: enriched,
+        character: boundPlayerSheet,
         party,
-        playerMemberId: enriched.id,
-        viewedPartyMemberId: enriched.id,
-        characterBaseline: captureStatSnapshot(enriched, get().madness),
-        boundCharacterId: enriched.id,
+        playerMemberId: boundPlayerSheet.id,
+        viewedPartyMemberId: boundPlayerSheet.id,
+        characterBaseline: captureStatSnapshot(boundPlayerSheet, get().madness),
+        boundCharacterId: boundPlayerSheet.id,
         history: [],
         messages: [],
         chapterSummaries: [],
@@ -1878,7 +2122,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const libAi = party.filter((m) => m.controller === "ai" && m.fromLibrary);
       const newAi = party.filter((m) => m.controller === "ai" && !m.fromLibrary);
       const bits = [
-        `角色「${enriched.name}」已存入檔案庫並綁定本場`,
+        `角色「${boundPlayerSheet.name}」已存入檔案庫並綁定本場`,
         libAi.length
           ? `另有 ${libAi.length} 名自庫帶入的 AI 隊友（已佔用；結局可選寫回）`
           : null,
@@ -1889,7 +2133,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       get().appendSystem(
         bits.length > 1
           ? `${bits.join("；")}。一角同時僅能進行一場。`
-          : `角色「${enriched.name}」已存入檔案庫，並綁定本場冒險。一角同時僅能進行一場。`,
+          : `角色「${boundPlayerSheet.name}」已存入檔案庫，並綁定本場冒險。一角同時僅能進行一場。`,
       );
 
       try {
@@ -1937,6 +2181,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   applyGrowthResult: (skill, gained, characterId = null) => {
     const targetId = characterId ?? get().playerMemberId;
+    if (isCthulhuMythosSkillName(skill)) {
+      get().updateSheetById(targetId, (sheet) => ({
+        ...sheet,
+        markedSkillsForGrowth: (sheet.markedSkillsForGrowth ?? []).filter(
+          (s) => !isCthulhuMythosSkillName(s),
+        ),
+      }));
+      return;
+    }
     get().updateSheetById(targetId, (sheet) => ({
       ...sheet,
       skills: {
@@ -2021,7 +2274,34 @@ export const useGameStore = create<GameStore>((set, get) => ({
         data.script.recommended_party_size ??
         legacy.partySize,
     );
-    const playerSheet = getPlayerSheet(party, playerMemberId, data.character);
+    const canonParty = party.map((m) =>
+      m.sheet?.system_id === "COC_7E"
+        ? {
+            ...m,
+            sheet: recomputeDerived(canonicalizeCocSheetSkills(m.sheet)),
+          }
+        : m,
+    );
+    const playerSheet = getPlayerSheet(
+      canonParty,
+      playerMemberId,
+      data.character
+        ? data.character.system_id === "COC_7E"
+          ? recomputeDerived(canonicalizeCocSheetSkills(data.character))
+          : data.character
+        : data.character,
+    );
+    const scenes = data.script.hidden_full_script?.scenes ?? [];
+    const sceneDirector = data.sceneDirector
+      ? {
+          ...data.sceneDirector,
+          currentSceneId: resolveCanonicalSceneId(
+            scenes,
+            data.sceneDirector.currentSceneId,
+            data.location,
+          ),
+        }
+      : undefined;
 
     set({
       campaignId: data.id,
@@ -2029,7 +2309,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       phase: data.phase === "PREFLIGHT" ? "SESSION_0" : data.phase,
       theme: data.theme,
       location: data.location,
-      sceneDirector: data.sceneDirector ?? {
+      sceneDirector: sceneDirector ?? {
         currentSceneId: null,
         sceneGoal: data.script.public_summary?.player_hook ?? "",
         tension: "medium",
@@ -2047,7 +2327,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         data.recommendedPartySize ??
         data.script.recommended_party_size ??
         null,
-      party,
+      party: canonParty,
       playerMemberId,
       editingPartySlotIndex: data.editingPartySlotIndex ?? 0,
       endingCompanionsSavedIds: data.endingCompanionsSavedIds ?? [],
@@ -2074,7 +2354,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         return progress;
       })(),
       incapacitatedCharacterIds: [],
-      npcs: data.npcs,
+      npcs: (data.npcs ?? []).map((n) => toStoredNpc(n, messages)),
       madness: data.madness,
       history: data.history,
       chapterSummaries: data.chapterSummaries,

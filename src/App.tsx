@@ -11,6 +11,7 @@ import { PedelecInstallationGuideline } from "@/components/pedelec/PedelecInstal
 import { PedelecSettingsPanel } from "@/components/pedelec/PedelecSettings";
 import { PedelecStatusBadge } from "@/components/pedelec/PedelecStatusBadge";
 import { DevStorageInspector } from "@/components/dev/DevStorageInspector";
+import { OutgoingPromptPreviewModal } from "@/components/dev/OutgoingPromptPreviewModal";
 import { Button } from "@/components/ui/button";
 import {
   deleteCampaign,
@@ -36,6 +37,11 @@ import {
   sendPlayerAction,
   sessionNeedsRebuild,
 } from "@/lib/pedelec/createGameSession";
+import {
+  humanPlayerAwaitingGmReply,
+  lastHumanPlayerMessage,
+  shouldSkipAutoRetryBecauseGmReplied,
+} from "@/lib/playTurnState";
 import { syncLibraryCharacterSheet } from "@/lib/storage";
 import {
   checkPedelecPrerequisites,
@@ -131,6 +137,11 @@ export default function App() {
         .getState()
         .setSuggestPlayerActions(prefs.suggestPlayerActions);
     }
+    if (typeof prefs.inspectOutgoingPrompt === "boolean") {
+      useGameStore
+        .getState()
+        .setInspectOutgoingPrompt(prefs.inspectOutgoingPrompt);
+    }
     if (prefs.scenarioScale) {
       useGameStore.getState().setScenarioScale(prefs.scenarioScale);
     }
@@ -163,12 +174,14 @@ export default function App() {
         s.selectedProvider !== prev.selectedProvider ||
         s.selectedModel !== prev.selectedModel ||
         s.suggestPlayerActions !== prev.suggestPlayerActions ||
+        s.inspectOutgoingPrompt !== prev.inspectOutgoingPrompt ||
         s.script.scenario_scale !== prev.script.scenario_scale
       ) {
         persistAgentPrefsFromStore({
           selectedProvider: s.selectedProvider,
           selectedModel: s.selectedModel,
           suggestPlayerActions: s.suggestPlayerActions,
+          inspectOutgoingPrompt: s.inspectOutgoingPrompt,
           scenarioScale: s.script.scenario_scale,
         });
       }
@@ -234,10 +247,12 @@ export default function App() {
           ? providerOverride
           : latest.selectedProvider,
       );
+      // 必須帶上 model 字串（可為空）：SDK 在 model=undefined 時會 getSettings()，
+      // Desktop settings shape 不符就會連線失敗並反覆跳出選 Provider。
       const model =
         modelOverride !== undefined
-          ? modelOverride || undefined
-          : latest.selectedModel || undefined;
+          ? modelOverride
+          : latest.selectedModel || "";
 
       setBootstrapping(true);
       try {
@@ -362,6 +377,21 @@ export default function App() {
     refreshCampaignList();
   };
 
+  const duplicateCampaignScript = (id: string) => {
+    const source = loadCampaign(id);
+    if (!source) {
+      window.alert("找不到此場次。");
+      return;
+    }
+    const parsed = parseScriptPackImport(source);
+    if (!parsed.ok) {
+      window.alert(parsed.message);
+      return;
+    }
+    saveCampaign(parsed.campaign, { activate: false });
+    refreshCampaignList();
+  };
+
   useEffect(() => {
     return () => {
       connectAttemptRef.current += 1;
@@ -396,6 +426,10 @@ export default function App() {
     const store = useGameStore.getState();
     const action = store.retryAction;
     if (!action) return;
+    if (shouldSkipAutoRetryBecauseGmReplied(action, store.messages)) {
+      store.setSessionError(null);
+      return;
+    }
 
     setBootstrapping(true);
     store.appendSystem(
@@ -432,6 +466,10 @@ export default function App() {
       if (action.kind === "opening") {
         await sendOpeningNarration();
       } else {
+        const latest = useGameStore.getState();
+        if (shouldSkipAutoRetryBecauseGmReplied(action, latest.messages)) {
+          return;
+        }
         await sendPlayerAction(action.text, {
           skipUserMessage: true,
           extraLayers: action.extraLayers,
@@ -462,14 +500,68 @@ export default function App() {
     const action = store.retryAction;
     if (!err || !action) return;
     if (!/SESSION_ERROR|PROVIDER_/.test(err.code)) return;
+    if (shouldSkipAutoRetryBecauseGmReplied(action, store.messages)) {
+      autoResumeKeyRef.current = `${action.kind}|skip-gm-replied|${err.code}`;
+      store.setSessionError(null);
+      return;
+    }
     const key = `${action.kind}|${action.kind === "player" ? action.text : "opening"}|${err.code}`;
     if (autoResumeKeyRef.current === key) return;
     autoResumeKeyRef.current = key;
-    store.appendSystem(
-      "偵測到連線／Session 錯誤，正在自動重建並重試上一步（僅一次）…",
-    );
     void onRetrySessionAction();
   }, [sessionError, bootstrapping, onRetrySessionAction]);
+
+  const onResendLastPlayerQuiet = useCallback(async () => {
+    const store = useGameStore.getState();
+    if (!humanPlayerAwaitingGmReply(store.messages)) return;
+    const text =
+      store.retryAction?.kind === "player"
+        ? store.retryAction.text
+        : lastHumanPlayerMessage(store.messages)?.content?.trim();
+    if (!text) return;
+
+    setBootstrapping(true);
+    try {
+      const pf = await runPreflight();
+      if (!pf.ready) {
+        if (!store.sessionError) {
+          store.setSessionError({
+            code: "PEDELEC_NOT_READY",
+            message: "Pedelec 尚未就緒，請先完成連線後再重試。",
+          });
+        }
+        return;
+      }
+      if (sessionNeedsRebuild()) {
+        await ensureSession();
+      } else {
+        const session = getActiveSession();
+        if (!session || session.getStatus() !== "idle") {
+          await ensureSession();
+        }
+      }
+      store.setSessionError(null);
+      await sendPlayerAction(text, {
+        skipUserMessage: true,
+        extraLayers:
+          store.retryAction?.kind === "player"
+            ? store.retryAction.extraLayers
+            : undefined,
+      });
+    } catch (err) {
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? String((err as { code: unknown }).code)
+          : "RETRY_FAILED";
+      const message = err instanceof Error ? err.message : "重試失敗";
+      const latest = useGameStore.getState();
+      if (!latest.sessionError) {
+        latest.setSessionError({ code, message });
+      }
+    } finally {
+      setBootstrapping(false);
+    }
+  }, [ensureSession, runPreflight]);
 
   useEffect(() => {
     // 新玩家行動時允許下一次錯誤再自動重試
@@ -522,6 +614,7 @@ export default function App() {
             onImportScript={(file) => void importScriptFile(file)}
             onOpen={(id) => void enterCampaign({ mode: "open", id })}
             onDelete={removeCampaign}
+            onDuplicateScript={duplicateCampaignScript}
           />
         </div>
       ) : phase === "CHARACTER" ? (
@@ -533,6 +626,7 @@ export default function App() {
           composerDisabled={composerDisabled}
           onRegenerate={() => void onRegenerate()}
           onRetry={() => void onRetrySessionAction()}
+          onResendLastPlayer={() => void onResendLastPlayerQuiet()}
         />
       ) : (
         <ScriptPage
@@ -558,6 +652,7 @@ export default function App() {
           }
         }}
       />
+      <OutgoingPromptPreviewModal />
       <PedelecSettingsPanel
         onApply={async (provider, model) => {
           if (screen === "home") {
@@ -570,6 +665,7 @@ export default function App() {
               selectedProvider: provider ?? null,
               selectedModel: model ?? "",
               suggestPlayerActions: store.suggestPlayerActions,
+              inspectOutgoingPrompt: store.inspectOutgoingPrompt,
               scenarioScale: store.script.scenario_scale,
             });
             return;

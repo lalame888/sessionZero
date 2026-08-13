@@ -9,6 +9,10 @@ import {
   resolvePendingCompanionHandoff,
   sendPlayerAction,
 } from "@/lib/pedelec/createGameSession";
+import {
+  humanPlayerAwaitingGmReply,
+  lastHumanPlayerMessage,
+} from "@/lib/playTurnState";
 import { isCompanionSpeechOnly } from "@/lib/stripGmMetaPrompts";
 import { useGameStore } from "@/store/useGameStore";
 
@@ -75,9 +79,11 @@ function composerPlaceholder(opts: {
 export function Composer({
   disabled,
   onRegenerate,
+  onResendLastPlayer,
 }: {
   disabled: boolean;
   onRegenerate?: () => void;
+  onResendLastPlayer?: () => void | Promise<void>;
 }) {
   const draft = useGameStore((s) => s.composerDraft);
   const setDraft = useGameStore((s) => s.setComposerDraft);
@@ -113,7 +119,21 @@ export function Composer({
     setSending(true);
     try {
       setDraft("");
-      const handoff = useGameStore.getState().pendingCompanionHandoff;
+      const game = useGameStore.getState();
+      const lastPlayer = lastHumanPlayerMessage(game.messages);
+      if (
+        lastPlayer &&
+        lastPlayer.content.trim() === value &&
+        humanPlayerAwaitingGmReply(game.messages)
+      ) {
+        if (onResendLastPlayer) {
+          await onResendLastPlayer();
+        } else {
+          await sendPlayerAction(value, { skipUserMessage: true });
+        }
+        return;
+      }
+      const handoff = game.pendingCompanionHandoff;
       if (handoff) {
         // 純發言：直接收下後走玩家行動，避免 GM 再複述隊友
         if (isCompanionSpeechOnly(handoff.action)) {

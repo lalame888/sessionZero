@@ -7,7 +7,7 @@ const META_ONLY_RE =
 
 /** Companion pipeline / GM 內部等待狀態（整段應隱藏） */
 const COMPANION_WAIT_META_RE =
-  /Waiting for companion action response\.|I will wait for the companion(?:'s)? response|I will wait for the tool[^\n]*|I have (?:narrated|requested|initiated|processed)[^\n]*|Standing by(?: for[^\n]*)?\.?|No more tools to call\.?(?:\s*Waiting for [^\n]*)?|Waiting for the transition to the carousel(?: and companion action)?\.?|Waiting for the (?:background task|companion response task) to complete[^\n]*|An error occurred while executing the task[^\n]*|等待隊友行動|呼叫隊友.{0,40}(?:配合|前來|協助|回應)/i;
+  /Waiting for companion action response\.|I will wait for the companion(?:'s)? response|I will wait for the tool[^\n]*|I have (?:narrated|requested|initiated|processed)[^\n]*|Standing by(?: for[^\n]*)?\.?|No more tools to call\.?(?:\s*Waiting for [^\n]*)?|Waiting for the transition to the carousel(?: and companion action)?\.?|Waiting for the (?:background task|companion response task) to complete[^\n]*|An error occurred while executing the task[^\n]*|等待隊友行動|開場已送出|等待.{0,20}隊友回應|呼叫隊友.{0,40}(?:配合|前來|協助|回應)/i;
 
 /** 是否為隊友 pipeline 的內部等待／轉場腔（勿當劇情顯示、勿觸發自動喚起） */
 export function isCompanionWaitMeta(text: string): boolean {
@@ -109,6 +109,8 @@ function stripPipelineStatusMeta(text: string): string {
       if (/系統將在/.test(L) && /(?:自動|擲骰|推進)/.test(L)) return false;
       if (/已為您發起/.test(L)) return false;
       if (/^\*?等待(?:隊友|主角)/.test(L)) return false;
+      if (/開場已送出/.test(L)) return false;
+      if (/等待.{0,24}隊友回應/.test(L)) return false;
       if (/^No more tools to call/i.test(L)) return false;
       if (/^Waiting for the transition to the carousel/i.test(L)) return false;
       if (/^Waiting for the (?:background task|companion response task)/i.test(L))
@@ -180,6 +182,8 @@ export function stripGmMetaPrompts(text: string): string {
       .replace(/^Waiting for the (?:background task|companion response task)[^\n]*$/gim, "")
       .replace(/^An error occurred while executing the task[\s\S]*?(?=^\S|$)/gim, "")
       .replace(/^呼叫隊友[^\n]*$/gim, "")
+      .replace(/^開場已送出[^\n]*$/gim, "")
+      .replace(/^等待.{0,24}隊友回應[^\n]*$/gim, "")
       .trim();
     if (!withoutWait || COMPANION_WAIT_META_RE.test(withoutWait)) return "";
     t = withoutWait;
@@ -195,6 +199,12 @@ export function stripGmMetaPrompts(text: string): string {
   t = t.replace(/\*\*?\s*key_clue\s*\*\*?/gi, "");
 
   t = stripCompanionEchoFromGmNarrative(t);
+  t = t
+    .split("\n")
+    .filter((line) => !COMPANION_TAG_LINE_RE.test(line.trim()))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   if (META_ONLY_RE.test(t)) return "";
   t = t.replace(TRAILING_META_RE, "").trim();
   if (META_ONLY_RE.test(t)) return "";

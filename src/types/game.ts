@@ -123,6 +123,8 @@ export interface NPCItem {
   relation: "ALLY" | "NEUTRAL" | "SUSPECT" | "ENEMY";
   status: "ALIVE" | "DEAD" | "MISSING" | "INSANE";
   description: string;
+  /** 玩家敘事中已接觸／被點名；未接觸者不進側欄與聊天系統訊息 */
+  knownToPlayer?: boolean;
 }
 
 export interface HistoryLog {
@@ -399,6 +401,7 @@ export type PreflightReason =
   | "CHECKING"
   | "NEEDS_INSTALLATION"
   | "NEEDS_APPROVAL"
+  | "DESKTOP_DISCONNECTED"
   | "NO_AVAILABLE_PROVIDER"
   | "READY"
   | "ERROR";

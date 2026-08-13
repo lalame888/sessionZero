@@ -2,7 +2,7 @@ import type { ProviderCode } from "@kaoruisaac/pedelec";
 import { defineTool } from "@kaoruisaac/pedelec";
 import { isNoiseHistoryNarrative } from "@/lib/historyHygiene";
 import { parseHistoryActorInput } from "@/lib/historySpeaker";
-import { pedelec } from "@/lib/pedelec/client";
+import { explicitSessionModel, pedelec } from "@/lib/pedelec/client";
 import { useGameStore } from "@/store/useGameStore";
 
 const submitSynopsisTool = defineTool({
@@ -112,7 +112,7 @@ export async function requestStorySynopsis(options: {
 
   const session = await pedelec.createSession({
     provider: options.provider,
-    model: options.model || undefined,
+    model: explicitSessionModel(options.model),
     skills: {
       guidance: SYNOPSIS_GUIDANCE,
       tools: [submitSynopsisTool],

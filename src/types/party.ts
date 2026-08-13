@@ -98,6 +98,15 @@ export function getPlayerSheet(
   return getPlayerMember(party, playerMemberId)?.sheet ?? fallback;
 }
 
+/** 「我扮演」綁定角色卡；與創角 UI 目前編輯席的 store.character 脫鉤。 */
+export function resolvePlayerBoundSheet(state: {
+  party: PartyMember[];
+  playerMemberId: string | null;
+  character: UniversalCharacterSheet | null;
+}): UniversalCharacterSheet | null {
+  return getPlayerSheet(state.party, state.playerMemberId, state.character);
+}
+
 export function syncPartySheet(
   party: PartyMember[],
   sheet: UniversalCharacterSheet,

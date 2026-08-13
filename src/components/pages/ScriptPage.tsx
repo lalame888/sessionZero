@@ -103,12 +103,15 @@ export function ScriptPage({
       await sendGmText(
         `此步驟是 Session 0「創角藍圖預覽」：請呼叫 generate_character_schema。` +
           `system_id 必須是 ${resolvedSystem}；creation_mode 必須是 ${mode}。` +
+          `若你目前的對話脈絡裡沒有「本局已建立的劇本」資訊（例如 conversation 剛重建／壓縮、看不到 public_summary／主角定位），` +
+          `請先呼叫 lookup_game_state（可帶 focus=「script」）確認標題、類型、主角定位、背景、鉤子、地理與 party_role_hints，` +
+          `再依該劇本設計藍圖；不要在未確認劇本的情況下產出通用／無關的技能包。` +
           `請提供 attribute_defs（含繁中 label 與 dice_formula）、` +
           `mode_config（ARRAY 給 standard_array，長度必須等於屬性數：D&D 六項 [15,14,13,12,10,8]、CoC Quick-Fire 八項 [80,70,60,60,50,50,50,40]，勿混用；POINT_BUY 給 point_buy_pool/min/max；` +
           (resolvedSystem === "COC_7E"
             ? `CoC 無論何種屬性模式都必須給 occupational_point_formula 與 interest_point_formula（預設 EDU*4、INT*2）；`
             : "") +
-          `recommended_skills（name/description 繁中；CoC 請標約 8 項 is_occupational=true 的職業技能，否則職業點花不完）。` +
+          `recommended_skills（name/description 繁中；須貼合主角定位與劇本；CoC 請標約 8 項 is_occupational=true 的職業技能，否則職業點花不完）。` +
           `background_questions 請回傳為物件陣列 {id, category, question}。` +
           `starting_inventory、role_title_suggestion、mode_instructions 也請提供。` +
           `此為藍圖預覽：請不要在文字中給出最終屬性數字；最終數值由前端按藍圖規則處理（DICE/ARRAY/POINT_BUY）。`,

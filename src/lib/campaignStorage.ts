@@ -110,6 +110,8 @@ export interface AgentPrefs {
   selectedProvider: string | null;
   selectedModel: string;
   suggestPlayerActions?: boolean;
+  /** 送出前預覽即將送給 AI 的 prompt 全文 */
+  inspectOutgoingPrompt?: boolean;
   scenarioScale?: import("@/types/game").ScenarioScale;
 }
 
@@ -182,7 +184,10 @@ export function loadCampaign(id: string): CampaignPersist | null {
   return readJson<CampaignPersist>(campaignKey(id));
 }
 
-export function saveCampaign(data: CampaignPersist) {
+export function saveCampaign(
+  data: CampaignPersist,
+  opts?: { activate?: boolean },
+) {
   localStorage.setItem(campaignKey(data.id), JSON.stringify(data));
   const index = loadCampaignIndex();
   const meta: CampaignMeta = {
@@ -201,7 +206,7 @@ export function saveCampaign(data: CampaignPersist) {
   };
   const without = index.sessions.filter((s) => s.id !== data.id);
   saveCampaignIndex({
-    activeId: data.id,
+    activeId: opts?.activate === false ? index.activeId : data.id,
     sessions: [meta, ...without].sort((a, b) => b.updatedAt - a.updatedAt),
   });
 }
@@ -249,12 +254,14 @@ export function persistAgentPrefsFromStore(input: {
   selectedProvider: string | null;
   selectedModel: string;
   suggestPlayerActions: boolean;
+  inspectOutgoingPrompt?: boolean;
   scenarioScale?: ScenarioScale | string | null;
 }) {
   saveAgentPrefs({
     selectedProvider: input.selectedProvider,
     selectedModel: input.selectedModel,
     suggestPlayerActions: input.suggestPlayerActions,
+    inspectOutgoingPrompt: input.inspectOutgoingPrompt,
     scenarioScale: normalizeScenarioScale(input.scenarioScale),
   });
 }
@@ -318,6 +325,7 @@ export function loadRecentScriptDesigns(
 ): PriorScriptDesign[] {
   const index = loadCampaignIndex();
   const out: PriorScriptDesign[] = [];
+  const seenTitles = new Set<string>();
   for (const meta of index.sessions) {
     if (opts?.excludeId && meta.id === opts.excludeId) continue;
     const data = loadCampaign(meta.id);
@@ -325,12 +333,16 @@ export function loadRecentScriptDesigns(
     const { script } = data;
     // 至少要有公開摘要或隱藏劇本，才算「既有劇本設計」
     if (!script.public_summary && !script.hidden_full_script) continue;
+    const title =
+      script.public_summary?.title?.trim() ||
+      data.title ||
+      "未命名劇本";
+    const titleKey = title.replace(/《|》/g, "").trim().toLowerCase();
+    if (titleKey && seenTitles.has(titleKey)) continue;
+    if (titleKey) seenTitles.add(titleKey);
     out.push({
       id: data.id,
-      title:
-        script.public_summary?.title?.trim() ||
-        data.title ||
-        "未命名劇本",
+      title,
       updatedAt: data.updatedAt,
       system_id: script.system_id,
       scenario_scale: script.scenario_scale

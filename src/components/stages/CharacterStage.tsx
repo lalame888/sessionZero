@@ -3,11 +3,13 @@ import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { HoverTooltip } from "@/components/ui/hover-tooltip";
 import { Input, Label, Textarea } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
 import { useRepeatPress } from "@/hooks/useRepeatPress";
 import type { RecommendedSkill, UniversalCharacterSheet } from "@/types/game";
 import type { CharacterCreationDraft } from "@/types/party";
 import {
   buildAttributesAfterAgeMod,
+  cocAgeModifiersTooltipContent,
   describeCocAgeBand,
   emptyAllocation,
   isCocAgeModComplete,
@@ -29,10 +31,12 @@ import {
   totalPointBuySpent,
   COC_CREATION_SKILL_CAP,
   listCocSkillCatalog,
+  resolveCocCatalogSkillDescription,
   enrichCharacterSheetMeta,
   resolveSkillDescription,
   clampSkillsToSystemBases,
 } from "@/engine/creation";
+import { canonicalCocSkillName } from "@/engine/skillCheck";
 import {
   draftFromUi,
   hydrateUiFromDraft,
@@ -91,6 +95,7 @@ export function CharacterStage({
     return null;
   });
   const [generatingNarrative, setGeneratingNarrative] = useState(false);
+  const [resetSkillSpendOpen, setResetSkillSpendOpen] = useState(false);
 
   const mode = normalizeCreationMode(
     schema?.creation_mode ?? script.recommended_creation_mode,
@@ -100,7 +105,10 @@ export function CharacterStage({
   const attrKeys = defs.map((d) => d.key);
 
   const [rolledPool, setRolledPool] = useState<number[]>([]);
-  const [rollLog, setRollLog] = useState<string[]>([]);
+  /** 各屬性擲骰結果段（箭頭之後）；尚未擲骰時為空 */
+  const [diceRollResults, setDiceRollResults] = useState<
+    Record<string, string>
+  >({});
   const [assignments, setAssignments] = useState<Record<string, number | "">>(
     {},
   );
@@ -110,6 +118,8 @@ export function CharacterStage({
   const [highSkillWarned, setHighSkillWarned] = useState<Set<string>>(
     () => new Set(),
   );
+  /** 配點時的即時提醒（不寫入系統訊息，避免卡在頁頂） */
+  const [skillAllocHint, setSkillAllocHint] = useState<string | null>(null);
   /** 玩家覆寫：哪些技能可花職業點（補足 AI 職業包過少） */
   const [occOverrides, setOccOverrides] = useState<Record<string, boolean>>(
     {},
@@ -136,10 +146,31 @@ export function CharacterStage({
   const slotDraftKeyRef = useRef(
     `${editingPartySlotIndex}:${character?.id ?? ""}`,
   );
+  const panelScrollRef = useRef<HTMLDivElement>(null);
+  const [ageModError, setAgeModError] = useState<string | null>(null);
+
+  /** 擲骰／年齡修正會插入內容或頂欄；維持捲動位置避免畫面跳動 */
+  const runPreservingScroll = (fn: () => void) => {
+    const el = panelScrollRef.current;
+    const top = el?.scrollTop ?? 0;
+    fn();
+    const restore = () => {
+      if (el) el.scrollTop = top;
+    };
+    restore();
+    requestAnimationFrame(() => {
+      restore();
+      requestAnimationFrame(restore);
+    });
+  };
 
   useEffect(() => {
     setInventoryDraft(null);
   }, [character?.id, editingPartySlotIndex]);
+
+  useEffect(() => {
+    setAgeModError(null);
+  }, [character?.age]);
 
   const commitInventoryDraft = (raw?: string) => {
     const text = raw ?? inventoryDraftRef.current;
@@ -188,7 +219,7 @@ export function CharacterStage({
     setExtraSkills(draft.extraSkills);
     setAssignments(draft.assignments);
     setRolledPool(draft.rolledPool);
-    setRollLog([]);
+    setDiceRollResults({});
     setHighSkillWarned(new Set());
     setAddSkillPick("");
     setPickedArrayIdx(null);
@@ -229,11 +260,19 @@ export function CharacterStage({
     const member = useGameStore
       .getState()
       .party.find((m) => m.slotIndex === editingPartySlotIndex);
+    const hasDraftSpend = Boolean(
+      member?.creationDraft?.skillSpend &&
+        Object.keys(member.creationDraft.skillSpend).length > 0,
+    );
     const hydrated = hydrateUiFromDraft(
       member?.creationDraft,
       character,
       schemaSkills,
     );
+    // 無草稿時不要從 sheet 反推配點：AI 若曾把最終％寫進技能，會被誤認成已花點
+    if (!hasDraftSpend) {
+      hydrated.skillSpend = {};
+    }
     applyHydratedDraft(hydrated);
 
     // 以草稿配點覆寫 sheet.skills，避免換席後只剩敘事、技能被還原成基礎值
@@ -243,7 +282,7 @@ export function CharacterStage({
         (ex) => !schemaSkills.some((s) => s.name === ex.name),
       ),
     ];
-    if (mergedSkills.length && Object.keys(hydrated.skillSpend).length) {
+    if (mergedSkills.length) {
       const spend = hydrated.skillSpend;
       useGameStore.getState().updateCharacterField((sheet) => {
         if (sheet.id !== character.id) return sheet;
@@ -433,27 +472,39 @@ export function CharacterStage({
 
   const schemaSkills = useMemo(() => {
     if (!schema?.recommended_skills?.length || !character) return [];
-    return schema.recommended_skills.map((sk) => ({
-      ...sk,
-      base_value: resolveSkillBaseValue(
-        character.system_id,
-        sk.name,
-        sk.base_value,
-        character.attributes,
-      ),
-    }));
+    return schema.recommended_skills.map((sk) => {
+      const name =
+        character.system_id === "COC_7E"
+          ? canonicalCocSkillName(sk.name)
+          : sk.name;
+      return {
+        ...sk,
+        name,
+        base_value: resolveSkillBaseValue(
+          character.system_id,
+          name,
+          sk.base_value,
+          character.attributes,
+        ),
+      };
+    });
   }, [schema?.recommended_skills, character]);
 
   const allocSkills = useMemo(() => {
     if (!character) return [];
     const merged: RecommendedSkill[] = [...schemaSkills];
     for (const ex of extraSkills) {
-      if (!merged.some((s) => s.name === ex.name)) {
+      const name =
+        character.system_id === "COC_7E"
+          ? canonicalCocSkillName(ex.name)
+          : ex.name;
+      if (!merged.some((s) => s.name === name)) {
         merged.push({
           ...ex,
+          name,
           base_value: resolveSkillBaseValue(
             character.system_id,
-            ex.name,
+            name,
             ex.base_value,
             character.attributes,
           ),
@@ -595,7 +646,7 @@ export function CharacterStage({
     if (!character) return;
     const session = getActiveSession();
     if (!session || session.getStatus() !== "idle") {
-      appendSystem("Session 未就緒，無法請 AI 設計角色敘事。");
+      appendSystem("Session 未就緒，無法請 AI 設計角色。");
       return;
     }
     if (!script.public_summary) {
@@ -644,17 +695,34 @@ export function CharacterStage({
       protagonistRole: script.public_summary.protagonist_role,
     });
 
+    const lockedModeLines = [
+      `system_id 必須是 ${character.system_id}。`,
+      `creation_mode 必須是 ${mode}（全隊固定，禁止改成其他擲骰／陣列／購點方式）。`,
+      "attribute_defs 與 mode_config（含職業點／興趣點公式）必須沿用現有全隊藍圖，禁止改寫。",
+      schema.mode_config
+        ? `現有 mode_config：${JSON.stringify(schema.mode_config)}`
+        : "",
+      schema.attribute_defs?.length
+        ? `現有 attribute_defs keys：${schema.attribute_defs.map((d) => d.key).join("、")}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
     setGeneratingNarrative(true);
     appendSystem(
       partySize > 1
-        ? "正在請 AI 依劇本、藍圖與現有隊友設定，設計不重複且互補的角色敘事…"
-        : "正在請 AI 依劇本與藍圖完整填寫角色敘事欄位…",
+        ? "正在請 AI 依劇本與現有隊友，重設本席職業／技能設計並填寫敘事（配點方式不變）…"
+        : "正在請 AI 重設本席職業／技能設計並填寫角色敘事（配點方式不變）…",
     );
     try {
       await sendGmText(
         [
-          "此步驟是創角頁「請 AI 設計角色敘事」。請立刻呼叫工具 fill_character_narrative。",
-          "目標：除屬性與技能配點外，前端已開放的敘事／身分欄位全部填寫完整。",
+          "此步驟是創角頁「請 AI 設計角色」。請立刻呼叫兩個工具（可同回合）：",
+          "1) generate_character_schema：為此角色重推 recommended_skills（技能設計與 is_occupational 職業包）。CoC 請標約 8 項 is_occupational=true。可更新 role_title_suggestion、starting_inventory。",
+          lockedModeLines,
+          "2) fill_character_narrative：填滿敘事／身分欄位；可再帶 recommended_skills（與上項一致即可）。禁止填寫屬性數字、技能％或配點數字。",
+          "前端會套用新技能藍圖並清空本席既有技能配點；屬性擲骰／陣列／購點方式與其他隊員一致、不可改。",
           fieldChecklist,
           `劇本標題：${script.public_summary.title}`,
           `類型：${script.public_summary.genre}`,
@@ -664,7 +732,7 @@ export function CharacterStage({
             ? `玩家鉤子：${script.public_summary.player_hook}`
             : "",
           schema.role_title_suggestion
-            ? `藍圖建議職稱：${schema.role_title_suggestion}`
+            ? `全隊藍圖建議職稱（可為此席改推）：${schema.role_title_suggestion}`
             : "",
           schema.starting_inventory?.length
             ? `藍圖建議背包可參考：${schema.starting_inventory.join("、")}`
@@ -672,7 +740,7 @@ export function CharacterStage({
           partyContext,
           "請讓角色貼合上述定位與氛圍，文字一律繁體中文，內容具體可用。",
           partySize > 1
-            ? "若上方有已完成隊友：務必避免撞名、撞職、撞背景；職能與個性應互補以平衡隊伍。"
+            ? "若上方有已完成隊友：務必避免撞名、撞職、撞背景；職能、個性與職業技能包應互補以平衡隊伍。"
             : "",
           "backstory_hooks 的 id 必須完全對應下列問題（每一題都要有答案）：",
           hooksList,
@@ -683,11 +751,39 @@ export function CharacterStage({
       );
     } catch (err) {
       appendSystem(
-        `請 AI 設計角色敘事失敗：${
+        `請 AI 設計角色失敗：${
           err instanceof Error ? err.message : "未知錯誤"
         }`,
       );
     } finally {
+      const st = useGameStore.getState();
+      const sheet = st.character;
+      if (sheet) {
+        const member = st.party.find(
+          (m) => m.slotIndex === st.editingPartySlotIndex,
+        );
+        const schemaSkills = (st.characterSchema?.recommended_skills ?? []).map(
+          (sk) => {
+            const name =
+              sheet.system_id === "COC_7E"
+                ? canonicalCocSkillName(sk.name)
+                : sk.name;
+            return {
+              ...sk,
+              name,
+              base_value: resolveSkillBaseValue(
+                sheet.system_id,
+                name,
+                sk.base_value,
+                sheet.attributes,
+              ),
+            };
+          },
+        );
+        applyHydratedDraft(
+          hydrateUiFromDraft(member?.creationDraft, sheet, schemaSkills),
+        );
+      }
       setGeneratingNarrative(false);
     }
   };
@@ -749,72 +845,65 @@ export function CharacterStage({
 
   const applyCocAgeModifiers = () => {
     if (!character || !isCoc) return;
-    const ageYears = parseAgeYears(character.age);
-    if (ageYears == null) {
-      appendSystem("請先在身分資料填寫有效年齡（例如 28 或 約28歲）。");
-      return;
-    }
-    if (ageYears < 15) {
-      appendSystem("CoC 創角年齡修正適用 15 歲以上。");
-      return;
-    }
-    const band = resolveCocAgeBand(ageYears);
-    if (!band) {
-      appendSystem("無法解析年齡帶。");
-      return;
-    }
+    runPreservingScroll(() => {
+      const ageYears = parseAgeYears(character.age);
+      if (ageYears == null) {
+        setAgeModError("請先在身分資料填寫有效年齡（例如 28 或 約28歲）。");
+        return;
+      }
+      if (ageYears < 15) {
+        setAgeModError(`年齡修正適用 15 歲以上（目前 ${ageYears}）。`);
+        return;
+      }
+      const band = resolveCocAgeBand(ageYears);
+      if (!band) {
+        setAgeModError("無法解析年齡帶。");
+        return;
+      }
+      setAgeModError(null);
 
-    const baseRaw = character.coc_age_mod?.baseAttributes
-      ? { ...character.coc_age_mod.baseAttributes }
-      : { ...character.attributes };
-    delete baseRaw.LUCK;
+      const baseRaw = character.coc_age_mod?.baseAttributes
+        ? { ...character.coc_age_mod.baseAttributes }
+        : { ...character.attributes };
+      delete baseRaw.LUCK;
 
-    let edu = baseRaw.EDU ?? 0;
-    const eduLog: string[] = [];
-    if (band.eduFlatPenalty > 0) {
-      const before = edu;
-      edu = Math.max(1, edu - band.eduFlatPenalty);
-      eduLog.push(`年輕組：EDU ${before} − ${band.eduFlatPenalty} → ${edu}`);
-    }
-    if (band.eduChecks > 0) {
-      const ran = runEduImprovementChecks(edu, band.eduChecks);
-      edu = ran.edu;
-      eduLog.push(...ran.log);
-    }
+      let edu = baseRaw.EDU ?? 0;
+      const eduLog: string[] = [];
+      if (band.eduFlatPenalty > 0) {
+        const before = edu;
+        edu = Math.max(1, edu - band.eduFlatPenalty);
+        eduLog.push(`年輕組：EDU ${before} − ${band.eduFlatPenalty} → ${edu}`);
+      }
+      if (band.eduChecks > 0) {
+        const ran = runEduImprovementChecks(edu, band.eduChecks);
+        edu = ran.edu;
+        eduLog.push(...ran.log);
+      }
 
-    const luck = rollLuckForAge(band.luckRollTwice);
-    const allocation = emptyAllocation(band.allocateKeys);
-    const built = buildAttributesAfterAgeMod({
-      baseAttributes: baseRaw,
-      band,
-      allocation,
-      finalEdu: edu,
-      luck: luck.chosen,
+      const luck = rollLuckForAge(band.luckRollTwice);
+      const allocation = emptyAllocation(band.allocateKeys);
+      const built = buildAttributesAfterAgeMod({
+        baseAttributes: baseRaw,
+        band,
+        allocation,
+        finalEdu: edu,
+        luck: luck.chosen,
+      });
+
+      const complete = band.allocatePool <= 0 && built.errors.length === 0;
+      writeSheetWithAgeMod(built.attributes, {
+        bandId: band.id,
+        appliedAge: ageYears,
+        baseAttributes: baseRaw,
+        allocation,
+        eduLog,
+        finalEdu: edu,
+        luckRolls: luck.rolls,
+        luckChosen: luck.chosen,
+        movPenalty: band.movPenalty,
+        complete,
+      });
     });
-
-    const complete = band.allocatePool <= 0 && built.errors.length === 0;
-    writeSheetWithAgeMod(built.attributes, {
-      bandId: band.id,
-      appliedAge: ageYears,
-      baseAttributes: baseRaw,
-      allocation,
-      eduLog,
-      finalEdu: edu,
-      luckRolls: luck.rolls,
-      luckChosen: luck.chosen,
-      movPenalty: band.movPenalty,
-      complete,
-    });
-
-    const luckMsg = band.luckRollTwice
-      ? `幸運兩骰 [${luck.rolls.join(", ")}] → ${luck.chosen}`
-      : `幸運 ${luck.chosen}（${luck.details[0] ?? ""}）`;
-    appendSystem(
-      `已套用年齡修正（${band.label}）：${describeCocAgeBand(band)}。${luckMsg}` +
-        (band.allocatePool > 0
-          ? `請分配 ${band.allocatePool} 點扣減於 ${band.allocateKeys.join("／")}。`
-          : "無需分配扣點。"),
-    );
   };
 
   const adjustAgeAllocation = (key: string, delta: number) => {
@@ -854,28 +943,25 @@ export function CharacterStage({
   };
 
   const rollAllDice = () => {
-    const pool: number[] = [];
-    const logs: string[] = [];
-    for (const def of defs) {
-      const formula = def.dice_formula || (isDnd ? "4d6dl1" : "3d6x5");
-      const r = rollCreationFormula(formula);
-      pool.push(r.total);
-      logs.push(`${def.label}: ${r.detail}`);
-    }
-    setRolledPool(pool);
-    setRollLog(logs);
-    setAssignments({});
-    // DICE：直接鎖定套用，不可手改
-    const next: Record<string, number> = {};
-    attrKeys.forEach((k, i) => {
-      next[k] = pool[i] ?? 0;
+    runPreservingScroll(() => {
+      const pool: number[] = [];
+      const results: Record<string, string> = {};
+      for (const def of defs) {
+        const formula = def.dice_formula || (isDnd ? "4d6dl1" : "3d6x5");
+        const r = rollCreationFormula(formula);
+        pool.push(r.total);
+        results[def.key] = r.resultDetail;
+      }
+      setRolledPool(pool);
+      setDiceRollResults(results);
+      setAssignments({});
+      // DICE：直接鎖定套用，不可手改
+      const next: Record<string, number> = {};
+      attrKeys.forEach((k, i) => {
+        next[k] = pool[i] ?? 0;
+      });
+      applyAttributes(next);
     });
-    applyAttributes(next);
-    appendSystem(
-      isCoc
-        ? "已擲骰產生特性並鎖定。請填年齡並套用年齡修正後，再分配職業／興趣技能點。"
-        : "已完成擲骰並鎖定屬性。若要重骰可再按一次。",
-    );
   };
 
   /** ARRAY：指派分數索引到屬性（互斥）；未指派者屬性清 0 */
@@ -1017,6 +1103,45 @@ export function CharacterStage({
     });
   };
 
+  /** 清零技能配點；保留依資產區間設定的「信用評級」職業／興趣點 */
+  const confirmResetSkillSpend = () => {
+    const creditSk = allocSkills.find((s) => s.name === "信用評級");
+    const prevCredit = skillSpendRef.current["信用評級"];
+    const next: SkillSpend = {};
+
+    if (creditSk) {
+      if (prevCredit && (prevCredit.occ > 0 || prevCredit.interest > 0)) {
+        // 資產快捷多半把點算進職業池；興趣點若有則一併保留於信用評級
+        next["信用評級"] = creditSk.is_occupational
+          ? {
+              occ: prevCredit.occ + prevCredit.interest,
+              interest: 0,
+            }
+          : {
+              occ: 0,
+              interest: prevCredit.occ + prevCredit.interest,
+            };
+      } else {
+        const sheetVal = character?.skills["信用評級"];
+        if (sheetVal != null && Number.isFinite(sheetVal)) {
+          const extra = Math.max(0, Math.floor(sheetVal - creditSk.base_value));
+          if (extra > 0) {
+            next["信用評級"] = creditSk.is_occupational
+              ? { occ: extra, interest: 0 }
+              : { occ: 0, interest: extra };
+          }
+        }
+      }
+    }
+
+    skillSpendRef.current = next;
+    setSkillSpend(next);
+    syncSkillsFromSpend(next);
+    setHighSkillWarned(new Set());
+    setSkillAllocHint(null);
+    setResetSkillSpendOpen(false);
+  };
+
   const maxAffordableFor = (
     name: string,
     pool: "occ" | "interest",
@@ -1043,13 +1168,30 @@ export function CharacterStage({
     return Math.min(byBudget, roomUnderCap);
   };
 
+  /** 技能總和降回 ≤80 時清除過期的 >80 提醒（避免配點後仍顯示舊的 90% 訊息） */
+  const clearHighSkillHintIfBelowThreshold = (
+    name: string,
+    finalSkill: number,
+  ) => {
+    if (finalSkill > 80) return;
+    setHighSkillWarned((s) => {
+      if (!s.has(name)) return s;
+      const next = new Set(s);
+      next.delete(name);
+      return next;
+    });
+    setSkillAllocHint((hint) =>
+      hint?.startsWith(`注意：${name} `) ? null : hint,
+    );
+  };
+
   /** 直接設定某技能在點池上花費的點數（自動 clamp 到剩餘預算與創角上限） */
   const setSkillPool = (
     name: string,
     pool: "occ" | "interest",
     requested: number,
   ) => {
-    if (name === "克蘇魯神話") {
+    if (canonicalCocSkillName(name) === "克蘇魯神話") {
       appendSystem("創角時「克蘇魯神話」固定為 0；開場後才可經遭遇成長。");
       return;
     }
@@ -1081,12 +1223,21 @@ export function CharacterStage({
       return;
     }
     const trial = { ...skillSpend, [name]: { ...cur, [pool]: nextVal } };
+    const prevFinal = sk.base_value + cur.occ + cur.interest;
     const finalSkill = sk.base_value + trial[name].occ + trial[name].interest;
-    if (finalSkill > 80 && !highSkillWarned.has(name)) {
-      appendSystem(
-        `注意：${name} 將達 ${finalSkill}%（>80）。高技能在 CoC 極具優勢，但也更難成長。`,
+    // 僅在「這次配點」讓技能從 ≤80 跨過 80 時提醒；基礎值本身偏高不吵
+    if (
+      finalSkill > 80 &&
+      prevFinal <= 80 &&
+      trial[name].occ + trial[name].interest > 0 &&
+      !highSkillWarned.has(name)
+    ) {
+      setSkillAllocHint(
+        `注意：${name} 已達 ${finalSkill}%（>80）。高技能在 CoC 極具優勢，但也更難成長。`,
       );
       setHighSkillWarned((s) => new Set(s).add(name));
+    } else {
+      clearHighSkillHintIfBelowThreshold(name, finalSkill);
     }
     skillSpendRef.current = trial;
     setSkillSpend(trial);
@@ -1114,6 +1265,10 @@ export function CharacterStage({
         const cleared = { ...skillSpend, [name]: { occ: 0, interest: cur.interest } };
         setSkillSpend(cleared);
         syncSkillsFromSpend(cleared);
+        clearHighSkillHintIfBelowThreshold(
+          name,
+          sk.base_value + cur.interest,
+        );
         appendSystem(
           `已取消「${name}」的職業技能標記，該技職業點已退回點池。`,
         );
@@ -1138,7 +1293,7 @@ export function CharacterStage({
       {
         name: cat.name,
         base_value: dodgeBase,
-        description: "玩家自行加入的職業／個人技能",
+        description: resolveCocCatalogSkillDescription(cat.name),
         is_occupational: true,
       },
     ]);
@@ -1314,7 +1469,7 @@ export function CharacterStage({
 
   return (
     <div className="flex h-full min-h-0 flex-col text-sm">
-      {(schema && mode === "POINT_BUY" && pointBuy) || showSkillAlloc ? (
+      {(schema && mode === "POINT_BUY" && pointBuy) || (isCoc && schema) ? (
         <div className="z-10 shrink-0 space-y-2 border-b border-border/70 bg-surface/95 px-1 py-2 backdrop-blur-sm">
           {schema && mode === "POINT_BUY" && pointBuy ? (
             <div className="rounded border border-border/70 bg-bg/40 p-2">
@@ -1326,41 +1481,54 @@ export function CharacterStage({
               />
             </div>
           ) : null}
-          {showSkillAlloc ? (
-            <div className="space-y-2 rounded border border-border/70 bg-bg/40 p-2">
+          {isCoc && schema ? (
+            <div
+              className={cn(
+                "space-y-2 rounded border border-border/70 bg-bg/40 p-2",
+                !showSkillAlloc && "opacity-70",
+              )}
+            >
               <div className="text-[11px] font-medium text-ink">技能點池</div>
+              {!attrsReady || !pointBuyReady ? (
+                <p className="text-[10px] text-muted">
+                  請先完成屬性分配。
+                </p>
+              ) : !showSkillAlloc ? (
+                <p className="text-[10px] text-muted">
+                  完成年齡修正後開放分配。
+                </p>
+              ) : null}
               <SkillPoolMeter
                 label="職業"
-                used={occUsed}
-                budget={occBudget}
+                used={showSkillAlloc ? occUsed : 0}
+                budget={Math.max(1, occBudget)}
                 tooltip={skillPoolFormulaTooltip(
                   "職業",
-                  modeConfig?.occupational_point_formula ??
-                    (isCoc ? "EDU * 4" : ""),
+                  modeConfig?.occupational_point_formula ?? "EDU * 4",
                   character.attributes,
                   occBudget,
                 )}
               />
-              {interestBudget > 0 ? (
-                <SkillPoolMeter
-                  label="興趣"
-                  used={interestUsed}
-                  budget={interestBudget}
-                  tooltip={skillPoolFormulaTooltip(
-                    "興趣",
-                    modeConfig?.interest_point_formula ??
-                      (isCoc ? "INT * 2" : ""),
-                    character.attributes,
-                    interestBudget,
-                  )}
-                />
-              ) : null}
+              <SkillPoolMeter
+                label="興趣"
+                used={showSkillAlloc ? interestUsed : 0}
+                budget={Math.max(1, interestBudget)}
+                tooltip={skillPoolFormulaTooltip(
+                  "興趣",
+                  modeConfig?.interest_point_formula ?? "INT * 2",
+                  character.attributes,
+                  interestBudget,
+                )}
+              />
             </div>
           ) : null}
         </div>
       ) : null}
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-1">
+      <div
+        ref={panelScrollRef}
+        className="min-h-0 flex-1 space-y-4 overflow-y-auto p-1"
+      >
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
@@ -1377,7 +1545,7 @@ export function CharacterStage({
           <Sparkles className="mr-1 h-3.5 w-3.5" />
           {generatingNarrative || isTyping
             ? "AI 設計中…"
-            : "請 AI 設計角色敘事"}
+            : "請 AI 設計角色"}
         </Button>
         <Button
           size="sm"
@@ -1412,7 +1580,7 @@ export function CharacterStage({
       latestSystemNotice ? (
         <p className="text-xs text-muted">
           {generatingNarrative || sessionStatus === "running"
-            ? "AI 設計中，完成後會自動帶入身分／鉤子／背包欄位（不會改配點）。"
+            ? "AI 設計中，完成後會帶入身分／鉤子／背包，並重設本席技能藍圖（屬性配點方式不變，技能配點會清空）。"
             : latestSystemNotice}
         </p>
       ) : null}
@@ -1652,7 +1820,7 @@ export function CharacterStage({
                     ))}
                 </div>
                 <p className="mt-1.5 text-[10px] text-muted">
-                  克蘇魯神話創角固定 0；冒險中上升會降低 SAN 上限（99−神話）。
+                  克蘇魯神話創角固定 0；冒險中因神話 SAN／禁書即時上升，並降低 SAN 上限（99−神話）。不走結局成長檢定。
                 </p>
               </div>
             ) : null}
@@ -1771,14 +1939,14 @@ export function CharacterStage({
         ) : null}
       </section>
 
-      {/* ═══ 雙軌：Stats | Hooks ═══ */}
+      {/* ═══ 雙軌：Stats | Hooks，技能全寬在下 ═══ */}
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Stats track */}
         <section className="space-y-3 rounded-lg border border-border p-3">
           <div>
             <div className="text-sm font-medium text-ink">數值面板</div>
             <p className="text-[11px] text-muted">
-              依規則分配屬性／技能；衍生值由 MathJS 即時計算。
+              依規則分配屬性；衍生值由 MathJS 即時計算。
             </p>
           </div>
 
@@ -1788,17 +1956,36 @@ export function CharacterStage({
                 <Label className="text-xs">
                   {isCoc ? "擲骰決定特性（結果鎖定）" : "物理擲骰（結果鎖定）"}
                 </Label>
-                <Button size="sm" onClick={rollAllDice}>
+                <Button
+                  size="sm"
+                  variant={rolledPool.length ? "secondary" : "default"}
+                  onClick={rollAllDice}
+                >
                   {rolledPool.length ? "重新擲骰" : "開始擲骰"}
                 </Button>
               </div>
-              {rollLog.length ? (
-                <ul className="space-y-0.5 text-[10px] text-muted">
-                  {rollLog.map((l) => (
-                    <li key={l}>{l}</li>
-                  ))}
-                </ul>
-              ) : null}
+              <ul className="space-y-0.5 text-[10px] text-muted">
+                {defs.map((d) => {
+                  const formula =
+                    d.dice_formula || (isDnd ? "4d6dl1" : "3d6x5");
+                  const result = diceRollResults[d.key];
+                  return (
+                    <li key={d.key} className="leading-relaxed">
+                      <span>
+                        {d.label}: {formula}
+                      </span>
+                      {result ? (
+                        <>
+                          {" ---> "}
+                          <span className="text-ink/90">
+                            {renderDiceResultWithBoldFaces(result)}
+                          </span>
+                        </>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
               <div className="grid grid-cols-2 gap-2">
                 {defs.map((d) => (
                   <div
@@ -1997,155 +2184,30 @@ export function CharacterStage({
             </div>
           ) : null}
 
-          {showSkillAlloc ? (
-            <div className="space-y-3 rounded border border-border/70 bg-bg/20 p-2">
-              <div className="space-y-2">
-                <Label className="text-xs">技能雙點池</Label>
-                <p className="text-[10px] text-muted">
-                  職業點只能花在「職業」技能上；興趣點可花在任何技能。單技創角上限{" "}
-                  {COC_CREATION_SKILL_CAP}% 。若職業點花不完，請把更多技能標成職業，或從目錄新增技能。
-                </p>
-                <p className="text-[10px] text-muted">
-                  職業技能 {occSkillCount} 項 · 職業點可吸收上限約{" "}
-                  {occAbsorbCap}（已用 {occUsed}）
-                </p>
-                {occUnspendable > 0 ? (
-                  <p className="text-[11px] text-amber-400/95">
-                    職業點還剩 {occRemaining}，但目前職業技能最多只能再吸收{" "}
-                    {occRoomLeft}（單技上限{" "}
-                    {COC_CREATION_SKILL_CAP}%）。請將更多技能標為「職業」，或下方新增技能。
-                  </p>
-                ) : null}
-                {isCoc && cocCatalogOptions.length ? (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <select
-                      className="h-8 min-w-[10rem] flex-1 rounded-md border border-border bg-surface px-2 text-xs"
-                      value={addSkillPick}
-                      onChange={(e) => setAddSkillPick(e.target.value)}
-                    >
-                      <option value="">新增技能（標為職業）…</option>
-                      {cocCatalogOptions.map((s) => (
-                        <option key={s.name} value={s.name}>
-                          {s.name}（基礎 {s.base_value}%）
-                        </option>
-                      ))}
-                    </select>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={!addSkillPick}
-                      onClick={addCatalogSkill}
-                    >
-                      加入
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
-              <div className="space-y-2">
-                {allocSkills.map((sk) => {
-                  const spend = skillSpend[sk.name] ?? { occ: 0, interest: 0 };
-                  const value = character.skills[sk.name] ?? sk.base_value;
-                  const over80 = value > 80;
-                  return (
-                    <div
-                      key={sk.name}
-                      className="rounded bg-bg/30 px-2 py-2"
-                    >
-                      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <HoverTooltip
-                            header={sk.name}
-                            content={
-                              sk.description?.trim() ||
-                              resolveSkillDescription(sk.name, {
-                                systemId: character.system_id,
-                                sheetDescriptions: character.skill_descriptions,
-                                schemaSkills: schema?.recommended_skills,
-                              })
-                            }
-                          >
-                            <div className="text-xs text-ink underline decoration-dotted decoration-muted underline-offset-2">
-                              {sk.name}
-                            </div>
-                          </HoverTooltip>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={sk.is_occupational ? "default" : "secondary"}
-                            className="h-6 px-2 text-[10px]"
-                            onClick={() => toggleOccupational(sk.name)}
-                          >
-                            {sk.is_occupational ? "職業 ✓" : "標為職業"}
-                          </Button>
-                        </div>
-                        <div className="text-[10px] text-muted">
-                          基礎 {sk.base_value}
-                          <span
-                            className={`ml-2 text-sm font-medium ${over80 ? "text-amber-400" : "text-ink"}`}
-                          >
-                            → {value}%
-                          </span>
-                        </div>
-                      </div>
-                      <div className="space-y-1.5">
-                        {sk.is_occupational ? (
-                          <SkillPoolControls
-                            label="職業"
-                            value={spend.occ}
-                            max={maxAffordableFor(sk.name, "occ")}
-                            remainingBudget={occBudget - occUsed}
-                            onSet={(n) => setSkillPool(sk.name, "occ", n)}
-                            onAdjust={(d) => adjustSkill(sk.name, "occ", d)}
-                          />
-                        ) : null}
-                        {interestBudget > 0 ? (
-                          <SkillPoolControls
-                            label="興趣"
-                            value={spend.interest}
-                            max={maxAffordableFor(sk.name, "interest")}
-                            remainingBudget={interestBudget - interestUsed}
-                            onSet={(n) =>
-                              setSkillPool(sk.name, "interest", n)
-                            }
-                            onAdjust={(d) =>
-                              adjustSkill(sk.name, "interest", d)
-                            }
-                          />
-                        ) : null}
-                      </div>
-                      {value >= COC_CREATION_SKILL_CAP ? (
-                        <p className="mt-1.5 text-[10px] text-accent-2">
-                          已達創角上限 {COC_CREATION_SKILL_CAP}%（大師級）。更高數值請留給遊玩後成長。
-                        </p>
-                      ) : over80 ? (
-                        <p className="mt-1.5 text-[10px] text-amber-400/90">
-                          警告：超過 80%，成長檢定將更困難。
-                        </p>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
-
           {schema && isCoc && attrsReady && pointBuyReady ? (
             <div className="space-y-2 rounded border border-border/70 bg-bg/20 p-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <Label className="text-xs">年齡修正（Age Modifiers）</Label>
+                <HoverTooltip
+                  header="年齡修正"
+                  content={cocAgeModifiersTooltipContent()}
+                >
+                  <Label className="cursor-help text-xs underline decoration-dotted decoration-muted underline-offset-2">
+                    年齡修正（Age Modifiers）
+                  </Label>
+                </HoverTooltip>
                 <Button
                   type="button"
                   size="sm"
+                  variant={ageMod ? "secondary" : "default"}
                   onClick={applyCocAgeModifiers}
                   disabled={ageYears == null || ageYears < 15}
                 >
                   {ageMod ? "重新套用" : "套用年齡修正"}
                 </Button>
               </div>
-              <p className="text-[10px] text-muted">
-                請先在上方身分資料填寫年齡。規則書：依年齡帶調整 EDU／物理特性／MOV；15–19
-                另擲幸運兩次取高。改屬性會清除已套用的修正。
-              </p>
+              {ageModError ? (
+                <p className="text-[11px] text-amber-400/95">{ageModError}</p>
+              ) : null}
               {ageYears == null ? (
                 <p className="text-[11px] text-amber-400/95">
                   尚未解析到有效年齡數字。
@@ -2264,12 +2326,6 @@ export function CharacterStage({
               請先用完購點預算，再套用年齡修正。
             </p>
           ) : null}
-          {schema && isCoc && attrsReady && pointBuyReady && !ageModReady ? (
-            <p className="text-xs text-muted">
-              請填寫年齡並完成年齡修正（含扣點分配）後，再開啟技能分配。
-            </p>
-          ) : null}
-
           {attrsReady ? (
             <div className="space-y-2 rounded border border-border bg-surface-2 p-2 text-xs">
               <div className="text-[10px] uppercase tracking-wide text-muted">
@@ -2350,7 +2406,7 @@ export function CharacterStage({
           <div className="space-y-1">
             <Label className="text-xs">背景短述</Label>
             <Textarea
-              rows={3}
+              rows={6}
               placeholder="一句到一段的人物背景…"
               value={character.personal_bio ?? ""}
               onChange={(e) =>
@@ -2373,7 +2429,7 @@ export function CharacterStage({
                     </span>
                   </Label>
                   <Textarea
-                    rows={3}
+                    rows={5}
                     placeholder={`寫下你的「${q.category}」…`}
                     value={character.backstory_hooks[q.id] ?? ""}
                     onChange={(e) =>
@@ -2414,11 +2470,197 @@ export function CharacterStage({
             />
           </div>
         </section>
+
+        {/* Skills: full width under stats+hooks */}
+        {isCoc ? (
+          <section className="space-y-3 rounded-lg border border-border p-3 lg:col-span-2">
+            <div>
+              <div className="text-sm font-medium text-ink">技能配點</div>
+              <p className="text-[11px] text-muted">
+                完成屬性與年齡修正後，在此分配職業／興趣技能點。
+              </p>
+            </div>
+            {showSkillAlloc ? (
+              <div className="space-y-3 rounded border border-border/70 bg-bg/20 p-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <Label className="text-xs">技能雙點池</Label>
+                    <p className="text-[10px] text-muted">
+                      職業點只能花在「職業」技能上；興趣點可花在任何技能。單技創角上限{" "}
+                      {COC_CREATION_SKILL_CAP}%
+                      。若職業點花不完，請把更多技能標成職業，或從目錄新增技能。
+                    </p>
+                    <p className="text-[10px] text-muted">
+                      職業技能 {occSkillCount} 項 · 職業點可吸收上限約{" "}
+                      {occAbsorbCap}（已用 {occUsed}）
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="shrink-0"
+                    onClick={() => setResetSkillSpendOpen(true)}
+                  >
+                    重置技能配點
+                  </Button>
+                </div>
+                {skillAllocHint ? (
+                  <p className="text-[11px] text-amber-400/95">{skillAllocHint}</p>
+                ) : null}
+                {occUnspendable > 0 ? (
+                  <p className="text-[11px] text-amber-400/95">
+                    職業點還剩 {occRemaining}，但目前職業技能最多只能再吸收{" "}
+                    {occRoomLeft}（單技上限 {COC_CREATION_SKILL_CAP}
+                    %）。請將更多技能標為「職業」，或下方新增技能。
+                  </p>
+                ) : null}
+                {cocCatalogOptions.length ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      className="h-8 min-w-[10rem] flex-1 rounded-md border border-border bg-surface px-2 text-xs"
+                      value={addSkillPick}
+                      onChange={(e) => setAddSkillPick(e.target.value)}
+                    >
+                      <option value="">新增技能（標為職業）…</option>
+                      {cocCatalogOptions.map((s) => (
+                        <option key={s.name} value={s.name}>
+                          {s.name}（基礎 {s.base_value}%）
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={!addSkillPick}
+                      onClick={addCatalogSkill}
+                    >
+                      加入
+                    </Button>
+                  </div>
+                ) : null}
+                <div className="grid gap-3 md:grid-cols-2">
+                  {allocSkills.map((sk) => {
+                    const spend = skillSpend[sk.name] ?? { occ: 0, interest: 0 };
+                    const value = sk.base_value + spend.occ + spend.interest;
+                    const over80 = value > 80;
+                    const isOccupational = sk.is_occupational;
+                    const hasSpend = spend.occ > 0 || spend.interest > 0;
+                    return (
+                      <div
+                        key={sk.name}
+                        className={cn(
+                          "overflow-hidden rounded-lg border shadow-sm",
+                          isOccupational
+                            ? "border-accent/40 bg-accent/5"
+                            : "border-border bg-surface",
+                          hasSpend && "ring-1 ring-accent/25",
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            "flex flex-wrap items-center gap-2 border-b px-3 py-2",
+                            isOccupational
+                              ? "border-accent/20 bg-accent/10"
+                              : "border-border/60 bg-bg/30",
+                          )}
+                        >
+                          <HoverTooltip
+                            header={sk.name}
+                            content={
+                              resolveSkillDescription(sk.name, {
+                                systemId: character.system_id,
+                                sheetDescriptions:
+                                  character.skill_descriptions,
+                                schemaSkills: schema?.recommended_skills,
+                              }) ||
+                              sk.description?.trim() ||
+                              "無說明"
+                            }
+                          >
+                            <div className="text-xs font-medium text-ink underline decoration-dotted decoration-muted underline-offset-2">
+                              {sk.name}
+                            </div>
+                          </HoverTooltip>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={isOccupational ? "default" : "secondary"}
+                            className="h-6 px-2 text-[10px]"
+                            onClick={() => toggleOccupational(sk.name)}
+                          >
+                            {isOccupational ? "職業 ✓" : "標為職業"}
+                          </Button>
+                          <span className="ml-auto shrink-0 text-[10px] text-muted tabular-nums">
+                            基礎 {sk.base_value}
+                          </span>
+                          <span
+                            className={cn(
+                              "shrink-0 text-sm font-semibold tabular-nums",
+                              over80 ? "text-amber-400" : "text-ink",
+                            )}
+                          >
+                            總和 {value}%
+                          </span>
+                        </div>
+                        <div className="space-y-1.5 px-3 py-2.5">
+                          {isOccupational ? (
+                            <SkillPoolControls
+                              label="職業"
+                              value={spend.occ}
+                              max={maxAffordableFor(sk.name, "occ")}
+                              remainingBudget={occBudget - occUsed}
+                              onSet={(n) => setSkillPool(sk.name, "occ", n)}
+                              onAdjust={(d) => adjustSkill(sk.name, "occ", d)}
+                            />
+                          ) : null}
+                          {interestBudget > 0 ? (
+                            <SkillPoolControls
+                              label="興趣"
+                              value={spend.interest}
+                              max={maxAffordableFor(sk.name, "interest")}
+                              remainingBudget={interestBudget - interestUsed}
+                              onSet={(n) =>
+                                setSkillPool(sk.name, "interest", n)
+                              }
+                              onAdjust={(d) =>
+                                adjustSkill(sk.name, "interest", d)
+                              }
+                            />
+                          ) : null}
+                        </div>
+                        {value >= COC_CREATION_SKILL_CAP ? (
+                          <p className="border-t border-border/50 px-3 py-1.5 text-[10px] text-accent-2">
+                            已達創角上限 {COC_CREATION_SKILL_CAP}
+                            %（大師級）。更高數值請留給遊玩後成長。
+                          </p>
+                        ) : over80 ? (
+                          <p className="border-t border-border/50 px-3 py-1.5 text-[10px] text-amber-400/90">
+                            警告：超過 80%，成長檢定將更困難。
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-muted">
+                {!attrsReady
+                  ? "請先完成左側屬性分配。"
+                  : !pointBuyReady
+                    ? "請先用完購點預算。"
+                    : "請填寫年齡並完成年齡修正（含扣點分配）後，再開啟技能分配。"}
+              </p>
+            )}
+          </section>
+        ) : null}
+
       </div>
 
       {creationWarnings.length ? (
         <div className="space-y-1 rounded-md border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-ink">
-          <div className="font-medium text-accent-2">創角提醒（仍可開始）</div>
+          <div className="font-medium text-accent-2">創角提醒</div>
           {creationWarnings.map((w) => (
             <p key={w} className="text-muted">
               {w}
@@ -2488,8 +2730,52 @@ export function CharacterStage({
         </p>
       ) : null}
       </div>
+
+      <Modal
+        open={resetSkillSpendOpen}
+        onOpenChange={setResetSkillSpendOpen}
+        title="重置技能配點"
+      >
+        <div className="space-y-4 text-sm">
+          <p className="text-ink">
+            確定要將技能配點全部清零嗎？此操作無法復原。
+          </p>
+          <p className="text-xs text-muted">
+            會保留依資產區間設定的「信用評級」配點；其餘職業／興趣點歸零，技能％回到基礎值。
+          </p>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() => setResetSkillSpendOpen(false)}
+            >
+              取消
+            </Button>
+            <Button type="button" size="sm" onClick={confirmResetSkillSpend}>
+              確認重置
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
+}
+
+/** 將 resultDetail 中的 *n* 渲染成粗體骰面 */
+function renderDiceResultWithBoldFaces(detail: string) {
+  const parts = detail.split(/(\*\d+\*)/g);
+  return parts.map((part, i) => {
+    const m = /^\*(\d+)\*$/.exec(part);
+    if (m) {
+      return (
+        <strong key={i} className="font-semibold text-ink">
+          {m[1]}
+        </strong>
+      );
+    }
+    return <span key={i}>{part}</span>;
+  });
 }
 
 function SkillPoolMeter({
@@ -2542,7 +2828,7 @@ function SkillPoolMeter({
   );
 }
 
-const QUICK_STEPS = [5, 10, 20] as const;
+const QUICK_STEP = 10;
 
 function PointBuyRow({
   label,
@@ -2643,7 +2929,14 @@ function SkillPoolControls({
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="w-8 shrink-0 text-[10px] text-muted">{label}</span>
+      <span
+        className={cn(
+          "w-9 shrink-0 text-[10px] font-medium",
+          value > 0 ? "text-accent" : "text-muted",
+        )}
+      >
+        {label}
+      </span>
       <Button
         type="button"
         size="sm"
@@ -2663,6 +2956,10 @@ function SkillPoolControls({
         value={draft}
         onBlur={commitDraft}
         onChange={(e) => setDraft(e.target.value)}
+        onWheel={(e) => {
+          // 避免頁面捲動時誤改 number input
+          e.currentTarget.blur();
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.currentTarget.blur();
@@ -2692,19 +2989,16 @@ function SkillPoolControls({
       >
         +
       </Button>
-      {QUICK_STEPS.map((step) => (
-        <Button
-          key={step}
-          type="button"
-          size="sm"
-          variant="secondary"
-          className="h-8 px-2"
-          disabled={remainingBudget <= 0}
-          onClick={() => onAdjust(step)}
-        >
-          +{step}
-        </Button>
-      ))}
+      <Button
+        type="button"
+        size="sm"
+        variant="secondary"
+        className="h-8 px-2"
+        disabled={remainingBudget <= 0}
+        onClick={() => onAdjust(QUICK_STEP)}
+      >
+        +{QUICK_STEP}
+      </Button>
       <Button
         type="button"
         size="sm"

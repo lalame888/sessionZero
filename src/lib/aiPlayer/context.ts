@@ -1,8 +1,8 @@
 import {
   formatChapterSummariesForPrompt,
   houseRulesSummary,
-  SLIDING_WINDOW,
 } from "@/engine/contextAssembler";
+import { isNoiseHistoryNarrative } from "@/lib/historyHygiene";
 import { normalizeScenarioScale } from "@/engine/scenarioScale";
 import type {
   ChapterSummary,
@@ -28,12 +28,19 @@ export interface PlayerAgentContextInput {
   chapterSummaries: ChapterSummary[];
   recentMessages: ChatMessage[];
   turn: number;
+  promptMode?: "seed" | "delta";
 }
+
+const PLAYER_RECENT_MAX = 4;
+const PLAYER_LINE_MAX = 200;
 
 /** 組裝僅含公開資訊的 Player Agent prompt（絕不含 hidden bible）。 */
 export function assemblePlayerAgentPrompt(
   input: PlayerAgentContextInput,
 ): string {
+  if (input.promptMode === "delta") {
+    return assemblePlayerAgentDeltaPrompt(input);
+  }
   const layers: string[] = [];
 
   layers.push(`[PLAYER AGENT TASK]
@@ -79,16 +86,11 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
     );
   }
 
-  const windowMsgs = input.recentMessages
-    .filter((m) => m.role === "user" || m.role === "agent")
-    .slice(-SLIDING_WINDOW * 2);
-  if (windowMsgs.length) {
-    layers.push(
-      `[RECENT DIALOGUE]\n${windowMsgs
-        .map((m) => `${m.role === "user" ? "PLAYER" : "GM"}: ${m.content}`)
-        .join("\n")}`,
-    );
-  }
+  const recent = formatPlayerAgentRecent(
+    input.recentMessages,
+    PLAYER_RECENT_MAX,
+  );
+  if (recent) layers.push(recent);
 
   layers.push(formatPlayerSheetBlock(input));
   layers.push(formatCluesBlock(input.clues));
@@ -98,6 +100,57 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
   layers.push(`[OUTPUT]
 Call submit_player_action with one concrete Traditional Chinese action.`);
 
+  return layers.join("\n\n");
+}
+
+function formatPlayerAgentRecent(
+  messages: ChatMessage[],
+  max: number,
+): string {
+  const windowMsgs = messages
+    .filter((m) => m.role === "user" || m.role === "agent")
+    .filter((m) => !isNoiseHistoryNarrative(m.content))
+    .slice(-max);
+  if (!windowMsgs.length) return "";
+  return `[RECENT DIALOGUE]
+${windowMsgs
+  .map((m) => {
+    const text = m.content.trim().slice(0, PLAYER_LINE_MAX);
+    const label =
+      m.content.trim().startsWith("【隊友·")
+        ? "COMPANION"
+        : m.role === "user"
+          ? "PLAYER"
+          : "GM";
+    return `${label}: ${text}`;
+  })
+  .join("\n")}`;
+}
+
+function assemblePlayerAgentDeltaPrompt(
+  input: PlayerAgentContextInput,
+): string {
+  const c = input.character;
+  const hp = c
+    ? `${c.derived.hp.current}/${c.derived.hp.max}`
+    : "N/A";
+  const pcIdentity = c
+    ? `[PC — YOU CONTROL THIS CHARACTER ONLY]
+Name: ${c.name}（${c.role_title}）
+Do NOT speak or act as AI companions; only declare this PC's actions.`
+    : `[PC — YOU CONTROL THIS CHARACTER ONLY]
+尚未綁定玩家角色 — 不可行動。`;
+  const layers = [
+    `[PLAYER AGENT DELTA]
+Conversation continues. Decide the PC's next action. Call submit_player_action once.`,
+    pcIdentity,
+    `[STATE]
+Turn: ${input.turn} | Location: ${input.location || "未知"} | HP: ${hp}`,
+  ];
+  const recent = formatPlayerAgentRecent(input.recentMessages, 2);
+  if (recent) layers.push(recent);
+  layers.push(`[OUTPUT]
+Call submit_player_action with one concrete Traditional Chinese action.`);
   return layers.join("\n\n");
 }
 

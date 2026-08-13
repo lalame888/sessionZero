@@ -294,7 +294,7 @@ function render(campaign, source) {
       (entry.diceRecord
         ? '<div class="dice"><div>骰子：' +
           escapeHtml(entry.diceRecord.skillName) +
-          (entry.diceRecord.isSecret ? "（原暗骰，現已揭曉）" : "") +
+          (entry.diceRecord.isSecret ? "（原暗骰）" : "") +
           "</div><div>" +
           escapeHtml(entry.diceRecord.diceType) +
           " → " +

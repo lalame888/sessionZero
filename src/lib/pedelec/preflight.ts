@@ -86,6 +86,15 @@ export async function checkPedelecPrerequisites(): Promise<PreflightState> {
         message: "偵測不到 Pedelec Chrome Extension（可能未安裝、已停用或 bridge 未連線）。",
       };
     }
+    // SDK：連線狀態以 appConnected（Desktop ping）為準，不可用 listProviders 當探測。
+    if (!approval.appConnected) {
+      return {
+        ready: false,
+        reason: "DESKTOP_DISCONNECTED",
+        message:
+          "Pedelec Desktop 未連線。請啟動 Desktop App 後按「重新檢查」。",
+      };
+    }
     if (!approval.approved) {
       return {
         ready: false,
@@ -95,10 +104,22 @@ export async function checkPedelecPrerequisites(): Promise<PreflightState> {
       };
     }
 
-    const [providers, settings] = await Promise.all([
-      pedelec.listProviders(),
-      pedelec.getSettings(),
-    ]);
+    // getSettings 與 listProviders 分開：Desktop 偶發回傳 SDK 不認得的 settings shape
+    //（SDK_PROTOCOL_ERROR: get_settings response had invalid shape），不應整段預檢失敗。
+    let providers: Awaited<ReturnType<typeof pedelec.listProviders>>;
+    try {
+      providers = await pedelec.listProviders();
+    } catch (error) {
+      console.warn("listProviders failed", error);
+      return {
+        ready: false,
+        reason: "NO_AVAILABLE_PROVIDER",
+        message:
+          "Pedelec Desktop 未就緒或尚無可用 Provider。請啟動 Desktop 並設定 Provider。",
+      };
+    }
+
+    const settings = await loadPedelecSettings();
     const available = providers.filter((p) => p.available);
     if (!available.length) {
       return {
@@ -122,6 +143,7 @@ export async function checkPedelecPrerequisites(): Promise<PreflightState> {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Pedelec 預檢失敗";
+    console.warn("checkPedelecPrerequisites error", error);
     return { ready: false, reason: "ERROR", message };
   }
 }
@@ -137,7 +159,20 @@ export async function listProviderOptions() {
 export async function loadPedelecSettings() {
   try {
     return await pedelec.getSettings();
-  } catch {
+  } catch (error) {
+    // Desktop / SDK 版本不一致時常見：defaultProvider 不是已知 code、
+    // defaultModels 為 null、或 key/value 型別不符。預檢改退回「無 Desktop 預設」。
+    console.warn("getSettings failed, using empty defaults", error);
     return { defaultProvider: null as ProviderCode | null, defaultModels: {} };
+  }
+}
+
+/** Desktop ping；失敗視為未連線，不開核准彈窗。 */
+export async function probePedelecAppConnected(): Promise<boolean> {
+  try {
+    const approval = await pedelec.getApprovalStatus();
+    return Boolean(approval.installed && approval.appConnected);
+  } catch {
+    return false;
   }
 }

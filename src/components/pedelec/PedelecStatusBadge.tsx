@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type { PedelecSessionStatus } from "@kaoruisaac/pedelec";
 import { AlertCircle, CheckCircle2, Loader2, PlugZap, WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { probePedelecAppConnected } from "@/lib/pedelec/preflight";
+import { syncSessionStatusFromLive } from "@/lib/pedelec/createGameSession";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
 
@@ -21,6 +23,9 @@ function labelFor(
     if (reason === "NEEDS_INSTALLATION") {
       return { text: "Extension 不可用", icon: <WifiOff className="h-3.5 w-3.5" /> };
     }
+    if (reason === "DESKTOP_DISCONNECTED") {
+      return { text: "Desktop 未連線", icon: <WifiOff className="h-3.5 w-3.5" /> };
+    }
     if (reason === "NO_AVAILABLE_PROVIDER") {
       return { text: "Desktop / Provider 未就緒", icon: <AlertCircle className="h-3.5 w-3.5" /> };
     }
@@ -38,24 +43,51 @@ function labelFor(
   return { text: "Pedelec 就緒", icon: <PlugZap className="h-3.5 w-3.5" /> };
 }
 
-export function PedelecStatusBadge({ onRecheck }: { onRecheck?: () => void }) {
+export function PedelecStatusBadge({
+  onRecheck,
+}: {
+  onRecheck?: () => void | Promise<void>;
+}) {
   const preflight = useGameStore((s) => s.preflight);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
+  const setPreflight = useGameStore((s) => s.setPreflight);
   const setShowInstallGuide = useGameStore((s) => s.setShowInstallGuide);
   const setShowSettings = useGameStore((s) => s.setShowSettings);
   const [pulse, setPulse] = useState(false);
+  const [probing, setProbing] = useState(false);
 
   useEffect(() => {
     if (sessionStatus === "running") setPulse(true);
     else setPulse(false);
   }, [sessionStatus]);
 
+  // store 偶發沒跟上 live（尤其 waiting_tool_result 後 agent 已結束）
+  useEffect(() => {
+    if (
+      sessionStatus !== "running" &&
+      sessionStatus !== "waiting_tool_result"
+    ) {
+      return;
+    }
+    syncSessionStatusFromLive();
+    const id = window.setInterval(() => {
+      syncSessionStatusFromLive();
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [sessionStatus]);
+
+  const checking = preflight.reason === "CHECKING" || probing;
   const { text, icon } = labelFor(
     preflight.ready,
     preflight.reason,
     sessionStatus,
-    preflight.reason === "CHECKING",
+    checking,
   );
+
+  const openInstallGuide = () => {
+    setShowSettings(false);
+    setShowInstallGuide(true);
+  };
 
   return (
     <div
@@ -66,22 +98,45 @@ export function PedelecStatusBadge({ onRecheck }: { onRecheck?: () => void }) {
     >
       <button
         type="button"
+        disabled={checking}
         onClick={() => {
-          if (!preflight.ready) setShowInstallGuide(true);
-          else setShowSettings(true);
+          void (async () => {
+            if (!preflight.ready) {
+              openInstallGuide();
+              return;
+            }
+            setProbing(true);
+            try {
+              const connected = await probePedelecAppConnected();
+              if (!connected) {
+                setPreflight({
+                  ready: false,
+                  reason: "DESKTOP_DISCONNECTED",
+                  message:
+                    "Pedelec Desktop 未連線。請啟動 Desktop App 後按「重新檢查」。",
+                });
+                openInstallGuide();
+                return;
+              }
+              setShowSettings(true);
+            } finally {
+              setProbing(false);
+            }
+          })();
         }}
-        className="inline-flex items-center gap-2 rounded-sm px-1.5 py-0.5 outline-none transition-colors hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-accent"
+        className="inline-flex items-center gap-2 rounded-sm px-1.5 py-0.5 outline-none transition-colors hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-70"
         aria-label={`Pedelec 狀態：${text}`}
       >
         {icon}
         <span>{text}</span>
       </button>
-      {onRecheck && !preflight.ready ? (
+      {onRecheck ? (
         <Button
           size="sm"
           variant="ghost"
           className="h-6 px-2"
-          onClick={() => onRecheck()}
+          disabled={checking}
+          onClick={() => void onRecheck()}
         >
           重檢
         </Button>

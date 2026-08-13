@@ -27,8 +27,9 @@ function isNormalizedFragmentOf(shorter: string, longer: string): boolean {
   const a = normNarrative(shorter);
   const b = normNarrative(longer);
   if (a.length < 40 || b.length < 60) return false;
-  if (a.length >= b.length * 0.95) return false;
-  return b.includes(a);
+  if (b.includes(a)) return true;
+  const chunk = a.slice(0, Math.floor(a.length * 0.75));
+  return chunk.length >= 80 && b.includes(chunk);
 }
 
 /** 1 - 正規化 Levenshtein / maxLen；短字串可接受 */
@@ -120,4 +121,43 @@ export function isNarrativeRewrite(previous: string, next: string): boolean {
 /** 兩則敘事是否應合併為同一則（順序無關） */
 export function areDuplicateNarratives(a: string, b: string): boolean {
   return isNarrativeRewrite(a, b) || isNarrativeRewrite(b, a);
+}
+
+const DROP_REWRITE_PARA_RE =
+  /^開場已送出|^場景已設置完畢|^等待.+隊友回應|^【隊友[·・]/;
+
+/**
+ * 若 next 幾乎是在重寫 previous（常見：開場後隊友發言，GM 又把開場貼一次），
+ * 只留下 previous 裡沒有的新段落。完全重複則回傳空字串。
+ */
+export function uniqueNarrativeSuffix(previous: string, next: string): string {
+  const prev = previous.trim();
+  const curr = next.trim();
+  if (!curr) return "";
+  if (!prev) return curr;
+
+  const prevNorm = normNarrative(prev);
+  const paras = curr.split(/\n\n+/);
+  const kept: string[] = [];
+  for (const raw of paras) {
+    const t = raw.trim();
+    if (!t) continue;
+    if (DROP_REWRITE_PARA_RE.test(t)) continue;
+    const pn = normNarrative(t);
+    if (pn.length >= 40 && prevNorm.includes(pn)) continue;
+    if (pn.length >= 80) {
+      const head = pn.slice(0, Math.min(100, pn.length));
+      if (prevNorm.includes(head)) continue;
+    }
+    kept.push(t);
+  }
+  const result = kept.join("\n\n").trim();
+  if (!result) return "";
+  if (
+    areDuplicateNarratives(prev, result) &&
+    result.length <= prev.length * 1.2
+  ) {
+    return "";
+  }
+  return result;
 }

@@ -22,6 +22,43 @@ export function formatWinAdjudication(winningCondition: string): string {
   ].join("\n");
 }
 
+/**
+ * 把 GM 自創的 scene_id（如 s02_inn_lobby）對回 bible 既有 id（s02_inn）。
+ */
+export function resolveCanonicalSceneId(
+  scenes: ScenarioScene[] | undefined | null,
+  requested?: string | null,
+  location?: string | null,
+): string | null {
+  if (!scenes?.length) return requested?.trim() || null;
+  const raw = (requested ?? "").trim();
+  if (raw) {
+    const exact = scenes.find((s) => s.id === raw);
+    if (exact) return exact.id;
+    const prefixHits = scenes.filter(
+      (s) =>
+        raw === s.id ||
+        raw.startsWith(`${s.id}_`) ||
+        raw.startsWith(s.id) ||
+        s.id.startsWith(raw),
+    );
+    prefixHits.sort((a, b) => b.id.length - a.id.length);
+    if (prefixHits[0]) return prefixHits[0].id;
+    const byName = scenes.find(
+      (s) => raw.includes(s.name) || s.name.includes(raw),
+    );
+    if (byName) return byName.id;
+  }
+  const loc = (location ?? "").trim();
+  if (loc) {
+    const byLoc = scenes.find(
+      (s) => loc.includes(s.name) || s.name.includes(loc),
+    );
+    if (byLoc) return byLoc.id;
+  }
+  return raw || null;
+}
+
 function sceneMatches(scene: ScenarioScene, hay: string): boolean {
   const keys = [
     scene.id,
@@ -140,18 +177,18 @@ export function formatScenarioBibleOnDemand(
     );
   }
 
-  const hay = haystack(
-    opts.location,
-    opts.playerAction,
-    opts.currentSceneId,
-  );
   const scenes = hidden.scenes ?? [];
+  const sceneId = resolveCanonicalSceneId(
+    scenes,
+    opts.currentSceneId,
+    opts.location,
+  );
+  const hay = haystack(opts.location, opts.playerAction, sceneId);
   const npcs = hidden.npcs ?? [];
   const creatures = hidden.creatures ?? [];
 
   const current =
-    (opts.currentSceneId &&
-      scenes.find((s) => s.id === opts.currentSceneId)) ||
+    (sceneId && scenes.find((s) => s.id === sceneId)) ||
     scenes.find((s) => sceneMatches(s, hay)) ||
     null;
 
@@ -359,8 +396,11 @@ export function lookupScenarioTerm(
   }
 
   if (kind === "scene" || kind === "any") {
-    const scenes = (hidden.scenes ?? []).filter(
+    const allScenes = hidden.scenes ?? [];
+    const canonId = resolveCanonicalSceneId(allScenes, q);
+    const scenes = allScenes.filter(
       (s) =>
+        s.id === canonId ||
         textMatchesQuery(`${s.id} ${s.name} ${s.summary}`, q) ||
         sceneMatches(s, q),
     );
@@ -467,8 +507,8 @@ export function lookupScenarioTerm(
 }
 
 /**
- * 每回合注入的短 canon：win + 截斷真相 + 當前／命中場景與相關 NPC／生物。
- * 其餘專有名詞請用 lookup_scenario_term。
+ * 每回合注入的短 canon：當前／命中場景與相關 NPC／生物。
+ * Win／真相／時間線請用 lookup_scenario_term（kind=core），勿把裁決全文塞進 SEED。
  */
 export function formatScenarioTurnCanon(
   hidden: HiddenFullScript,
@@ -478,28 +518,23 @@ export function formatScenarioTurnCanon(
     currentSceneId?: string | null;
   },
 ): string {
-  const TRUTH_MAX = 520;
   const chunks: string[] = [];
-  chunks.push(formatWinAdjudication(hidden.winning_condition));
-  const truth = hidden.truth_and_secrets.trim();
   chunks.push(
-    `Truth (abbrev): ${truth.length > TRUTH_MAX ? `${truth.slice(0, TRUTH_MAX)}…` : truth}`,
+    `Core (win/truth/failure/timeline): call lookup_scenario_term({ query: "win", kind: "core" }) or query truth/timeline. Never quote Win/adjudication to the player.`,
   );
-  if (hidden.failure_consequences) {
-    const f = hidden.failure_consequences.trim();
-    chunks.push(
-      `Failure: ${f.length > 180 ? `${f.slice(0, 180)}…` : f}`,
-    );
-  }
 
-  const hay = haystack(opts.location, opts.playerAction, opts.currentSceneId);
   const scenes = hidden.scenes ?? [];
+  const sceneId = resolveCanonicalSceneId(
+    scenes,
+    opts.currentSceneId,
+    opts.location,
+  );
+  const hay = haystack(opts.location, opts.playerAction, sceneId);
   const npcs = hidden.npcs ?? [];
   const creatures = hidden.creatures ?? [];
 
   const current =
-    (opts.currentSceneId &&
-      scenes.find((s) => s.id === opts.currentSceneId)) ||
+    (sceneId && scenes.find((s) => s.id === sceneId)) ||
     scenes.find((s) => sceneMatches(s, hay)) ||
     null;
 

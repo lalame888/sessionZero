@@ -169,6 +169,27 @@ export function describeCocAgeBand(band: CocAgeBandRules): string {
   return bits.join("；");
 }
 
+/** 創角頁「年齡修正」標題 hover 說明（含規則書要點） */
+export function cocAgeModifiersTooltipContent(): string {
+  return [
+    "CoC 7e 創角依調查員年齡調整特性與移動力（Age Modifiers）。",
+    "",
+    "請先在上方身分資料填寫年齡，再按套用。",
+    "規則書：依年齡帶調整 EDU／物理特性／MOV；15–19 另擲幸運兩次取高。改屬性會清除已套用的修正。",
+    "",
+    "年齡帶摘要：",
+    "• 15–19：EDU −5；STR／SIZ 合計 −5；幸運擲兩次取高",
+    "• 20–39：EDU 增長檢定 ×1",
+    "• 40–49：EDU ×2；APP −5；STR／CON／DEX 合計 −5；MOV −1",
+    "• 50–59：EDU ×3；APP −10；物理合計 −10；MOV −2",
+    "• 60–69：EDU ×4；APP −15；物理合計 −20；MOV −3",
+    "• 70–79：EDU ×4；APP −20；物理合計 −40；MOV −4",
+    "• 80+：EDU ×4；APP −25；物理合計 −80；MOV −5",
+    "",
+    "EDU 增長：擲 1D100，若大於目前 EDU 則 +1D10（上限 99）。",
+  ].join("\n");
+}
+
 export function rollEduImprovementCheck(currentEdu: number): {
   roll: number;
   success: boolean;

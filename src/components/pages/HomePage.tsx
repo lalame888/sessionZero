@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, FolderOpen, Plus, Trash2, Upload, Users } from "lucide-react";
+import {
+  ChevronDown,
+  Copy,
+  FolderOpen,
+  MoreHorizontal,
+  Plus,
+  Trash2,
+  Upload,
+  Users,
+} from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
 import { CharacterLibraryPanel } from "@/components/character/CharacterLibraryPanel";
 import { Button } from "@/components/ui/button";
@@ -42,6 +51,116 @@ const TAB_META: Record<
   },
 };
 
+function SessionCardMenu({
+  title,
+  disabled,
+  open,
+  onOpenChange,
+  onDuplicate,
+  onDelete,
+}: {
+  title: string;
+  disabled: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+  const [pos, setPos] = useState({ top: 0, right: 0 });
+
+  useEffect(() => {
+    if (!open) return;
+    const sync = () => {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (!r) return;
+      setPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
+    };
+    sync();
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) {
+        onOpenChangeRef.current(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onOpenChangeRef.current(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", sync);
+    window.addEventListener("scroll", sync, true);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", sync);
+      window.removeEventListener("scroll", sync, true);
+    };
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} className="shrink-0">
+      <Button
+        ref={btnRef}
+        size="sm"
+        variant="ghost"
+        disabled={disabled}
+        aria-label={`「${title}」更多操作`}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className={cn(
+          "text-muted transition-opacity",
+          open
+            ? "opacity-100"
+            : "opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100",
+        )}
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenChange(!open);
+        }}
+      >
+        <MoreHorizontal className="h-4 w-4" />
+      </Button>
+      {open ? (
+        <div
+          role="menu"
+          className="fixed z-50 min-w-[9.5rem] overflow-hidden rounded-md border border-border bg-surface py-1 shadow-lg"
+          style={{ top: pos.top, right: pos.right }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink hover:bg-surface-2"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenChange(false);
+              onDuplicate();
+            }}
+          >
+            <Copy className="h-3.5 w-3.5 shrink-0" />
+            複製劇本
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-danger hover:bg-surface-2"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenChange(false);
+              onDelete();
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5 shrink-0" />
+            刪除
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function HomePage({
   sessions,
   pedelecReady,
@@ -50,6 +169,7 @@ export function HomePage({
   onImportScript,
   onOpen,
   onDelete,
+  onDuplicateScript,
 }: {
   sessions: CampaignMeta[];
   pedelecReady: boolean;
@@ -58,9 +178,11 @@ export function HomePage({
   onImportScript: (file: File) => void | Promise<void>;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
+  onDuplicateScript: (id: string) => void;
 }) {
   const [tab, setTab] = useState<HomeTab | null>(sessions?.length > 0 ? "sessions" : null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [openCardMenuId, setOpenCardMenuId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const createDisabled = bootstrapping || !pedelecReady;
@@ -239,7 +361,7 @@ export function HomePage({
                       <li
                         key={s.id}
                         className={cn(
-                          "flex items-start gap-2 rounded-lg border border-border bg-surface-2/50 p-3",
+                          "group flex items-start gap-2 rounded-lg border border-border bg-surface-2/50 p-3",
                           "transition-colors hover:border-accent/40 hover:bg-accent/[0.06]",
                         )}
                       >
@@ -266,17 +388,19 @@ export function HomePage({
                             {new Date(s.updatedAt).toLocaleString()}
                           </div>
                         </button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="text-danger"
-                          onClick={() => {
+                        <SessionCardMenu
+                          title={s.title}
+                          disabled={bootstrapping}
+                          open={openCardMenuId === s.id}
+                          onOpenChange={(next) =>
+                            setOpenCardMenuId(next ? s.id : null)
+                          }
+                          onDuplicate={() => onDuplicateScript(s.id)}
+                          onDelete={() => {
                             if (confirm(`確定刪除「${s.title}」？`))
                               onDelete(s.id);
                           }}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        />
                       </li>
                     ))}
                   </ul>

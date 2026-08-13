@@ -1,6 +1,7 @@
 import type {
   PedelecError,
   PedelecSession,
+  PedelecSessionStatus,
   ProviderCode,
 } from "@kaoruisaac/pedelec";
 import {
@@ -26,6 +27,7 @@ import {
   rollDice,
   type AdvantageMode,
 } from "@/engine/dice";
+import { isCthulhuMythosSkillName } from "@/engine/mythosGrowth";
 import {
   cocSuccessThreshold,
   difficultyLabelWithHint,
@@ -41,7 +43,10 @@ import {
   type ResolvedCheckKind,
 } from "@/engine/skillCheck";
 import { findSrdByTopic } from "@/engine/srdLorebook";
-import { lookupScenarioTerm } from "@/engine/scenarioLorebook";
+import {
+  lookupScenarioTerm,
+  resolveCanonicalSceneId,
+} from "@/engine/scenarioLorebook";
 import {
   assessScenarioScaleGaps,
   formatScenarioScaleGapsZh,
@@ -51,13 +56,21 @@ import {
   areDuplicateNarratives,
   isCorruptedNarrativeFragment,
   isNarrativeRewrite,
+  uniqueNarrativeSuffix,
 } from "@/lib/narrativeDedupe";
+import {
+  companionAlreadyHasGmReply,
+  findLastAgentMessage,
+  isBlockingPlayerMessage,
+  isCompanionLabeledAction,
+} from "@/lib/playTurnState";
 import { requestCompanionDecision } from "@/lib/companionAi/session";
 import { useAiPlayerStore } from "@/lib/aiPlayer/store";
 import { normalizeNarrativeText } from "@/lib/normalizeNarrativeText";
 import {
   isGmMetaOnlyNarrative,
   isCompanionWaitMeta,
+  isCompanionSpeechOnly,
   stripGmMetaPrompts,
   stripLeadingCompanionParaphrase,
 } from "@/lib/stripGmMetaPrompts";
@@ -66,7 +79,12 @@ import {
   looksLikeEndingNarrative,
 } from "@/lib/endingDetect";
 import { hadPriorOpeningAttempt } from "@/lib/openingRetry";
-import { pedelec } from "@/lib/pedelec/client";
+import {
+  gateOutgoingPrompt,
+  isOutgoingPromptCancelled,
+} from "@/lib/outgoingPromptGate";
+import { explicitSessionModel, pedelec } from "@/lib/pedelec/client";
+import { resolvePlayerBoundSheet } from "@/types/party";
 import {
   isCompleteLeakedPayload,
   looksLikeLeakedToolCall,
@@ -74,13 +92,29 @@ import {
   type LeakedToolCall,
 } from "@/lib/pedelec/leakedToolCall";
 import { persistPedelecSessionId } from "@/lib/storage";
-import { GM_SESSION_GUIDANCE } from "@/prompts/gmDirectives";
+import {
+  formatPriorScriptDesignDetail,
+  GM_SESSION_GUIDANCE,
+} from "@/prompts/gmDirectives";
+import {
+  loadRecentScriptDesigns,
+} from "@/lib/campaignStorage";
 import {
   resetScenarioBibleAssetCache,
+  syncGmStandingRulesAsset,
   syncScenarioBibleAsset,
 } from "@/lib/pedelec/sessionAssets";
 import { useGameStore } from "@/store/useGameStore";
-import { allSessionTools } from "@/tools/definitions";
+import {
+  allSessionTools,
+  listToolsForLookup,
+  playingSessionTools,
+  type SessionToolName,
+} from "@/tools/definitions";
+import {
+  disposeCompanionSession,
+} from "@/lib/companionAi/session";
+import { disposeAiPlayerSession } from "@/lib/aiPlayer/session";
 import type {
   CharacterSchemaState,
   ClueItem,
@@ -94,7 +128,7 @@ import {
 } from "@/lib/historyHygiene";
 
 export type GameSessionHandle = {
-  session: PedelecSession<(typeof allSessionTools)[number]["name"]>;
+  session: PedelecSession<SessionToolName>;
   dispose: () => void;
 };
 
@@ -127,6 +161,10 @@ type NarrateStoryArgs = {
 
 let activeHandle: GameSessionHandle | null = null;
 let activeAgentMessageId: string | null = null;
+/** store 偶發沒跟上 live status；waiting_tool_result 卡住時用來計時 */
+let waitingToolSince: number | null = null;
+let missingSetupScriptWarned = false;
+const WAITING_TOOL_STUCK_MS = 90_000;
 /** 串流中尚未完整的洩漏 tool-call 緩衝（依 turnId） */
 const leakedChatBufferByTurn = new Map<string, string>();
 /** 避免同一則洩漏呼叫被重複還原 */
@@ -149,6 +187,14 @@ let lastCreateOptions: { provider: ProviderCode; model?: string } | null =
 /** 自上次 create／compact 起的 session.sendText 次數 */
 let providerSendCount = 0;
 let compactInFlight = false;
+/** 目前 GM session 掛的 tool 清單（Session 0 全套 vs PLAYING 精簡） */
+let activeToolset: "session0" | "playing" = "session0";
+
+function toolsetForPhase(
+  phase: string,
+): "session0" | "playing" {
+  return phase === "PLAYING" || phase === "ENDING" ? "playing" : "session0";
+}
 
 const DICE_TIMEOUT_MS = 170_000;
 
@@ -157,12 +203,21 @@ function applyCompanionDecision(
     Awaited<ReturnType<typeof requestCompanionDecision>>,
     { acted: true }
   >,
+  opts?: {
+    /** GM 正在 request_companion_action 同一輪：說完後 GM 會繼續，不可再開第二輪 */
+    fromGmTool?: boolean;
+    openingBeat?: boolean;
+  },
 ) {
   const label = `【隊友·${decision.companionName}】${decision.action}`;
   useGameStore.getState().appendMessage({
     role: "user",
     content: label,
   });
+  // 開場或 GM tool 同一輪：只掛氣泡。GM 會在 tool 回傳後自己寫世界反應。
+  if (opts?.fromGmTool || opts?.openingBeat) {
+    return;
+  }
   if (decision.handoff === "immediate") {
     void beginImmediateCompanionResolve({
       companionId: decision.companionId,
@@ -355,6 +410,14 @@ async function maybeAutoResolvePendingCompanionHandoff(opts?: {
   if (!session || session.getStatus() !== "idle") return;
   if (store.pendingDice) return;
   if (activeCompanionResolveId) return;
+  if (companionAlreadyHasGmReply(store.messages, handoff.companionName)) {
+    store.setPendingCompanionHandoff(null);
+    return;
+  }
+  if (isCompanionSpeechOnly(handoff.action) && !opts?.force) {
+    // 純發言且 GM 已有機會反應：不要自動再開一輪複述
+    return;
+  }
 
   companionHandoffResolveInFlight = true;
   try {
@@ -369,11 +432,19 @@ async function maybeAutoResolvePendingCompanionHandoff(opts?: {
 /** 軟停「讓 GM 結算」或玩家插話後，送出隊友結算給 GM */
 export async function resolvePendingCompanionHandoff(opts?: {
   playerSupplement?: string;
+  skipUserMessage?: boolean;
 }) {
   const store = useGameStore.getState();
   const handoff = store.pendingCompanionHandoff;
   if (!handoff) {
     throw new Error("NO_PENDING_COMPANION_HANDOFF");
+  }
+  if (
+    !opts?.playerSupplement?.trim() &&
+    companionAlreadyHasGmReply(store.messages, handoff.companionName)
+  ) {
+    store.setPendingCompanionHandoff(null);
+    return;
   }
   // 先清 UI，避免結算過程中仍顯示「可插話」
   store.setPendingCompanionHandoff(null);
@@ -402,7 +473,7 @@ export async function resolvePendingCompanionHandoff(opts?: {
   try {
     if (opts?.playerSupplement?.trim()) {
       await sendPlayerAction(opts.playerSupplement.trim(), {
-        skipUserMessage: false,
+        skipUserMessage: Boolean(opts.skipUserMessage),
         extraLayers: layers,
         companionResolve: true,
       });
@@ -435,6 +506,15 @@ async function beginImmediateCompanionResolve(input: {
   const layers = buildCompanionResolveExtraLayers(input);
   void (async () => {
     const idle = await waitForSessionIdle(160);
+    if (
+      companionAlreadyHasGmReply(
+        useGameStore.getState().messages,
+        input.companionName,
+      )
+    ) {
+      activeCompanionResolveId = null;
+      return;
+    }
     if (!idle) {
       useGameStore
         .getState()
@@ -761,11 +841,16 @@ async function runNarrateStory(args: NarrateStoryArgs) {
   }
 
   const store = useGameStore.getState();
+  const priorAgent = findLastAgentMessage(store.messages);
+  if (priorAgent && narrativeText.trim()) {
+    narrativeText = uniqueNarrativeSuffix(priorAgent.content, narrativeText);
+  }
+
   const trailingAgents: { content: string }[] = [];
   for (let i = store.messages.length - 1; i >= 0; i--) {
     const m = store.messages[i];
     if (!m) continue;
-    if (m.role === "user") break;
+    if (isBlockingPlayerMessage(m)) break;
     if (m.role === "agent") trailingAgents.push(m);
   }
   const rewriting = trailingAgents.some((m) =>
@@ -782,10 +867,17 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     a.tension ||
     a.director_notes !== undefined
   ) {
+    const scenes = store.script.hidden_full_script?.scenes ?? [];
+    const sceneId =
+      a.scene_id !== undefined
+        ? resolveCanonicalSceneId(
+            scenes,
+            a.scene_id || null,
+            a.location?.trim() || store.location,
+          )
+        : undefined;
     store.setSceneDirector({
-      ...(a.scene_id !== undefined
-        ? { currentSceneId: a.scene_id || null }
-        : {}),
+      ...(sceneId !== undefined ? { currentSceneId: sceneId } : {}),
       ...(a.scene_goal !== undefined ? { sceneGoal: a.scene_goal } : {}),
       ...(a.tension !== undefined ? { tension: a.tension } : {}),
       ...(a.director_notes !== undefined ? { notes: a.director_notes } : {}),
@@ -794,13 +886,16 @@ async function runNarrateStory(args: NarrateStoryArgs) {
 
   if (a.npc_updates?.length) {
     for (const n of a.npc_updates) {
-      store.registerNpc({
-        npc_id: n.npc_id,
-        name: n.name,
-        relation: (n.relation as NPCItem["relation"]) || "NEUTRAL",
-        status: (n.status as NPCItem["status"]) || "ALIVE",
-        description: n.description,
-      });
+      store.registerNpc(
+        {
+          npc_id: n.npc_id,
+          name: n.name,
+          relation: (n.relation as NPCItem["relation"]) || "NEUTRAL",
+          status: (n.status as NPCItem["status"]) || "ALIVE",
+          description: n.description,
+        },
+        { mentionText: narrativeText },
+      );
     }
   }
 
@@ -1016,7 +1111,8 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     }
     if (
       resolved.checkKind === "skill" &&
-      isSuccessDiceOutcome(roll.outcome)
+      isSuccessDiceOutcome(roll.outcome) &&
+      !isCthulhuMythosSkillName(skillLabel)
     ) {
       useGameStore
         .getState()
@@ -1132,12 +1228,15 @@ function flushLeakedChatBuffers(
 }
 
 function registerHandlers(
-  session: PedelecSession<(typeof allSessionTools)[number]["name"]>,
+  session: PedelecSession<SessionToolName>,
+  toolset: "session0" | "playing",
 ): () => void {
   const disposers: Array<() => void> = [];
 
+  if (toolset === "session0") {
   disposers.push(
     session.onTool("setup_script", (args) => {
+      try {
       const phase = useGameStore.getState().phase;
       if (
         phase === "PLAYING" ||
@@ -1221,6 +1320,7 @@ function registerHandlers(
         party_role_hints?: { role_title: string; brief: string }[];
       };
       useGameStore.getState().setupScript(a);
+      missingSetupScriptWarned = false;
       const gaps = assessScenarioScaleGaps({
         scale: a.scenario_scale,
         key_clues: a.hidden_full_script.key_clues,
@@ -1239,15 +1339,21 @@ function registerHandlers(
             `劇本規模深度不足（${normalizeScenarioScale(a.scenario_scale)}）：${gapNote}。可請 GM 再呼叫 setup_script 補齊，或接受較薄的即興局。`,
           );
       }
-      void syncScenarioBibleAsset(session, useGameStore.getState().script).catch(
-        (e) => {
+      // IMPORTANT:
+      // setup_script tool-call 有嚴格 timeout；情境 bible 上傳/格式化可能很大。
+      // 這段故意延後到 tool handler 已完成後再跑，避免 provider 卡在 waitingToolResult。
+      setTimeout(() => {
+        void syncScenarioBibleAsset(
+          session,
+          useGameStore.getState().script,
+        ).catch((e) => {
           useGameStore
             .getState()
             .appendSystem(
               `（系統）劇本 bible 上傳 sandbox 失敗：${e instanceof Error ? e.message : String(e)}`,
             );
-        },
-      );
+        });
+      }, 0);
       return {
         ok: true,
         system_id: a.system_id,
@@ -1259,6 +1365,12 @@ function registerHandlers(
         scale_gaps: gaps,
         scale_gap_note: gapNote || null,
       };
+      } catch (e) {
+        return {
+          ok: false,
+          error: `setup_script failed: ${e instanceof Error ? e.message : String(e)}`,
+        };
+      }
     }),
   );
 
@@ -1305,7 +1417,28 @@ function registerHandlers(
         role_title_suggestion?: string;
         mode_instructions?: string;
       };
-      useGameStore.getState().setCharacterSchema({
+      const store = useGameStore.getState();
+      // 創角頁已有全隊藍圖：只重推本席技能／職業包，鎖定配點方式
+      if (phase === "CHARACTER" && store.characterSchema && store.character) {
+        if (!a.recommended_skills?.length) {
+          return {
+            ok: false,
+            error:
+              "generate_character_schema during CHARACTER requires recommended_skills. creation_mode is locked.",
+          };
+        }
+        store.applySlotSkillBlueprint({
+          recommended_skills: a.recommended_skills,
+          starting_inventory: a.starting_inventory,
+          role_title_suggestion: a.role_title_suggestion,
+        });
+        return {
+          ok: true,
+          skills_only: true,
+          note: "Allocation mode locked to the party schema; skill blueprint applied to the current slot and spends cleared.",
+        };
+      }
+      store.setCharacterSchema({
         system_id: a.system_id as GameSystemID,
         creation_mode: a.creation_mode,
         attribute_defs: a.attribute_defs ?? [],
@@ -1349,6 +1482,12 @@ function registerHandlers(
         backstory_hooks?: { id: string; answer: string }[];
         inventory?: string[];
         player_note?: string;
+        recommended_skills?: {
+          name: string;
+          base_value: number;
+          description: string;
+          is_occupational?: boolean;
+        }[];
       };
       const store = useGameStore.getState();
       if (!store.character) {
@@ -1361,10 +1500,14 @@ function registerHandlers(
         name: applied?.name ?? a.name ?? null,
         hooks_filled: a.backstory_hooks?.length ?? 0,
         inventory_items: a.inventory?.length ?? 0,
-        note: "Narrative fields applied; attributes and skill points unchanged.",
+        skills_redesigned: Boolean(a.recommended_skills?.length),
+        note: a.recommended_skills?.length
+          ? "Narrative applied; slot skill blueprint replaced and spends cleared. Attribute allocation mode unchanged."
+          : "Narrative fields applied; attributes and skill allocation mode unchanged.",
       };
     }),
   );
+  }
 
   disposers.push(
     session.onTool("narrate_story", async (args) =>
@@ -1453,7 +1596,11 @@ function registerHandlers(
       if (isSuccessDiceOutcome(outcome)) {
         recordSuccessfulCheck(secretFp, outcome);
       }
-      if (resolved.checkKind === "skill" && isSuccessDiceOutcome(outcome)) {
+      if (
+        resolved.checkKind === "skill" &&
+        isSuccessDiceOutcome(outcome) &&
+        !isCthulhuMythosSkillName(skillLabel)
+      ) {
         store.markSkillSuccess(skillLabel, a.character_id);
       }
 
@@ -1691,7 +1838,11 @@ function registerHandlers(
           return { ok: true, acted: false, companion_id: member.id };
         }
 
-        applyCompanionDecision(decision);
+        const openingBeat = !store.lastPlayerAction.trim();
+        applyCompanionDecision(decision, {
+          fromGmTool: true,
+          openingBeat,
+        });
 
         return {
           ok: true,
@@ -1700,6 +1851,9 @@ function registerHandlers(
           companion_name: decision.companionName,
           action: decision.action,
           handoff: decision.handoff,
+          gm_instruction: openingBeat
+            ? "OPENING BEAT: Companion speech is now a separate bubble. Do NOT call narrate_story again with the opening scene. Do NOT rewrite the opening. Stop and wait for the human player."
+            : "Companion declaration is visible as a separate bubble. Do NOT re-narrate previous scene text. Do NOT prefix 【隊友·】 or paraphrase their line. Narrate only NPC/world reaction (1–5 sentences), then pause for the human PC.",
         };
       } catch (e) {
         return {
@@ -1772,10 +1926,12 @@ function registerHandlers(
           ? String((args as { focus?: string }).focus ?? "")
           : "";
       const s = useGameStore.getState();
+      const tools =
+        activeToolset === "playing" ? playingSessionTools : allSessionTools;
       const text = formatLookupGameState({
         script: s.script,
         houseRules: s.houseRules,
-        character: s.character,
+        character: resolvePlayerBoundSheet(s),
         clues: s.clues,
         npcs: s.npcs,
         madness: s.madness,
@@ -1785,6 +1941,8 @@ function registerHandlers(
         party: s.party,
         playerMemberId: s.playerMemberId,
         incapacitatedCharacterIds: s.incapacitatedCharacterIds,
+        availableTools: listToolsForLookup(tools),
+        toolsetLabel: activeToolset,
       });
       return {
         ok: true,
@@ -1820,36 +1978,110 @@ function registerHandlers(
     }),
   );
 
+  disposers.push(
+    session.onTool("lookup_prior_script_design", (args) => {
+      const a = (args ?? {}) as { id?: string; index?: number };
+      const phase = useGameStore.getState().phase;
+      if (phase !== "SESSION_0" && phase !== "PREFLIGHT") {
+        return {
+          ok: false,
+          error:
+            "lookup_prior_script_design is only available during Session 0 script design.",
+        };
+      }
+      const designs = loadRecentScriptDesigns(10, {
+        excludeId: useGameStore.getState().campaignId,
+      });
+      if (!designs.length) {
+        return { ok: false, error: "No prior script designs available." };
+      }
+      const id = typeof a.id === "string" ? a.id.trim() : "";
+      let idx =
+        typeof a.index === "number" && Number.isFinite(a.index)
+          ? Math.trunc(a.index)
+          : NaN;
+      let hitIndex = -1;
+      if (id) {
+        hitIndex = designs.findIndex((d) => d.id === id);
+      } else if (idx >= 1 && idx <= designs.length) {
+        hitIndex = idx - 1;
+      }
+      if (hitIndex < 0) {
+        return {
+          ok: false,
+          error:
+            "Provide a valid id from PRIOR SCRIPT CATALOG or index 1..N. Catalog ids: " +
+            designs.map((d, i) => `${i + 1}=${d.id}`).join(", "),
+        };
+      }
+      const design = designs[hitIndex]!;
+      return {
+        ok: true,
+        id: design.id,
+        index: hitIndex + 1,
+        text: formatPriorScriptDesignDetail(design, hitIndex + 1),
+      };
+    }),
+  );
+
   return () => {
     for (const d of disposers) d();
   };
+}
+
+async function disposeGmSessionOnly() {
+  if (!activeHandle) return;
+  const handle = activeHandle;
+  activeHandle = null;
+  resetScenarioBibleAssetCache();
+  handle.dispose();
+  try {
+    await handle.session.end();
+  } catch {
+    // ignore
+  }
 }
 
 export async function createGameSession(options: {
   provider: ProviderCode;
   model?: string;
 }): Promise<GameSessionHandle> {
-  await disposeGameSession();
+  const toolset = toolsetForPhase(useGameStore.getState().phase);
+  if (toolset === "session0") {
+    await disposeCompanionSession();
+    await disposeAiPlayerSession();
+  }
+  await disposeGmSessionOnly();
 
-  const session = await pedelec.createSession({
+  const tools =
+    toolset === "playing" ? playingSessionTools : allSessionTools;
+  const session = (await pedelec.createSession({
     provider: options.provider,
-    model: options.model || undefined,
+    model: explicitSessionModel(options.model),
     skills: {
       guidance: GM_SESSION_GUIDANCE,
-      tools: allSessionTools,
+      tools: [...tools],
     },
     autoEndOnDisconnect: false,
-  });
+  })) as PedelecSession<SessionToolName>;
+  activeToolset = toolset;
 
   persistPedelecSessionId(session.sessionId);
+  waitingToolSince = null;
+  missingSetupScriptWarned = false;
   lastCreateOptions = {
     provider: options.provider,
-    model: options.model || undefined,
+    model: explicitSessionModel(options.model),
   };
   providerSendCount = 0;
   const store = useGameStore.getState();
   store.setSessionStatus(session.getStatus());
   resetScenarioBibleAssetCache();
+  void syncGmStandingRulesAsset(session).catch((e) => {
+    store.appendSystem(
+      `（系統）GM 規範檔上傳 sandbox 失敗：${e instanceof Error ? e.message : String(e)}`,
+    );
+  });
   if (store.script.hidden_full_script) {
     void syncScenarioBibleAsset(session, store.script).catch((e) => {
       store.appendSystem(
@@ -1915,59 +2147,20 @@ export async function createGameSession(options: {
     const chatContent = chatMsg?.content ?? "";
     if (chatId && chatContent.trim().length >= 12) {
       const stripped = stripGmMetaPrompts(chatContent);
-      if (!stripped.trim() || isGmMetaOnlyNarrative(chatContent)) {
-        useGameStore.setState((st) => ({
-          messages: st.messages.filter((m) => m.id !== chatId),
-        }));
-        activeAgentMessageId = null;
+      if (
+        !stripped.trim() ||
+        isGmMetaOnlyNarrative(chatContent) ||
+        isCorruptedNarrativeFragment(chatContent)
+      ) {
+        s.updateMessage(chatId, "");
       } else if (stripped !== chatContent.trim()) {
         s.updateMessage(chatId, stripped);
-      } else {
-        const others: string[] = [];
-        const msgs = useGameStore.getState().messages;
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          const m = msgs[i];
-          if (!m) continue;
-          if (m.role === "user") break;
-          if (m.role === "agent" && m.id !== chatId) others.push(m.content);
-        }
-        const drop =
-          isCorruptedNarrativeFragment(chatContent) ||
-          others.some((o) => areDuplicateNarratives(o, chatContent));
-        if (drop) {
-          useGameStore.setState((st) => ({
-            messages: st.messages.filter((m) => m.id !== chatId),
-          }));
-          activeAgentMessageId = null;
-        }
       }
     }
   });
 
   const offStatus = session.onStatus((status) => {
-    const s = useGameStore.getState();
-    s.setSessionStatus(status);
-    if (status === "running") {
-      s.setIsTyping(true);
-      // 不在 running 清除 sessionError：擴充元件斷線／失敗後偶發仍會噴 running，
-      // 若此處清空會讓重試按鈕消失（開場寫到一半尤甚）
-      activeAgentMessageId = null;
-    }
-    if (status === "idle") {
-      s.setIsTyping(false);
-      flushLeakedChatBuffers(session);
-      s.collapseNarrativeRewrites();
-      void maybeAutoResolvePendingCompanionHandoff();
-      void maybeAutoInvokeCompanions();
-      // 不在 idle 清除 sessionError：錯誤後 Session 常回到 idle，仍需顯示重試按鈕
-    }
-    if (status === "error" || status === "ended") {
-      s.setIsTyping(false);
-      leakedChatBufferByTurn.clear();
-    }
-    if (status === "waiting_tool_result") {
-      s.setIsTyping(false);
-    }
+    applySessionStatus(session, status);
   });
 
   const offError = session.onError((error: PedelecError) => {
@@ -1989,7 +2182,7 @@ export async function createGameSession(options: {
     s.appendSystem("Pedelec Session 已結束。");
   });
 
-  const offTools = registerHandlers(session);
+  const offTools = registerHandlers(session, toolset);
 
   const handle: GameSessionHandle = {
     session,
@@ -2017,17 +2210,97 @@ export function getActiveSession() {
   return activeHandle?.session ?? null;
 }
 
-export async function disposeGameSession() {
-  if (!activeHandle) return;
-  const handle = activeHandle;
-  activeHandle = null;
-  resetScenarioBibleAssetCache();
-  handle.dispose();
-  try {
-    await handle.session.end();
-  } catch {
-    // ignore
+function maybeWarnMissingSetupScript(
+  prev: PedelecSessionStatus | "disconnected",
+) {
+  const s = useGameStore.getState();
+  if (missingSetupScriptWarned) return;
+  if (s.phase !== "SESSION_0" && s.phase !== "PREFLIGHT") return;
+  if (s.script.public_summary) return;
+  if (prev !== "running" && prev !== "waiting_tool_result") return;
+  missingSetupScriptWarned = true;
+  s.appendSystem(
+    "（系統）GM 回合已結束，但 setup_script 工具結果沒有寫入網頁，劇本面板不會更新。請再請 GM「立刻呼叫 setup_script」（不要只寫文字摘要）；若輸入框仍鎖住，請重建 Session 後重試。",
+  );
+}
+
+function applySessionStatus(
+  session: PedelecSession<SessionToolName>,
+  status: PedelecSessionStatus,
+) {
+  const s = useGameStore.getState();
+  const prev = s.sessionStatus;
+  if (status === "waiting_tool_result") {
+    if (waitingToolSince == null) waitingToolSince = Date.now();
+  } else {
+    waitingToolSince = null;
   }
+  if (prev === status) return;
+
+  s.setSessionStatus(status);
+  if (status === "running") {
+    s.setIsTyping(true);
+    // 不在 running 清除 sessionError：擴充元件斷線／失敗後偶發仍會噴 running，
+    // 若此處清空會讓重試按鈕消失（開場寫到一半尤甚）
+    activeAgentMessageId = null;
+  }
+  if (status === "idle") {
+    s.setIsTyping(false);
+    flushLeakedChatBuffers(session);
+    s.trimAgentRewriteAfterCompanion();
+    s.collapseNarrativeRewrites();
+    useGameStore.setState((st) => ({
+      messages: st.messages.filter(
+        (m) => !(m.role === "agent" && !(m.content ?? "").trim()),
+      ),
+    }));
+    void maybeAutoResolvePendingCompanionHandoff();
+    void maybeAutoInvokeCompanions();
+    maybeWarnMissingSetupScript(prev);
+    // 不在 idle 清除 sessionError：錯誤後 Session 常回到 idle，仍需顯示重試按鈕
+  }
+  if (status === "error" || status === "ended") {
+    s.setIsTyping(false);
+    leakedChatBufferByTurn.clear();
+  }
+  if (status === "waiting_tool_result") {
+    s.setIsTyping(false);
+  }
+}
+
+/**
+ * 把 live session status 回寫 store。
+ * onStatus 偶發漏掉 idle／waiting_tool_result 時，UI 會一直顯示「Agent 執行中」。
+ */
+export function syncSessionStatusFromLive() {
+  const session = getActiveSession();
+  if (!session) return null;
+  const live = session.getStatus();
+  applySessionStatus(session, live);
+
+  const store = useGameStore.getState();
+  if (
+    live === "waiting_tool_result" &&
+    waitingToolSince != null &&
+    Date.now() - waitingToolSince >= WAITING_TOOL_STUCK_MS &&
+    !store.sessionError
+  ) {
+    store.setSessionError({
+      code: "TOOL_RESULT_TIMEOUT",
+      message:
+        "工具結果逾時未送達網頁。請重建 Session 後請 GM 再呼叫 setup_script。",
+    });
+    store.appendSystem(
+      "（系統）setup_script 工具結果逾時未送達，畫面可能卡在「Agent 執行中」。請按重試／重建 Session，再請 GM 呼叫 setup_script。",
+    );
+  }
+  return live;
+}
+
+export async function disposeGameSession() {
+  await disposeCompanionSession();
+  await disposeAiPlayerSession();
+  await disposeGmSessionOnly();
 }
 
 /**
@@ -2058,6 +2331,14 @@ async function maybeCompactBeforeSend() {
   await compactProviderConversation();
 }
 
+/** PLAYING 起改掛精簡 tools；與 compact 一樣會新 conversation，下一則走 SEED */
+async function ensureGmToolsetForPhase() {
+  if (compactInFlight || !lastCreateOptions) return;
+  const want = toolsetForPhase(useGameStore.getState().phase);
+  if (activeToolset === want && activeHandle) return;
+  await createGameSession(lastCreateOptions);
+}
+
 /** 目前應組 SEED 還是 DELTA（compact／create 後為 seed） */
 export function peekGmPromptMode(): "seed" | "delta" {
   return providerSendCount === 0 ? "seed" : "delta";
@@ -2067,11 +2348,23 @@ export function peekGmPromptMode(): "seed" | "delta" {
  * 所有主 GM session 的 sendText 應走這裡，以便計數與週期壓縮。
  * companion／aiPlayer 等獨立 session 不要用此函式。
  */
-export async function sendGmText(prompt: string) {
+export async function sendGmText(
+  prompt: string,
+  opts?: { label?: string },
+) {
+  await ensureGmToolsetForPhase();
   await maybeCompactBeforeSend();
   const session = getActiveSession();
   if (!session) throw new Error("NO_SESSION");
   if (session.getStatus() !== "idle") throw new Error("SESSION_BUSY");
+  try {
+    await gateOutgoingPrompt(prompt, {
+      label: opts?.label ?? "GM sendText",
+    });
+  } catch (err) {
+    if (isOutgoingPromptCancelled(err)) return;
+    throw err;
+  }
   await session.sendText(prompt);
   providerSendCount += 1;
 }
@@ -2093,7 +2386,10 @@ export async function sendPlayerAction(
 
   // PC 新行動進來時若仍有未結算的隊友宣告：先結算（把本行動當插話），避免 UI 卡住
   if (!opts?.companionResolve && store.pendingCompanionHandoff) {
-    await resolvePendingCompanionHandoff({ playerSupplement: text });
+    await resolvePendingCompanionHandoff({
+      playerSupplement: text,
+      skipUserMessage: opts?.skipUserMessage,
+    });
     return;
   }
 
@@ -2109,55 +2405,75 @@ export async function sendPlayerAction(
     });
   }
 
-  store.setLastPlayerAction(text);
+  const companionLabel = isCompanionLabeledAction(text);
+  if (!opts?.companionResolve && !companionLabel) {
+    store.setLastPlayerAction(text);
+    store.setRetryAction({
+      kind: "player",
+      label: "重試上一步行動",
+      text,
+      extraLayers: opts?.extraLayers,
+    });
+  }
   autoCompanionHandledForAction = null;
-  store.setRetryAction({
-    kind: "player",
-    label: "重試上一步行動",
-    text,
-    extraLayers: opts?.extraLayers,
-  });
   store.setSessionError(null);
+  store.setIsTyping(true);
   if (!opts?.skipUserMessage) {
     store.appendMessage({ role: "user", content: text });
   }
 
-  // compact 可能在 sendGmText 內觸發；先 peek 會偏舊，故在 maybeCompact 後再組 prompt
-  await maybeCompactBeforeSend();
-  const latest = useGameStore.getState();
-  const promptMode = peekGmPromptMode();
-  const prompt = assemblePlayerTurnPrompt({
-    script: latest.script,
-    houseRules: latest.houseRules,
-    character: latest.character,
-    clues: latest.clues,
-    npcs: latest.npcs,
-    madness: latest.madness,
-    location: latest.location,
-    chapterSummaries: latest.chapterSummaries,
-    recentMessages: latest.messages,
-    playerAction: text,
-    turn: latest.turn,
-    suggestPlayerActions: latest.suggestPlayerActions,
-    extraLayers: opts?.extraLayers,
-    sceneDirector: latest.sceneDirector,
-    party: latest.party,
-    playerMemberId: latest.playerMemberId,
-    incapacitatedCharacterIds: latest.incapacitatedCharacterIds,
-    promptMode,
-  });
+  try {
+    // compact／PLAYING 換 toolset 可能重建 session；先 peek 會偏舊
+    await ensureGmToolsetForPhase();
+    await maybeCompactBeforeSend();
+    const latest = useGameStore.getState();
+    const promptMode = peekGmPromptMode();
+    const prompt = assemblePlayerTurnPrompt({
+      script: latest.script,
+      houseRules: latest.houseRules,
+      character: resolvePlayerBoundSheet(latest),
+      clues: latest.clues,
+      npcs: latest.npcs,
+      madness: latest.madness,
+      location: latest.location,
+      chapterSummaries: latest.chapterSummaries,
+      recentMessages: latest.messages,
+      playerAction: text,
+      turn: latest.turn,
+      suggestPlayerActions: latest.suggestPlayerActions,
+      extraLayers: opts?.extraLayers,
+      sceneDirector: latest.sceneDirector,
+      party: latest.party,
+      playerMemberId: latest.playerMemberId,
+      incapacitatedCharacterIds: latest.incapacitatedCharacterIds,
+      promptMode,
+    });
 
-  const active = getActiveSession();
-  if (!active) throw new Error("NO_SESSION");
-  if (active.getStatus() !== "idle") throw new Error("SESSION_BUSY");
-  await active.sendText(prompt);
-  providerSendCount += 1;
+    const active = getActiveSession();
+    if (!active) throw new Error("NO_SESSION");
+    if (active.getStatus() !== "idle") throw new Error("SESSION_BUSY");
+    await gateOutgoingPrompt(prompt, {
+      label: opts?.companionResolve ? "隊友結算／接續" : "玩家行動",
+    });
+    await active.sendText(prompt);
+    providerSendCount += 1;
+  } catch (err) {
+    useGameStore.getState().setIsTyping(false);
+    if (isOutgoingPromptCancelled(err)) {
+      if (!opts?.skipUserMessage) {
+        useGameStore.getState().removeLastUserMessage();
+      }
+      return;
+    }
+    throw err;
+  }
 }
 
 export const OPENING_NARRATION_ACTION =
   [
     "現在已確認角色卡。請立刻開始劇本並述說故事開場（請呼叫 narrate_story）。",
     "開場必須包含：明確時間、地點（並設定 location）、感官細節、NPC／環境帶來的眼前壓力或疑問。",
+    "開場禁止呼叫 request_companion_action；隊友只寫靜態在場，等玩家第一個行動後再喚起。",
     "【禁止代操 PC・開場強制】不可替玩家決定、描述或執行任何行動、對話、意圖或內心獨白（例如「你遞過茶杯」「你試圖說服」「你決定追問」皆禁止）。",
     "可寫：場景、氛圍、NPC 先開口／姿態、隊友靜態在場；最後停在「球在玩家手上」——等待玩家輸入。",
     "開場第一則禁止對玩家 PC 發動 check_request（不要假設玩家已採取交涉／偵查等行動）。若需檢定，等玩家宣告行動後再呼叫。",
@@ -2196,16 +2512,18 @@ export async function sendOpeningNarration() {
   // 清掉寫到一半的 GM 敘事；首次／重試用不同系統提示
   store.clearIncompleteOpening(isRetry ? "retry" : "first");
 
-  const latest = useGameStore.getState();
-  if (latest.script.hidden_full_script) {
-    void syncScenarioBibleAsset(session, latest.script).catch(() => {});
-  }
+  await ensureGmToolsetForPhase();
   await maybeCompactBeforeSend();
   const after = useGameStore.getState();
+  const activeForBible = getActiveSession();
+  if (after.script.hidden_full_script && activeForBible) {
+    void syncScenarioBibleAsset(activeForBible, after.script).catch(() => {});
+  }
+  const promptMode = peekGmPromptMode();
   const prompt = assemblePlayerTurnPrompt({
     script: after.script,
     houseRules: after.houseRules,
-    character: after.character,
+    character: resolvePlayerBoundSheet(after),
     clues: after.clues,
     npcs: after.npcs,
     madness: after.madness,
@@ -2224,12 +2542,18 @@ export async function sendOpeningNarration() {
     playerMemberId: after.playerMemberId,
     incapacitatedCharacterIds: after.incapacitatedCharacterIds,
     continuityPremiseZh: after.continuityBridge?.premiseZh ?? null,
-    promptMode: "seed",
+    promptMode,
   });
 
   const active = getActiveSession();
   if (!active) throw new Error("NO_SESSION");
   if (active.getStatus() !== "idle") throw new Error("SESSION_BUSY");
+  try {
+    await gateOutgoingPrompt(prompt, { label: "開場敘事" });
+  } catch (err) {
+    if (isOutgoingPromptCancelled(err)) return;
+    throw err;
+  }
   await active.sendText(prompt);
   providerSendCount += 1;
 }

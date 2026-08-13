@@ -11,6 +11,7 @@ import {
 } from "@/lib/pedelec/createGameSession";
 import { isCompanionSpeechOnly } from "@/lib/stripGmMetaPrompts";
 import { useGameStore } from "@/store/useGameStore";
+import { isAwaitingGmReply } from "@/lib/playTurnState";
 import type { ChatMessage } from "@/types/game";
 
 const POLL_MS = 400;
@@ -264,7 +265,7 @@ export function resolveAiPlayerTurnGate(): AiPlayerTurnGate {
     return "wait_gm";
   }
 
-  // 最後一則對話是玩家 → 還在等 GM 回應（即使 store 已 idle）
+  // 最後一則對話是玩家（含隊友氣泡）→ 還在等 GM 回應（即使 store 已 idle）
   if (isAwaitingGmReply(game.messages)) {
     return "wait_gm";
   }
@@ -294,20 +295,7 @@ export function hasOpeningNarrative(
   );
 }
 
-/**
- * 從尾端略過 system：若先碰到 user 表示還在等 GM；
- * 先碰到 agent 表示 GM 已說完、輪到玩家。
- */
-export function isAwaitingGmReply(messages: ChatMessage[]): boolean {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (!m) continue;
-    if (m.role === "system") continue;
-    if (m.role === "user") return true;
-    if (m.role === "agent") return false;
-  }
-  return false;
-}
+export { isAwaitingGmReply } from "@/lib/playTurnState";
 
 function tryAutoRoll(): boolean {
   const game = useGameStore.getState();

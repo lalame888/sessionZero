@@ -171,7 +171,7 @@ export function buildDerivedTooltipRows(
       label: "克蘇魯神話",
       display: `${mythos}%`,
       content: [
-        "技能（非屬性衍生）。創角通常為 0，冒險中經遭遇／秘典成長。",
+        "技能（非屬性衍生）。創角通常為 0；冒險中因神話 SAN／禁書即時成長，不走結局成長檢定。",
         "提高神話％會降低 SAN 上限（99−神話）。",
         `目前 ${mythos}% → SAN 上限 ${Math.max(0, 99 - mythos)}`,
       ].join("\n"),
