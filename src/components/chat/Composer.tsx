@@ -9,6 +9,7 @@ import {
   resolvePendingCompanionHandoff,
   sendPlayerAction,
 } from "@/lib/pedelec/createGameSession";
+import { isBusyPedelecStatus } from "@/lib/pedelec/sessionLiveness";
 import {
   humanPlayerAwaitingGmReply,
   lastHumanPlayerMessage,
@@ -49,11 +50,7 @@ function composerPlaceholder(opts: {
     return "Pedelec 未就緒，請先完成連線設定…";
   }
 
-  if (
-    sending ||
-    sessionStatus === "running" ||
-    sessionStatus === "waiting_tool_result"
-  ) {
+  if (sending || isBusyPedelecStatus(sessionStatus)) {
     return "Agent 忙碌中，請稍候…";
   }
 
@@ -129,7 +126,10 @@ export function Composer({
         if (onResendLastPlayer) {
           await onResendLastPlayer();
         } else {
-          await sendPlayerAction(value, { skipUserMessage: true });
+          await sendPlayerAction(value, {
+            skipUserMessage: true,
+            skipCompact: true,
+          });
         }
         return;
       }

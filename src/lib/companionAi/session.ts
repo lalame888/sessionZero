@@ -8,6 +8,7 @@ import {
 import { companionAgentTools } from "@/lib/companionAi/tools";
 import { resolveAvailableProvider } from "@/lib/pedelec/resolveProvider";
 import { explicitSessionModel, pedelec } from "@/lib/pedelec/client";
+import { waitForPedelecCoreStatus } from "@/lib/pedelec/sessionLiveness";
 import { useGameStore } from "@/store/useGameStore";
 
 export type CompanionHandoff = "pause" | "immediate";
@@ -103,7 +104,7 @@ async function createCompanionSession(options: {
       guidance: COMPANION_AGENT_DIRECTIVES,
       tools: [...companionAgentTools],
     },
-    autoEndOnDisconnect: false,
+    autoEndOnDisconnect: true,
   });
 
   const companionId = options.companionId;
@@ -177,6 +178,12 @@ async function createCompanionSession(options: {
       offPass();
     },
   };
+
+  await waitForPedelecCoreStatus(session, {
+    timeoutMs: 500,
+    allowTimeout: true,
+  });
+
   companionHandles.set(companionId, handle);
   return handle;
 }

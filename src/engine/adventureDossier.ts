@@ -1,6 +1,8 @@
 import type {
   AdventureRecord,
   CharacterStatSnapshot,
+  EndingSettlementController,
+  EndingSettlementMember,
   StatDeltaRow,
 } from "@/types/characterLibrary";
 import type {
@@ -180,5 +182,65 @@ export function buildAdventureRecord(input: {
     growthLog: [...input.growthLog],
     statsBefore: input.statsBefore,
     statsAfter: input.statsAfter,
+  };
+}
+
+/** 結局頁／replay 顯示：成長骰 + 回繳列 */
+export function endingSettlementDisplayLog(
+  member: Pick<EndingSettlementMember, "growthLog" | "inventoryReturned">,
+): string[] {
+  const returned = member.inventoryReturned
+    .map((x) => x.trim())
+    .filter(Boolean);
+  return [
+    ...member.growthLog,
+    ...(returned.length ? [`劇本物資回繳：${returned.join("、")}`] : []),
+  ];
+}
+
+/** 從履歷 growthLog 拆出回繳行（舊結算只寫在同一陣列裡） */
+export function splitGrowthLogAndReturns(log: string[] | undefined | null): {
+  growthLog: string[];
+  inventoryReturned: string[];
+} {
+  const growthLog: string[] = [];
+  const inventoryReturned: string[] = [];
+  for (const line of log ?? []) {
+    const m = /^劇本物資回繳：(.+)$/.exec(line.trim());
+    if (m) {
+      inventoryReturned.push(
+        ...m[1]
+          .split(/[、,，]/)
+          .map((x) => x.trim())
+          .filter(Boolean),
+      );
+    } else if (line.trim()) {
+      growthLog.push(line);
+    }
+  }
+  return { growthLog, inventoryReturned };
+}
+
+/** 用檔案庫履歷回填戰役 endingSettlement（舊場次補匯出 replay） */
+export function endingSettlementMemberFromCareer(input: {
+  characterId: string;
+  name: string;
+  controller: EndingSettlementController;
+  systemId: GameSystemID;
+  record: AdventureRecord;
+}): EndingSettlementMember {
+  const { growthLog, inventoryReturned } = splitGrowthLogAndReturns(
+    input.record.growthLog,
+  );
+  return {
+    characterId: input.characterId,
+    name: input.name,
+    controller: input.controller,
+    systemId: input.systemId,
+    growthLog,
+    inventoryReturned,
+    statsBefore: input.record.statsBefore,
+    statsAfter: input.record.statsAfter,
+    savedToLibrary: true,
   };
 }

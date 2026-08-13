@@ -97,6 +97,9 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
   layers.push(formatNotesBlock(input.playerNotes));
   layers.push(formatNpcsBlock(input.npcs));
 
+  layers.push(`[TACTICS]
+If stuck, use inventory / reread a clue / talk / move. Do not only 手電筒＋偵查 loops.`);
+
   layers.push(`[OUTPUT]
 Call submit_player_action with one concrete Traditional Chinese action.`);
 
@@ -145,10 +148,17 @@ Do NOT speak or act as AI companions; only declare this PC's actions.`
 Conversation continues. Decide the PC's next action. Call submit_player_action once.`,
     pcIdentity,
     `[STATE]
-Turn: ${input.turn} | Location: ${input.location || "未知"} | HP: ${hp}`,
+Turn: ${input.turn} | Location: ${input.location || "未知"} | HP: ${hp}
+Inventory: ${c?.inventory.join("、") || "無"}
+Clues: ${input.clues.map((x) => x.title).join("、") || "無"}
+Notes: ${input.playerNotes.map((n) => n.title).join("、") || "無"}
+NPCs: ${input.npcs.map((n) => `${n.name}（${n.status}/${n.relation}）`).join("、") || "無"}
+Do NOT search for NPCs already rescued / travelling with you / listed ALIVE here.`,
   ];
   const recent = formatPlayerAgentRecent(input.recentMessages, 2);
   if (recent) layers.push(recent);
+  layers.push(`[TACTICS]
+If stuck, use an item, reread a clue, talk, or move — do not only 手電筒＋偵查.`);
   layers.push(`[OUTPUT]
 Call submit_player_action with one concrete Traditional Chinese action.`);
   return layers.join("\n\n");

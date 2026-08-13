@@ -7,6 +7,7 @@ import {
 } from "@/lib/aiPlayer/tools";
 import { SIDE_SESSION_REUSE_EVERY } from "@/engine/gmMemoryPolicy";
 import { explicitSessionModel, pedelec } from "@/lib/pedelec/client";
+import { waitForPedelecCoreStatus } from "@/lib/pedelec/sessionLiveness";
 import { useGameStore } from "@/store/useGameStore";
 import { resolvePlayerBoundSheet } from "@/types/party";
 
@@ -56,7 +57,7 @@ async function ensurePlayerAgentSession(options: {
       guidance: PLAYER_AGENT_DIRECTIVES,
       tools: playerAgentTools,
     },
-    autoEndOnDisconnect: false,
+    autoEndOnDisconnect: true,
   });
 
   const offChat = session.onChat((delta) => {
@@ -71,6 +72,13 @@ async function ensurePlayerAgentSession(options: {
       return { ok: true, received: Boolean(action) };
     },
   );
+
+  // createSession 後 subscribe 會 replay idle；若立刻 sendText，遲到的 idle
+  // 會清掉 activeTurn，tool_call 進不了網頁。先等 core 狀態落地再送第一句。
+  await waitForPedelecCoreStatus(session, {
+    timeoutMs: 500,
+    allowTimeout: true,
+  });
 
   playerHandle = {
     session,

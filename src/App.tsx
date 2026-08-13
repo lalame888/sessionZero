@@ -107,6 +107,7 @@ export default function App() {
   const setShowSettings = useGameStore((s) => s.setShowSettings);
   const selectedProvider = useGameStore((s) => s.selectedProvider);
   const pendingDice = useGameStore((s) => s.pendingDice);
+  const isTyping = useGameStore((s) => s.isTyping);
   const script = useGameStore((s) => s.script);
   const hydrateCampaign = useGameStore((s) => s.hydrateCampaign);
   const startNewCampaign = useGameStore((s) => s.startNewCampaign);
@@ -217,9 +218,13 @@ export default function App() {
     return useGameStore.getState().preflight;
   }, [setPreflight, setShowInstallGuide]);
 
-  const runPreflight = useCallback(async () => {
+  const runPreflight = useCallback(async (opts?: {
+    probeEventChannel?: boolean;
+  }) => {
     setPreflight({ ready: false, reason: "CHECKING" });
-    let result = await checkPedelecPrerequisites();
+    let result = await checkPedelecPrerequisites({
+      probeEventChannel: opts?.probeEventChannel ?? !getActiveSession(),
+    });
 
     // getApprovalStatus 不會開彈窗；偵測到需核准時主動觸發 createSession 以開啟擴充元件
     if (result.reason === "NEEDS_APPROVAL") {
@@ -273,7 +278,7 @@ export default function App() {
     const attempt = ++connectAttemptRef.current;
     setBootstrapping(true);
     try {
-      const pf = await runPreflight();
+      const pf = await runPreflight({ probeEventChannel: false });
       if (!pf.ready) return;
       if (attempt !== connectAttemptRef.current) return;
 
@@ -340,6 +345,7 @@ export default function App() {
         .appendSystem(
           `連線失敗：${err instanceof Error ? err.message : "未知錯誤"}`,
         );
+      setShowInstallGuide(true);
       setShowSettings(true);
     } finally {
       setBootstrapping(false);
@@ -404,7 +410,8 @@ export default function App() {
     !preflight.ready ||
     bootstrapping ||
     sessionStatus !== "idle" ||
-    Boolean(pendingDice);
+    Boolean(pendingDice) ||
+    isTyping;
 
   const onRegenerate = async () => {
     const store = useGameStore.getState();
@@ -415,27 +422,30 @@ export default function App() {
     if (action?.kind === "player") {
       await sendPlayerAction(action.text, {
         extraLayers: action.extraLayers,
+        skipCompact: true,
       });
       return;
     }
     if (!store.lastPlayerAction) return;
-    await sendPlayerAction(store.lastPlayerAction);
+    await sendPlayerAction(store.lastPlayerAction, { skipCompact: true });
   };
 
   const onRetrySessionAction = useCallback(async () => {
     const store = useGameStore.getState();
     const action = store.retryAction;
     if (!action) return;
-    if (shouldSkipAutoRetryBecauseGmReplied(action, store.messages)) {
-      store.setSessionError(null);
-      return;
-    }
+    const skipResend = shouldSkipAutoRetryBecauseGmReplied(
+      action,
+      store.messages,
+    );
 
     setBootstrapping(true);
     store.appendSystem(
-      action.kind === "opening"
-        ? "正在重建連線並重試開場敘事…"
-        : "正在重建連線並重試上一步…",
+      skipResend
+        ? "正在重建連線（上一步 GM 已回覆，不重送行動）…"
+        : action.kind === "opening"
+          ? "正在重建連線並重試開場敘事…"
+          : "正在重建連線並重試上一步…",
     );
 
     try {
@@ -463,16 +473,23 @@ export default function App() {
 
       store.setSessionError(null);
 
+      if (skipResend) {
+        store.appendSystem("連線已重建。可繼續輸入下一步。");
+        return;
+      }
+
       if (action.kind === "opening") {
         await sendOpeningNarration();
       } else {
         const latest = useGameStore.getState();
         if (shouldSkipAutoRetryBecauseGmReplied(action, latest.messages)) {
+          latest.appendSystem("連線已重建。可繼續輸入下一步。");
           return;
         }
         await sendPlayerAction(action.text, {
           skipUserMessage: true,
           extraLayers: action.extraLayers,
+          skipCompact: true,
         });
       }
     } catch (err) {
@@ -500,12 +517,11 @@ export default function App() {
     const action = store.retryAction;
     if (!err || !action) return;
     if (!/SESSION_ERROR|PROVIDER_/.test(err.code)) return;
-    if (shouldSkipAutoRetryBecauseGmReplied(action, store.messages)) {
-      autoResumeKeyRef.current = `${action.kind}|skip-gm-replied|${err.code}`;
-      store.setSessionError(null);
-      return;
-    }
-    const key = `${action.kind}|${action.kind === "player" ? action.text : "opening"}|${err.code}`;
+    const skipResend = shouldSkipAutoRetryBecauseGmReplied(
+      action,
+      store.messages,
+    );
+    const key = `${action.kind}|${action.kind === "player" ? action.text : "opening"}|${err.code}|${skipResend ? "skip" : "resend"}`;
     if (autoResumeKeyRef.current === key) return;
     autoResumeKeyRef.current = key;
     void onRetrySessionAction();
@@ -547,6 +563,7 @@ export default function App() {
           store.retryAction?.kind === "player"
             ? store.retryAction.extraLayers
             : undefined,
+        skipCompact: true,
       });
     } catch (err) {
       const code =
@@ -600,7 +617,7 @@ export default function App() {
             <Settings className="h-4 w-4" />
           </Button>
           <DevStorageInspector />
-          <PedelecStatusBadge onRecheck={() => void runPreflight()} />
+          <PedelecStatusBadge />
         </div>
       </header>
 

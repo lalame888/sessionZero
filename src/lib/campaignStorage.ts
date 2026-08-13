@@ -1,5 +1,8 @@
 import type { ContinuityBridgeState } from "@/engine/continuityBridge";
-import type { CharacterStatSnapshot } from "@/types/characterLibrary";
+import type {
+  CharacterStatSnapshot,
+  EndingSettlement,
+} from "@/types/characterLibrary";
 import type {
   ChapterSummary,
   CharacterSchemaState,
@@ -79,6 +82,12 @@ export interface CampaignPersist {
    * 舊存檔可能缺此欄；亦可由檔案庫履歷（同 campaignId）推得。
    */
   endingCharacterSettled?: boolean;
+  /**
+   * 結局成長檢定＋劇本物資回繳快照。
+   * 寫入檔案庫後角色卡標記／背包會被清空；此欄留給 replay 與再進入結局頁。
+   * 舊存檔可能缺。
+   */
+  endingSettlement?: EndingSettlement | null;
   /** 玩家確認的隊伍人數（1–4）；舊存檔缺則視為 1 */
   partySize?: number;
   /** GM 建議人數 */
@@ -399,6 +408,7 @@ export function createEmptyCampaignPersist(id = crypto.randomUUID()): CampaignPe
     composerDraft: "",
     suggestPlayerActions: false,
     endingCharacterSettled: false,
+    endingSettlement: null,
     partySize: 1,
     recommendedPartySize: null,
     party: [],

@@ -80,6 +80,7 @@ export function toPreCharacterCampaign(
     composerDraft: "",
     suggestPlayerActions: source.suggestPlayerActions ?? true,
     endingCharacterSettled: false,
+    endingSettlement: null,
     partySize: source.partySize ?? source.script?.recommended_party_size ?? 1,
     recommendedPartySize:
       source.recommendedPartySize ??

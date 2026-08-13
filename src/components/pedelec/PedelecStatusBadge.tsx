@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import type { PedelecSessionStatus } from "@kaoruisaac/pedelec";
 import { AlertCircle, CheckCircle2, Loader2, PlugZap, WifiOff } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { probePedelecAppConnected } from "@/lib/pedelec/preflight";
 import { syncSessionStatusFromLive } from "@/lib/pedelec/createGameSession";
+import {
+  isBusyPedelecStatus,
+  normalizePedelecSessionStatus,
+} from "@/lib/pedelec/sessionLiveness";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
 
@@ -16,7 +19,7 @@ function labelFor(
   if (checking || reason === "CHECKING") {
     return { text: "檢查 Pedelec…", icon: <Loader2 className="h-3.5 w-3.5 animate-spin" /> };
   }
-  if (sessionStatus === "running" || sessionStatus === "waiting_tool_result") {
+  if (isBusyPedelecStatus(sessionStatus)) {
     return { text: "Agent 執行中", icon: <Loader2 className="h-3.5 w-3.5 animate-spin" /> };
   }
   if (!ready) {
@@ -32,6 +35,9 @@ function labelFor(
     if (reason === "NEEDS_APPROVAL") {
       return { text: "需要核准", icon: <AlertCircle className="h-3.5 w-3.5" /> };
     }
+    if (reason === "EVENT_CHANNEL_FAILED") {
+      return { text: "暫時無法連線", icon: <AlertCircle className="h-3.5 w-3.5" /> };
+    }
     return { text: "Pedelec 未就緒", icon: <WifiOff className="h-3.5 w-3.5" /> };
   }
   if (sessionStatus === "idle") {
@@ -43,11 +49,7 @@ function labelFor(
   return { text: "Pedelec 就緒", icon: <PlugZap className="h-3.5 w-3.5" /> };
 }
 
-export function PedelecStatusBadge({
-  onRecheck,
-}: {
-  onRecheck?: () => void | Promise<void>;
-}) {
+export function PedelecStatusBadge() {
   const preflight = useGameStore((s) => s.preflight);
   const sessionStatus = useGameStore((s) => s.sessionStatus);
   const setPreflight = useGameStore((s) => s.setPreflight);
@@ -57,16 +59,13 @@ export function PedelecStatusBadge({
   const [probing, setProbing] = useState(false);
 
   useEffect(() => {
-    if (sessionStatus === "running") setPulse(true);
+    if (normalizePedelecSessionStatus(sessionStatus) === "running") setPulse(true);
     else setPulse(false);
   }, [sessionStatus]);
 
   // store 偶發沒跟上 live（尤其 waiting_tool_result 後 agent 已結束）
   useEffect(() => {
-    if (
-      sessionStatus !== "running" &&
-      sessionStatus !== "waiting_tool_result"
-    ) {
+    if (!isBusyPedelecStatus(sessionStatus)) {
       return;
     }
     syncSessionStatusFromLive();
@@ -130,17 +129,6 @@ export function PedelecStatusBadge({
         {icon}
         <span>{text}</span>
       </button>
-      {onRecheck ? (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-6 px-2"
-          disabled={checking}
-          onClick={() => void onRecheck()}
-        >
-          重檢
-        </Button>
-      ) : null}
     </div>
   );
 }

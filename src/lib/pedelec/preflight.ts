@@ -1,5 +1,6 @@
 import type { ProviderCode } from "@kaoruisaac/pedelec";
-import { pedelec } from "@/lib/pedelec/client";
+import { explicitSessionModel, pedelec } from "@/lib/pedelec/client";
+import { EVENT_CHANNEL_FAILED_MESSAGE } from "@/lib/pedelec/sessionLiveness";
 import type { PreflightState } from "@/types/game";
 
 export type OriginApprovalResult = {
@@ -76,7 +77,39 @@ export async function requestPedelecOriginApproval(): Promise<OriginApprovalResu
   return approvalInFlight;
 }
 
-export async function checkPedelecPrerequisites(): Promise<PreflightState> {
+export async function probePedelecEventChannel(options: {
+  provider: ProviderCode;
+  model?: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  let session: Awaited<ReturnType<typeof pedelec.createSession>> | null = null;
+  try {
+    session = await pedelec.createSession({
+      provider: options.provider,
+      model: explicitSessionModel(options.model),
+      autoEndOnDisconnect: true,
+    });
+    const status = session.getStatus();
+    if (status === "error" || status === "ended") {
+      return { ok: false, message: EVENT_CHANNEL_FAILED_MESSAGE };
+    }
+    return { ok: true };
+  } catch (error) {
+    const code = errorCode(error);
+    const message =
+      error instanceof Error ? error.message : EVENT_CHANNEL_FAILED_MESSAGE;
+    return {
+      ok: false,
+      message: code ? `${code} — ${message}` : message,
+    };
+  } finally {
+    if (session) await session.end().catch(() => undefined);
+  }
+}
+
+export async function checkPedelecPrerequisites(options?: {
+  probeEventChannel?: boolean;
+}): Promise<PreflightState> {
+  const probeEventChannel = options?.probeEventChannel ?? true;
   try {
     const approval = await pedelec.getApprovalStatus();
     if (!approval.installed) {
@@ -134,6 +167,21 @@ export async function checkPedelecPrerequisites(): Promise<PreflightState> {
       available.some((p) => p.code === settings.defaultProvider)
         ? settings.defaultProvider
         : available[0].code;
+
+    if (probeEventChannel) {
+      const probe = await probePedelecEventChannel({
+        provider: preferred,
+        model: settings.defaultModels?.[preferred] ?? "",
+      });
+      if (!probe.ok) {
+        return {
+          ready: false,
+          reason: "EVENT_CHANNEL_FAILED",
+          provider: preferred,
+          message: probe.message,
+        };
+      }
+    }
 
     return {
       ready: true,

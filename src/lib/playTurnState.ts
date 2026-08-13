@@ -1,4 +1,5 @@
 import { parseHistoryActorInput } from "@/lib/historySpeaker";
+import { isBusyPedelecStatus } from "@/lib/pedelec/sessionLiveness";
 import type { ChatMessage, RetryAction, SessionErrorInfo } from "@/types/game";
 
 export function isCompanionChatMessage(m: {
@@ -79,10 +80,7 @@ export function playerMessageNeedsResend(
 ): boolean {
   if (opts.phase !== "PLAYING") return false;
   if (opts.isTyping) return false;
-  if (
-    opts.sessionStatus === "running" ||
-    opts.sessionStatus === "waiting_tool_result"
-  ) {
+  if (isBusyPedelecStatus(opts.sessionStatus)) {
     return false;
   }
   const last = lastHumanPlayerMessage(messages);

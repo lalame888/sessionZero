@@ -627,10 +627,31 @@ export const COC_SKILL_BASE_DEFAULTS: Record<string, number> = {
   投擲: 20,
   追蹤: 10,
   語言: 1,
+  母語: 0, // 由 EDU 覆蓋
 };
 
 /** 創角時單技上限（％）。規則未強制，但大師級描述止於 99%；>100% 多為遊玩後成長。 */
 export const COC_CREATION_SKILL_CAP = 99;
+
+/** CoC 母語＝EDU（Own Language） */
+export function isOwnLanguageSkillName(name: string): boolean {
+  const n = name.trim();
+  if (!n) return false;
+  if (n === "母語" || n.startsWith("母語")) return true;
+  if (/^own\s*language/i.test(n)) return true;
+  if (/語言\s*[（(]\s*母語/.test(n)) return true;
+  return false;
+}
+
+/** 學者／知識職：ARRAY 應把高分給 EDU */
+export function isScholarOccupationRole(
+  ...parts: (string | undefined | null)[]
+): boolean {
+  const hay = parts.filter(Boolean).join(" ");
+  return /調查|學者|教授|研究員|圖書館|神秘|人類學|歷史|教師|作家|記者|醫師|博士|館員/.test(
+    hay,
+  );
+}
 
 export function resolveSkillBaseValue(
   systemId: GameSystemID,
@@ -658,6 +679,17 @@ export function resolveSkillBaseValue(
         : 0;
     return Math.max(catalog, fromAi, dexBase);
   }
+  // 母語系統基礎＝EDU
+  if (isOwnLanguageSkillName(name)) {
+    const eduBase = Math.max(0, Math.floor(attributes?.EDU ?? 0));
+    const fromAi =
+      typeof baseValue === "number" &&
+      baseValue >= 0 &&
+      baseValue <= 40
+        ? baseValue
+        : 0;
+    return Math.max(eduBase, fromAi);
+  }
   // 不可低於系統基礎值；但拒絕把「建議最終％」（如 60、81）誤當基礎抬高
   if (typeof baseValue === "number" && baseValue >= 0 && baseValue <= 40) {
     return Math.max(catalog, baseValue);
@@ -669,15 +701,20 @@ export function resolveSkillBaseValue(
 export function clampSkillsToSystemBases(
   systemId: GameSystemID,
   skills: Record<string, number>,
+  attributes?: Record<string, number> | null,
 ): Record<string, number> {
   if (systemId !== "COC_7E") return skills;
   const next: Record<string, number> = {};
   for (const [name, value] of Object.entries(skills)) {
     // 屬性不是技能；誤建的「敏捷／力量…」會把屬性檢定門檻打成個位數
     if (resolveCocAttributeKeyFromCheckName(name)) continue;
-    const base = resolveSkillBaseValue(systemId, name, undefined);
+    const base = resolveSkillBaseValue(systemId, name, undefined, attributes);
     if (typeof value === "number" && value < base) next[name] = base;
     else next[name] = value;
+  }
+  const edu = Math.max(0, Math.floor(attributes?.EDU ?? 0));
+  if (edu > 0 && !Object.keys(next).some(isOwnLanguageSkillName)) {
+    next["母語"] = edu;
   }
   return next;
 }
@@ -725,6 +762,11 @@ export const COC_SYSTEM_SKILL_DESCRIPTIONS: Record<string, string> = {
     "閃避：迴避近戰攻擊等危險的技能。",
     "系統常駐：創角時基礎值自動設為 floor(DEX/2)；可用職業／興趣點再提升。",
     "檢定用途：被打時選擇閃避、某些需要靈活躲閃的場面。",
+  ].join("\n\n"),
+  母語: [
+    "母語：角色最熟悉的語言（Own Language）。",
+    "系統常駐：創角基礎＝教育 EDU；可用職業／興趣點再提升。",
+    "檢定用途：閱讀艱深母語文獻、修辭、快速理解口語細節。其他外語請另開「語言（…）」且基礎為 1%。",
   ].join("\n\n"),
   信用評級: [
     "信用評級：社會地位與可動用金錢／信用的技能（％）。",

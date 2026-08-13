@@ -403,6 +403,7 @@ export type PreflightReason =
   | "NEEDS_APPROVAL"
   | "DESKTOP_DISCONNECTED"
   | "NO_AVAILABLE_PROVIDER"
+  | "EVENT_CHANNEL_FAILED"
   | "READY"
   | "ERROR";
 

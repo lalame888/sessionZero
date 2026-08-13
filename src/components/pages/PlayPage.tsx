@@ -16,6 +16,7 @@ import {
   looksLikeEndingNarrative,
 } from "@/lib/endingDetect";
 import { shouldOfferOpeningRetry, findLatestOpeningFailure, hadPriorOpeningAttempt, hasAgentNarrative } from "@/lib/openingRetry";
+import { isBusyPedelecStatus } from "@/lib/pedelec/sessionLiveness";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
 
@@ -181,7 +182,7 @@ export function PlayPage({
   };
 
   const openingBusy =
-    starting || sessionStatus === "running" || sessionStatus === "waiting_tool_result";
+    starting || isBusyPedelecStatus(sessionStatus);
 
   return (
     <div className="grid min-h-0 flex-1 gap-4 overflow-hidden lg:grid-cols-[280px_1fr]">
@@ -271,10 +272,7 @@ export function PlayPage({
                 type="button"
                 size="sm"
                 className="h-7 shrink-0 gap-1"
-                disabled={
-                  sessionStatus === "running" ||
-                  sessionStatus === "waiting_tool_result"
-                }
+                disabled={isBusyPedelecStatus(sessionStatus)}
                 onClick={() =>
                   confirmManualEnding({
                     title: endingOffer.title,

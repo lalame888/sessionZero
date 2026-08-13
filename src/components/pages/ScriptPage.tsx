@@ -12,6 +12,11 @@ import { sendPlayerAction, sendGmText, getActiveSession } from "@/lib/pedelec/cr
 import { loadRecentScriptDesigns } from "@/lib/campaignStorage";
 import { exportScriptPackDownload } from "@/lib/campaignPack";
 import {
+  isCompanionChatMessage,
+  isHiddenDuplicatePlayerMessage,
+} from "@/lib/playTurnState";
+import {
+  AUTO_GENERATE_COC_SCRIPT_PROMPT,
   buildAutoGenerateCocScriptPrompt,
   formatPriorScriptDesignsForPrompt,
 } from "@/prompts/gmDirectives";
@@ -46,16 +51,21 @@ export function ScriptPage({
   const setPartySize = useGameStore((s) => s.setPartySize);
   const appendSystem = useGameStore((s) => s.appendSystem);
   const characterSchema = useGameStore((s) => s.characterSchema);
-  const history = useGameStore((s) => s.history);
+  const messages = useGameStore((s) => s.messages);
   const advanceToCharacterPhase = useGameStore(
     (s) => s.advanceToCharacterPhase,
   );
   const isTyping = useGameStore((s) => s.isTyping);
   const userMessages = useMemo(() => {
-    return (history ?? [])
-      .filter((h) => h.playerInput && h.playerInput.trim().length > 0)
-      .map((h) => ({ id: `turn-${h.turn}`, content: h.playerInput! }));
-  }, [history]);
+    return messages.filter(
+      (m) =>
+        m.role === "user" &&
+        m.content.trim().length > 0 &&
+        !isCompanionChatMessage(m) &&
+        !isHiddenDuplicatePlayerMessage(messages, m.id) &&
+        !m.content.includes(AUTO_GENERATE_COC_SCRIPT_PROMPT),
+    );
+  }, [messages]);
   const userMsgRef = useRef<HTMLDivElement>(null);
   const [generating, setGenerating] = useState(false);
   const [generatingBlueprint, setGeneratingBlueprint] = useState(false);
@@ -147,7 +157,10 @@ export function ScriptPage({
         excludeId: useGameStore.getState().campaignId,
       });
       const priorLayer = formatPriorScriptDesignsForPrompt(priorDesigns);
+      const label = `請 AI 生成 CoC（${SCENARIO_SCALE_LABELS[scenarioScale]}）`;
+      useGameStore.getState().appendMessage({ role: "user", content: label });
       await sendPlayerAction(buildAutoGenerateCocScriptPrompt(scenarioScale), {
+        skipUserMessage: true,
         extraLayers: priorLayer ? [priorLayer] : undefined,
       });
     } catch (err) {

@@ -80,7 +80,7 @@ export function buildStaticReplayHtml(
   button:hover { filter: brightness(1.08); }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   .truth { font-size: 0.88rem; color: var(--ink); }
-  .truth .k { color: var(--accent-2); margin-top: 10px; font-size: 0.75rem; letter-spacing: 0.06em; }
+  .k { color: var(--accent-2); margin-top: 10px; font-size: 0.75rem; letter-spacing: 0.06em; }
   .err { color: #e88; padding: 24px; }
   .load-note { font-size: 0.75rem; color: var(--muted); margin-top: 8px; }
 </style>
@@ -196,6 +196,58 @@ function render(campaign, source) {
       "</section>"
     : "";
 
+  function settlementHtml() {
+    const settlement = campaign.endingSettlement;
+    const members = settlement && Array.isArray(settlement.members)
+      ? settlement.members
+      : [];
+    if (!members.length) return "";
+    const blocks = members.map((m) => {
+      const who = m.controller === "ai" ? "AI 隊友" : "玩家";
+      const growth = Array.isArray(m.growthLog)
+        ? m.growthLog.map((l) => "<li>" + escapeHtml(l) + "</li>").join("")
+        : "";
+      const returned = Array.isArray(m.inventoryReturned)
+        ? m.inventoryReturned.map((l) => "<li>" + escapeHtml(l) + "</li>").join("")
+        : "";
+      const before = (m.statsBefore && m.statsBefore.skills) || {};
+      const after = (m.statsAfter && m.statsAfter.skills) || {};
+      const skillKeys = Array.from(
+        new Set([].concat(Object.keys(before), Object.keys(after))),
+      ).sort();
+      const skillBits = [];
+      for (let i = 0; i < skillKeys.length; i++) {
+        const k = skillKeys[i];
+        const b = before[k] || 0;
+        const a = after[k] || 0;
+        if (b !== a) skillBits.push(escapeHtml(k) + " " + b + " → " + a);
+      }
+      return (
+        '<div class="actor" style="margin-bottom:14px">' +
+        '<div class="label">' +
+        escapeHtml(who + " · " + (m.name || "未命名")) +
+        "</div>" +
+        (growth
+          ? '<div class="k">成長檢定</div><ul>' + growth + "</ul>"
+          : "") +
+        (returned
+          ? '<div class="k">劇本物資回繳</div><ul>' + returned + "</ul>"
+          : "") +
+        (skillBits.length
+          ? '<div class="k">技能變化</div><div class="truth">' +
+            skillBits.join(" · ") +
+            "</div>"
+          : "") +
+        "</div>"
+      );
+    }).join("");
+    return (
+      '<section class="panel"><h2>結算：成長與回繳</h2>' +
+      blocks +
+      "</section>"
+    );
+  }
+
   let scrubShell = '<section class="panel"><h2>時間軸回放</h2>';
   if (!history.length) {
     scrubShell += '<p class="sub">尚無歷史快照。</p></section>';
@@ -223,6 +275,7 @@ function render(campaign, source) {
     escapeHtml(source) +
     "</p>" +
     endingHtml +
+    settlementHtml() +
     truthHtml +
     scrubShell +
     '<p class="load-note">同目錄另附 ' +

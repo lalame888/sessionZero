@@ -13,6 +13,7 @@ import {
   buildAdventureRecord,
   buildAdventureSynopsis,
   captureStatSnapshot,
+  endingSettlementDisplayLog,
 } from "@/engine/adventureDossier";
 import { enrichCharacterSheetMeta } from "@/engine/creation";
 import { rollDice } from "@/engine/dice";
@@ -193,10 +194,14 @@ export function EndingStage() {
     (s) => s.resolveEndingCompanions,
   );
   const endingCharacterSettled = useGameStore((s) => s.endingCharacterSettled);
+  const endingSettlement = useGameStore((s) => s.endingSettlement);
   const applyGrowthResult = useGameStore((s) => s.applyGrowthResult);
   const appendSystem = useGameStore((s) => s.appendSystem);
   const markEndingCharacterSettled = useGameStore(
     (s) => s.markEndingCharacterSettled,
+  );
+  const upsertEndingSettlementMember = useGameStore(
+    (s) => s.upsertEndingSettlementMember,
   );
   const selectedProvider = useGameStore((s) => s.selectedProvider);
   const selectedModel = useGameStore((s) => s.selectedModel);
@@ -206,7 +211,10 @@ export function EndingStage() {
     [character?.id, campaignId],
   );
 
-  const alreadySettled = endingCharacterSettled || Boolean(careerRecord);
+  const alreadySettled =
+    endingCharacterSettled ||
+    Boolean(careerRecord) ||
+    Boolean(endingSettlement?.members.length);
 
   const [growthLog, setGrowthLog] = useState<string[]>([]);
   const [settled, setSettled] = useState(alreadySettled);
@@ -393,6 +401,17 @@ export function EndingStage() {
         statsAfter,
       );
     }
+    upsertEndingSettlementMember({
+      characterId: memberId,
+      name,
+      controller: "ai",
+      systemId: beforeSheet.system_id,
+      growthLog: growthLogs,
+      inventoryReturned: returned,
+      statsBefore,
+      statsAfter,
+      savedToLibrary: saved,
+    });
     return { name, growthLogs: logsWithReturn, saved };
   };
 
@@ -403,15 +422,33 @@ export function EndingStage() {
       useGameStore.getState().character?.id,
       campaignId,
     );
+    const settlement = useGameStore.getState().endingSettlement;
+    const playerSnap =
+      settlement?.members.find((m) => m.controller === "player") ??
+      settlement?.members.find(
+        (m) => m.characterId === useGameStore.getState().character?.id,
+      );
     if (record) {
       setGrowthLog(record.growthLog ?? []);
       if (record.synopsis) {
         setSynopsis(record.synopsis);
         setSynopsisReady(true);
       }
+    } else if (playerSnap) {
+      setGrowthLog(endingSettlementDisplayLog(playerSnap));
+      setSynopsisReady(false);
+    }
+    if (settlement?.members.length) {
+      const map: Record<string, string[]> = {};
+      for (const m of settlement.members) {
+        if (m.controller === "ai") {
+          map[m.characterId] = endingSettlementDisplayLog(m);
+        }
+      }
+      if (Object.keys(map).length) setCompanionGrowthById(map);
     }
     setSettled(true);
-    setLibrarySaved(true);
+    setLibrarySaved(Boolean(record) || Boolean(playerSnap?.savedToLibrary));
     setRevealed(true);
     if (!useGameStore.getState().endingCharacterSettled) {
       markEndingCharacterSettled();
@@ -502,8 +539,12 @@ export function EndingStage() {
   };
 
   /** 成長／無需成長／D&D：回繳勾選物資 → 結算存檔並解鎖回放 */
-  const finishSettlement = (logs: string[]) => {
+  const finishSettlement = (
+    logs: string[],
+    statsBefore: ReturnType<typeof captureStatSnapshot> | null,
+  ) => {
     const sheet = useGameStore.getState().character;
+    const madnessNow = useGameStore.getState().madness;
     const returned = sheet
       ? applyInventoryReturns(sheet.id, selectedReturnItems)
       : [];
@@ -514,21 +555,45 @@ export function EndingStage() {
     if (returned.length) {
       appendSystem(`結局結算：已回繳劇本物資 — ${returned.join("、")}`);
     }
+    const afterSheet = useGameStore.getState().character ?? sheet;
+    const statsAfter = afterSheet
+      ? captureStatSnapshot(afterSheet, madnessNow)
+      : statsBefore;
     setGrowthLog(logsWithReturn);
     const text = buildSynopsisText(logsWithReturn);
     setSynopsis(text);
     setSynopsisReady(true);
-    autoSaveCharacter(logsWithReturn, text);
+    const saved = autoSaveCharacter(logsWithReturn, text);
+    if (afterSheet && statsAfter) {
+      upsertEndingSettlementMember({
+        characterId: afterSheet.id,
+        name: afterSheet.name?.trim() || "未命名",
+        controller: "player",
+        systemId: afterSheet.system_id,
+        growthLog: logs,
+        inventoryReturned: returned,
+        statsBefore: statsBefore ?? statsAfter,
+        statsAfter,
+        savedToLibrary: saved,
+      });
+    }
+  };
+
+  const snapshotCurrentPc = () => {
+    const sheet = useGameStore.getState().character;
+    if (!sheet) return null;
+    return captureStatSnapshot(sheet, useGameStore.getState().madness);
   };
 
   const runCocGrowth = () => {
     const sheet = useGameStore.getState().character;
     if (!sheet) return;
+    const statsBefore = snapshotCurrentPc();
     const pending = [...(sheet.markedSkillsForGrowth ?? [])].filter(
       (s) => !isCthulhuMythosSkillName(s),
     );
     if (!pending.length) {
-      finishSettlement(["本局沒有可成長的標記技能。"]);
+      finishSettlement(["本局沒有可成長的標記技能。"], statsBefore);
       return;
     }
 
@@ -545,15 +610,18 @@ export function EndingStage() {
         applyGrowthResult(skill, 0, sheet.id);
       }
     }
-    queueMicrotask(() => finishSettlement(logs));
+    queueMicrotask(() => finishSettlement(logs, statsBefore));
   };
 
   const saveWithoutGrowth = () => {
-    finishSettlement(["本局沒有可成長的標記技能。"]);
+    finishSettlement(["本局沒有可成長的標記技能。"], snapshotCurrentPc());
   };
 
   const confirmDndSettlement = () => {
-    finishSettlement([xpSummary ?? "D&D 經驗結算完成。"]);
+    finishSettlement(
+      [xpSummary ?? "D&D 經驗結算完成。"],
+      snapshotCurrentPc(),
+    );
   };
 
   const handleUpdateSynopsis = () => {
@@ -906,7 +974,7 @@ export function EndingStage() {
             <Button
               size="sm"
               disabled={!hasCharacter}
-              onClick={() => finishSettlement([])}
+              onClick={() => finishSettlement([], snapshotCurrentPc())}
             >
               <Archive className="h-3.5 w-3.5" />
               儲存角色結果，繼續

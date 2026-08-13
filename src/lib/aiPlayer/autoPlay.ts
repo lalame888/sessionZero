@@ -9,6 +9,10 @@ import {
   resolvePlayerDice,
   sendPlayerAction,
 } from "@/lib/pedelec/createGameSession";
+import {
+  isBusyPedelecStatus,
+  normalizePedelecSessionStatus,
+} from "@/lib/pedelec/sessionLiveness";
 import { isCompanionSpeechOnly } from "@/lib/stripGmMetaPrompts";
 import { useGameStore } from "@/store/useGameStore";
 import { isAwaitingGmReply } from "@/lib/playTurnState";
@@ -276,12 +280,13 @@ export function resolveAiPlayerTurnGate(): AiPlayerTurnGate {
 
 function isGmSessionBusy(storeStatus: string): boolean {
   const live = getActiveSession()?.getStatus();
+  const liveNorm = live ? normalizePedelecSessionStatus(live) : null;
+  const storeNorm = normalizePedelecSessionStatus(storeStatus);
   // store 偶發未跟上 live（檢定／tool 結束後仍卡在 busy）→ 以 live 為準並回寫
-  if (live && live !== storeStatus) {
-    useGameStore.getState().setSessionStatus(live);
+  if (liveNorm && liveNorm !== storeNorm) {
+    useGameStore.getState().setSessionStatus(liveNorm);
   }
-  const status = live ?? storeStatus;
-  return status === "running" || status === "waiting_tool_result";
+  return isBusyPedelecStatus(liveNorm ?? storeNorm);
 }
 
 /** 是否已有可見開場／GM 敘事 */

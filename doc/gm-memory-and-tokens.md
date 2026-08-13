@@ -77,12 +77,12 @@ Guidance／SEED 要求：不確定就查或讀檔；**禁止**把 GM-only 原文
 
 ## Conversation 壓縮（compact）
 
-常數：`PROVIDER_COMPACT_EVERY = 8`（`gmMemoryPolicy.ts`）
+常數：`PROVIDER_COMPACT_EVERY = 5`（`gmMemoryPolicy.ts`）
 
 流程（`createGameSession.ts`）：
 
 1. 計算自上次 create／compact 起的 `providerSendCount`。
-2. 當 `count > 0` 且 `count % 8 === 0`，下一則送出前：
+2. 當 `count > 0` 且 `count % 5 === 0`，下一則送出前：
    - `createGameSession(lastCreateOptions)` → **新的 provider conversation**（遊戲 store 不變）
    - PLAYING／ENDING 只掛精簡 tools（不含 `setup_script` 等 Session 0 工具）
    - 重新 upload bible、重掛 tools
@@ -113,8 +113,8 @@ Guidance／SEED 要求：不確定就查或讀檔；**禁止**把 GM-only 原文
 
 | 常數 | 位置 | 說明 |
 |------|------|------|
-| `PROVIDER_COMPACT_EVERY` | `gmMemoryPolicy.ts` | 越小越省長 conversation、重建越頻繁（現行 8） |
-| `SIDE_SESSION_REUSE_EVERY` | `gmMemoryPolicy.ts` | 隊友／AI 玩家續聊幾次後重建 |
+| `PROVIDER_COMPACT_EVERY` | `gmMemoryPolicy.ts` | 越小越省長 conversation、重建越頻繁（現行 5） |
+| `SIDE_SESSION_REUSE_EVERY` | `gmMemoryPolicy.ts` | 隊友／AI 玩家續聊幾次後重建（現行 4） |
 | `SEED_DIALOGUE_MAX_MSGS` | `contextAssembler.ts` | seed 近對話則數 |
 | `CHAPTER_RECENT_KEEP` / `CHAPTER_ROLLUP_MAX` | `contextAssembler.ts` | 章節摘要進 prompt 的量 |
 | `DIALOGUE_LINE_MAX` | `contextAssembler.ts` | 單則對話截斷 |

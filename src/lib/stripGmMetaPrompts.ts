@@ -7,7 +7,7 @@ const META_ONLY_RE =
 
 /** Companion pipeline / GM 內部等待狀態（整段應隱藏） */
 const COMPANION_WAIT_META_RE =
-  /Waiting for companion action response\.|I will wait for the companion(?:'s)? response|I will wait for the tool[^\n]*|I have (?:narrated|requested|initiated|processed)[^\n]*|Standing by(?: for[^\n]*)?\.?|No more tools to call\.?(?:\s*Waiting for [^\n]*)?|Waiting for the transition to the carousel(?: and companion action)?\.?|Waiting for the (?:background task|companion response task) to complete[^\n]*|An error occurred while executing the task[^\n]*|等待隊友行動|開場已送出|等待.{0,20}隊友回應|呼叫隊友.{0,40}(?:配合|前來|協助|回應)/i;
+  /Waiting for companion action response\.|I will wait for the companion(?:'s)? response|I will wait for the tool[^\n]*|I have (?:narrated|requested|initiated|processed)[^\n]*|Standing by(?: for[^\n]*)?\.?|No more tools to call\.?(?:\s*Waiting for [^\n]*)?|Waiting for the transition to the carousel(?: and companion action)?\.?|Waiting for the (?:background task|companion response task) to complete[^\n]*|An error occurred while executing the task[^\n]*|等待隊友行動|開場已送出|等待.{0,20}隊友回應|呼叫隊友.{0,40}(?:配合|前來|協助|回應)|已喚起(?:AI\s*)?隊友|等待隊友聲明|已發起.{0,20}(?:故事敘述|檢定)|請等待骰子/i;
 
 /** 是否為隊友 pipeline 的內部等待／轉場腔（勿當劇情顯示、勿觸發自動喚起） */
 export function isCompanionWaitMeta(text: string): boolean {
@@ -19,7 +19,7 @@ export function isCompanionWaitMeta(text: string): boolean {
  * 例：task-50 號背景任務已 launched…系統將在擲骰結果返回後自動通知…
  */
 const PIPELINE_STATUS_META_RE =
-  /task-\d+\s*號?\s*背景任務[^\n]*|背景任務已\s*(?:launched|啟動|啟動喚起|發起)[^\n]*|已為您發起[^\n]*(?:檢定請求|應對反應任務|任務)[^\n]*|系統將在[^\n]*(?:自動通知|自動銜接|推進劇情|擲骰結果返回)[^\n]*|正在處理隊友[^\n]*檢定行動[^\n]*|現場敘事已推進至[^\n]*|場景已設置完畢[^\n]*|等待主角發起下一步[^\n]*|等待隊友與主角的下一步[^\n]*/gi;
+  /task-\d+\s*號?\s*背景任務[^\n]*|背景任務已\s*(?:launched|啟動|啟動喚起|發起)[^\n]*|已為您發起[^\n]*(?:檢定請求|應對反應任務|任務)[^\n]*|系統將在[^\n]*(?:自動通知|自動銜接|推進劇情|擲骰結果返回)[^\n]*|正在處理隊友[^\n]*檢定行動[^\n]*|現場敘事已推進至[^\n]*|場景已設置完畢[^\n]*|等待主角發起下一步[^\n]*|等待隊友與主角的下一步[^\n]*|已喚起(?:AI\s*)?隊友[^\n]*|等待隊友聲明[^\n]*|已發起[^。\n]{0,40}檢定[^\n]*|請等待骰子[^\n]*|您的「[^」]+」檢定獲得[^\n]*/gi;
 
 const ITALIC_PIPELINE_META_RE =
   /\*+\s*[（(]?已為您發起[^*)\n]*(?:任務|檢定)[^*)\n]*[)）]?\s*\*+/gi;
@@ -124,6 +124,11 @@ function stripPipelineStatusMeta(text: string): string {
       if (/^- Log URI:/i.test(L)) return false;
       if (/現場敘事已推進/.test(L)) return false;
       if (/場景已設置完畢/.test(L)) return false;
+      if (/^已喚起(?:AI\s*)?隊友/.test(L)) return false;
+      if (/等待隊友聲明/.test(L)) return false;
+      if (/^已發起/.test(L) && /檢定|敘述/.test(L)) return false;
+      if (/請等待骰子/.test(L)) return false;
+      if (/您的「.+」檢定獲得/.test(L)) return false;
       return true;
     })
     .join("\n")

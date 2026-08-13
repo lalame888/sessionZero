@@ -2,6 +2,8 @@ import { useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { shouldOfferOpeningRetry, hadPriorOpeningAttempt } from "@/lib/openingRetry";
+import { shouldSkipAutoRetryBecauseGmReplied } from "@/lib/playTurnState";
+import { isBusyPedelecStatus } from "@/lib/pedelec/sessionLiveness";
 import { useGameStore } from "@/store/useGameStore";
 
 export function TaskFeedback({
@@ -49,6 +51,7 @@ export function TaskFeedback({
 
   const openingRetry =
     retryAction?.kind === "opening" && offerOpeningRetry;
+  const skipResend = shouldSkipAutoRetryBecauseGmReplied(retryAction, messages);
 
   let text = "";
   if (secretRollActive) text = "GM 暗骰處理中…";
@@ -63,13 +66,18 @@ export function TaskFeedback({
         : isOpeningRetry
           ? "先前開場未完成，可請 GM 重新述說開場。"
           : "角色已就緒，可請 GM 述說開場。"
+      : skipResend
+        ? sessionError
+          ? `連線中斷：${sessionError.code} — ${sessionError.message}（劇情已寫入，重建後可繼續）`
+          : "Session 已中斷，重建連線後可繼續。"
       : sessionError
         ? `連線／Session 錯誤：${sessionError.code} — ${sessionError.message}`
         : status === "ended"
           ? "Session 已結束，可重建後重試。"
           : "發生錯誤，可重試上一步。";
-  } else if (status === "running") text = "GM 正在敘事…";
-  else if (status === "waiting_tool_result") text = "等待工具／互動完成…";
+  } else if (isBusyPedelecStatus(status) && status !== "waiting_tool_result") {
+    text = "GM 正在敘事…";
+  } else if (status === "waiting_tool_result") text = "等待工具／互動完成…";
   else if (status === "error") {
     text = "發生錯誤，可重試或重建 Session";
   } else return null;
@@ -100,14 +108,18 @@ export function TaskFeedback({
         >
           <RefreshCw className={`h-3.5 w-3.5 ${retrying ? "animate-spin" : ""}`} />
           {retrying
-            ? isOpeningRetry
-              ? "重新開場中…"
-              : "開場中…"
+            ? skipResend
+              ? "重建中…"
+              : isOpeningRetry
+                ? "重新開場中…"
+                : "開場中…"
             : retryAction?.kind === "opening"
               ? isOpeningRetry
                 ? "重新述說開場"
                 : "請 AI 述說開場"
-              : (retryAction?.label ?? "重試")}
+              : skipResend
+                ? "重建連線"
+                : (retryAction?.label ?? "重試")}
         </Button>
       ) : null}
     </div>

@@ -23,16 +23,19 @@ export function PedelecInstallationGuideline({
 
   const needsApproval = preflight.reason === "NEEDS_APPROVAL";
   const desktopDisconnected = preflight.reason === "DESKTOP_DISCONNECTED";
+  const eventChannelFailed = preflight.reason === "EVENT_CHANNEL_FAILED";
   const needsDesktop =
     desktopDisconnected || preflight.reason === "NO_AVAILABLE_PROVIDER";
 
   const title = desktopDisconnected
     ? "需要重新連線 Pedelec Desktop"
-    : preflight.reason === "NO_AVAILABLE_PROVIDER"
-      ? "需要啟動 Pedelec Desktop / Provider"
-      : needsApproval
-        ? "需要核准此網站"
-        : "SessionZero 需要 Pedelec";
+    : eventChannelFailed
+      ? "這個分頁還沒連上 Pedelec"
+      : preflight.reason === "NO_AVAILABLE_PROVIDER"
+        ? "需要啟動 Pedelec Desktop / Provider"
+        : needsApproval
+          ? "需要核准此網站"
+          : "SessionZero 需要 Pedelec";
 
   const handleAllowSite = async () => {
     setApproving(true);
@@ -98,7 +101,9 @@ export function PedelecInstallationGuideline({
             <p>
               {desktopDisconnected
                 ? "擴充元件仍在，但目前偵測不到 Pedelec Desktop。請先啟動 Desktop，不必重裝 Extension。"
-                : "SessionZero 的核心跑團體驗由本機 Agent（BYO-AI）驅動。未完成安裝與連線前，主輸入框會保持停用。"}
+                : eventChannelFailed
+                  ? "Pedelec 可能已在電腦上執行，但這個網頁沒有成功連上，所以故事不會更新。請重新整理頁面，或關閉後再開 Pedelec Desktop。"
+                  : "SessionZero 的核心跑團體驗由本機 Agent（BYO-AI）驅動。未完成安裝與連線前，主輸入框會保持停用。"}
             </p>
             <p className="rounded-md border border-border bg-bg/50 p-3 text-ink">
               {preflight.message ?? "請完成下列步驟後按「重新檢查」。"}
@@ -132,6 +137,12 @@ export function PedelecInstallationGuideline({
               )}
               {desktopDisconnected ? (
                 <li>啟動後回到此處按「重新檢查」，確認 Desktop ping 成功</li>
+              ) : eventChannelFailed ? (
+                <>
+                  <li>重新整理這個頁面，再按「重新檢查」</li>
+                  <li>若電腦上的 Pedelec 還開著，請先關掉再開一次</li>
+                  <li>請只開一個 SessionZero 分頁</li>
+                </>
               ) : (
                 <li>
                   在 Desktop 設定至少一個可用 Provider（OpenAI / Claude / Ollama

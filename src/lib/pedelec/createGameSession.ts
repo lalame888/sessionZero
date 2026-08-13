@@ -19,7 +19,10 @@ import {
   badEndingWinConflictWarning,
   noteNarrativeForWinProgress,
 } from "@/engine/winFlags";
-import { aiCompanionsMentionedInAction } from "@/engine/companionTrigger";
+import {
+  aiCompanionsMentionedInAction,
+  companionActionNeedsCheck,
+} from "@/engine/companionTrigger";
 import { buildOpeningPartyDirective } from "@/engine/partyNarrativeBrief";
 import {
   resolveCheckOutcome,
@@ -45,8 +48,21 @@ import {
 import { findSrdByTopic } from "@/engine/srdLorebook";
 import {
   lookupScenarioTerm,
-  resolveCanonicalSceneId,
+  normalizeScenarioTermKind,
+  patchSceneDirectorFromNarrate,
 } from "@/engine/scenarioLorebook";
+import {
+  detectNarrativeHygieneIssue,
+  detectWinSpoilerDump,
+  buildWinAskDirective,
+  buildWinSpoilerGmInstruction,
+  playerActionAsksForWinPath,
+} from "@/engine/antiSpoiler";
+import {
+  detectMythosSanSighting,
+  markMythosSanSightingSeen,
+  resetMythosSanSightings,
+} from "@/engine/mythosSanHint";
 import {
   assessScenarioScaleGaps,
   formatScenarioScaleGapsZh,
@@ -84,6 +100,15 @@ import {
   isOutgoingPromptCancelled,
 } from "@/lib/outgoingPromptGate";
 import { explicitSessionModel, pedelec } from "@/lib/pedelec/client";
+import {
+  EVENT_CHANNEL_FAILED_MESSAGE,
+  isPedelecEventChannelFailure,
+  markPedelecEventChannelFailed,
+  normalizePedelecSessionStatus,
+  sessionStatusNeedsRebuild,
+  waitForPedelecSessionSettled,
+  waitForPedelecTurnSignal,
+} from "@/lib/pedelec/sessionLiveness";
 import { resolvePlayerBoundSheet } from "@/types/party";
 import {
   isCompleteLeakedPayload,
@@ -132,6 +157,15 @@ export type GameSessionHandle = {
   dispose: () => void;
 };
 
+function joinGmInstructions(
+  ...parts: (string | undefined | null | false)[]
+): string | undefined {
+  const text = parts
+    .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+    .join("\n");
+  return text || undefined;
+}
+
 type NarrateStoryArgs = {
   system_notice?: string;
   narrative_text: string;
@@ -165,6 +199,13 @@ let activeAgentMessageId: string | null = null;
 let waitingToolSince: number | null = null;
 let missingSetupScriptWarned = false;
 const WAITING_TOOL_STUCK_MS = 90_000;
+/** sendText 後若一直 running、完全沒有 chat／tool，視為網頁沒接到 turn */
+const RUNNING_STUCK_MS = 120_000;
+/** 玩家行動／開場已開始，但 sendText 尚未送出（compact／重建中） */
+let gmTurnInFlight = false;
+/** 本輪 sendText 已送出，之後的 idle 才是真正回合結束 */
+let gmSendStarted = false;
+let lastGmActivityAt: number | null = null;
 /** 串流中尚未完整的洩漏 tool-call 緩衝（依 turnId） */
 const leakedChatBufferByTurn = new Map<string, string>();
 /** 避免同一則洩漏呼叫被重複還原 */
@@ -181,6 +222,13 @@ let activeCompanionResolveId: string | null = null;
 /** 同一玩家行動只自動喚起隊友一次（GM 若未呼叫 tool） */
 let autoCompanionHandledForAction: string | null = null;
 let autoCompanionInFlight = false;
+/** 隊友開槍／刺擊／燒灼等宣告後，若 GM 未帶 check_request 則由引擎代骰 */
+let pendingCompanionCombatCheck: {
+  companionId: string;
+  companionName: string;
+  skillHint: string;
+  action: string;
+} | null = null;
 /** 供 conversation 壓縮時重建同 provider／model */
 let lastCreateOptions: { provider: ProviderCode; model?: string } | null =
   null;
@@ -214,6 +262,17 @@ function applyCompanionDecision(
     role: "user",
     content: label,
   });
+  if (!opts?.openingBeat) {
+    const combatNeed = companionActionNeedsCheck(decision.action);
+    if (combatNeed) {
+      pendingCompanionCombatCheck = {
+        companionId: decision.companionId,
+        companionName: decision.companionName,
+        skillHint: combatNeed.skillHint,
+        action: decision.action,
+      };
+    }
+  }
   // 開場或 GM tool 同一輪：只掛氣泡。GM 會在 tool 回傳後自己寫世界反應。
   if (opts?.fromGmTool || opts?.openingBeat) {
     return;
@@ -353,6 +412,7 @@ export function buildCompanionResolveExtraLayers(input: {
       supplement ? `Human player follow-up: ${supplement}` : "",
       `MUST use character_id=${input.companionId} on check_request / secret_check_request / update_game_stats / mark_skill_success for THIS companion's attempt.`,
       `If the companion's declaration is attempting an investigation / examination / medical / mysticism / combat maneuvre / knowledge assessment, you MUST initiate a check_request or secret_check_request for THIS attempt (and provide target_value if no sheet-matched skill exists). Prefer the skill that matches the attempt — do not default investigation to 偵查/Spot Hidden.`,
+      `Firearm / stab / burn / lockpick / first-aid: check_request is MANDATORY for character_id=${input.companionId}. Engine may auto-roll if omitted. Never narrate a hit without dice.`,
       "FORBIDDEN in narrative_text:",
       "- Prefix 【隊友·…】 or any restatement of their spoken lines",
       `- Third-person replay of the same action (e.g.「${input.companionName}大喊…」「她忍著痛…」repeating what they already declared)`,
@@ -788,6 +848,93 @@ function waitForPlayerDice(args: {
   });
 }
 
+async function maybeResolvePendingCompanionCombat(
+  existingCharacterId?: string | null,
+): Promise<{ gm_instruction: string } | null> {
+  const pending = pendingCompanionCombatCheck;
+  if (!pending) return null;
+  if (existingCharacterId && existingCharacterId === pending.companionId) {
+    pendingCompanionCombatCheck = null;
+    return null;
+  }
+  pendingCompanionCombatCheck = null;
+  const store = useGameStore.getState();
+  if (store.phase !== "PLAYING") return null;
+  store.appendSystem(
+    `（系統）隊友「${pending.companionName}」的攻擊／技能嘗試須檢定（${pending.skillHint}）。`,
+  );
+  const roll = await waitForPlayerDice({
+    request_id: crypto.randomUUID(),
+    check_target_name: pending.skillHint,
+    dice_type: "d100",
+    reason: pending.action.slice(0, 160),
+    character_id: pending.companionId,
+  });
+  return {
+    gm_instruction: `COMPANION CHECK (${pending.companionName}／${pending.skillHint}): outcome_zh=${successQualityLabel(roll.outcome)} detail=${roll.detail}. Narrate only this attempt's world result. On failure: miss / lamp dies / lock jams — do not auto-succeed.`,
+  };
+}
+
+async function maybeRunEngineMythosSan(opts: {
+  narrative: string;
+  alreadySanityCheck: boolean;
+}): Promise<{ gm_instruction: string } | null> {
+  if (opts.alreadySanityCheck) return null;
+  const store = useGameStore.getState();
+  if (store.phase !== "PLAYING") return null;
+  if (store.script.system_id !== "COC_7E") return null;
+  if (looksLikeEndingNarrative(opts.narrative)) return null;
+  const pc = resolvePlayerBoundSheet(store);
+  if (!pc?.derived.san) return null;
+  const sighting = detectMythosSanSighting({
+    narrative: opts.narrative,
+    creatures: store.script.hidden_full_script?.creatures,
+    sanAndThreats: store.script.hidden_full_script?.san_and_threats,
+    recentSystemTexts: store.messages
+      .filter((m) => m.role === "system")
+      .slice(-20)
+      .map((m) => m.content),
+  });
+  if (!sighting) return null;
+  markMythosSanSightingSeen(sighting.key);
+  store.appendSystem(
+    `目擊神話存在（${sighting.label}，${sighting.successLoss}/${sighting.failDice}）— 進行理智檢定。`,
+  );
+  const roll = await waitForPlayerDice({
+    request_id: crypto.randomUUID(),
+    check_target_name: "理智",
+    dice_type: "d100",
+    reason: `目擊神話／異界：${sighting.label}`,
+    character_id: pc.id,
+  });
+  if (roll.cancelled) {
+    return {
+      gm_instruction: `MYTHOS SAN was queued but cancelled. Re-request 理智 for sighting ${sighting.label} (${sighting.successLoss}/${sighting.failDice}).`,
+    };
+  }
+  const success = isSuccessDiceOutcome(roll.outcome);
+  const loss = success
+    ? sighting.successLoss
+    : rollDice(sighting.failDice, "normal").total;
+  if (loss > 0) {
+    store.applyStatChanges(
+      [
+        {
+          key: "SAN",
+          change_amount: -loss,
+          reason: `目擊神話／異界：${sighting.label}`,
+        },
+      ],
+      [],
+      [],
+      pc.id,
+    );
+  }
+  return {
+    gm_instruction: `ENGINE MYTHOS SAN (${sighting.label}): 理智 ${successQualityLabel(roll.outcome)} → SAN -${loss} (formula ${sighting.successLoss}/${sighting.failDice}). Narrate shock/fear only. Do not dump win steps.`,
+  };
+}
+
 export function settlePendingDiceOnTeardown() {
   const { diceResolver, pendingDice, clearDiceResolver } =
     useGameStore.getState();
@@ -861,28 +1008,63 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     store.setLocation(a.location.trim());
   }
 
-  if (
-    a.scene_id ||
-    a.scene_goal ||
-    a.tension ||
-    a.director_notes !== undefined
-  ) {
-    const scenes = store.script.hidden_full_script?.scenes ?? [];
-    const sceneId =
-      a.scene_id !== undefined
-        ? resolveCanonicalSceneId(
-            scenes,
-            a.scene_id || null,
-            a.location?.trim() || store.location,
-          )
-        : undefined;
+  const directorPatch = patchSceneDirectorFromNarrate({
+    scenes: store.script.hidden_full_script?.scenes,
+    location: a.location?.trim() || store.location,
+    requestedSceneId: a.scene_id,
+    requestedGoal: a.scene_goal,
+    tension: a.tension ?? null,
+    directorNotes: a.director_notes,
+    previous: {
+      currentSceneId: store.sceneDirector.currentSceneId ?? undefined,
+      sceneGoal: store.sceneDirector.sceneGoal,
+    },
+  });
+  const sceneHints: string[] = [];
+  if (directorPatch) {
     store.setSceneDirector({
-      ...(sceneId !== undefined ? { currentSceneId: sceneId } : {}),
-      ...(a.scene_goal !== undefined ? { sceneGoal: a.scene_goal } : {}),
-      ...(a.tension !== undefined ? { tension: a.tension } : {}),
-      ...(a.director_notes !== undefined ? { notes: a.director_notes } : {}),
+      ...(directorPatch.currentSceneId
+        ? { currentSceneId: directorPatch.currentSceneId }
+        : {}),
+      ...(directorPatch.sceneGoal !== undefined
+        ? { sceneGoal: directorPatch.sceneGoal }
+        : {}),
+      ...(directorPatch.tension !== undefined
+        ? { tension: directorPatch.tension }
+        : {}),
+      ...(directorPatch.notes !== undefined
+        ? { notes: directorPatch.notes }
+        : {}),
     });
+    if (directorPatch.inventedSceneId) {
+      sceneHints.push(
+        directorPatch.resolvedSceneId
+          ? `SCENE_ID: "${a.scene_id}" is not a bible id; SSOT now ${directorPatch.resolvedSceneId}. Always use existing scenes[].id.`
+          : `SCENE_ID "${a.scene_id}" not in bible; left unchanged. Call lookup_scenario_term({ query, kind: "scene" }).`,
+      );
+    } else if (directorPatch.locationSynced && directorPatch.resolvedSceneId) {
+      sceneHints.push(
+        `SCENE SYNC: location mapped to ${directorPatch.resolvedSceneId}. Include this scene_id on the next narrate_story.`,
+      );
+    }
   }
+
+  const hygieneHint = detectNarrativeHygieneIssue(narrativeText);
+  const playerAskedWin = playerActionAsksForWinPath(store.lastPlayerAction);
+  const spoilerDump = detectWinSpoilerDump(
+    narrativeText,
+    store.script.hidden_full_script?.winning_condition,
+  );
+  const spoilerHint = spoilerDump
+    ? buildWinSpoilerGmInstruction({ playerAsked: playerAskedWin })
+    : playerAskedWin
+      ? buildWinAskDirective()
+      : null;
+  const narrateHints = joinGmInstructions(
+    ...sceneHints,
+    hygieneHint,
+    spoilerHint,
+  );
 
   if (a.npc_updates?.length) {
     for (const n of a.npc_updates) {
@@ -980,7 +1162,21 @@ async function runNarrateStory(args: NarrateStoryArgs) {
   if (!a.check_request) {
     // 勿在此清除 activeCompanionResolveId：同回合 GM 常先 narrate 再 check_request，
     // 提早清除會讓隊友檢定落到「玩家擲骰 UI」→ 取消／逾時 → 判定變已取消。
-    return { ok: true as const, narrative_recorded: true as const };
+    const companionCombat = await maybeResolvePendingCompanionCombat(null);
+    const mythosSan = await maybeRunEngineMythosSan({
+      narrative: narrativeText,
+      alreadySanityCheck: false,
+    });
+    const gmInstruction = joinGmInstructions(
+      narrateHints,
+      companionCombat?.gm_instruction,
+      mythosSan?.gm_instruction,
+    );
+    return {
+      ok: true as const,
+      narrative_recorded: true as const,
+      ...(gmInstruction ? { gm_instruction: gmInstruction } : {}),
+    };
   }
 
   const coerced = coerceCompanionCharacterId(a.check_request.character_id);
@@ -1010,6 +1206,14 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     useGameStore.getState().appendSystem(
       `（略過重複檢定：${whoLabel}${skillLabel} 近日已成功，不再重骰）`,
     );
+    const companionCombat = await maybeResolvePendingCompanionCombat(
+      checkRequest.character_id,
+    );
+    const mythosSan = await maybeRunEngineMythosSan({
+      narrative: narrativeText,
+      alreadySanityCheck:
+        isSanityCheckName(skillLabel) || resolved.checkKind === "sanity",
+    });
     activeCompanionResolveId = null;
     return {
       ok: true as const,
@@ -1027,8 +1231,12 @@ async function runNarrateStory(args: NarrateStoryArgs) {
         outcome: priorSuccess.outcome,
         difficulty: resolved.difficulty,
       }),
-      gm_instruction:
+      gm_instruction: joinGmInstructions(
         "CRITICAL: Do NOT re-request this check. A matching check already SUCCEEDED recently. Your next narrate_story must ONLY continue from that prior success and immediate consequences — never roll again, never overwrite with failure.",
+        narrateHints,
+        companionCombat?.gm_instruction,
+        mythosSan?.gm_instruction,
+      ),
     };
   }
   if (
@@ -1042,10 +1250,17 @@ async function runNarrateStory(args: NarrateStoryArgs) {
       message:
         "A player-facing check is already pending. Wait for the dice result before requesting another check.",
       narrative_recorded: true as const,
-      gm_instruction:
+      gm_instruction: joinGmInstructions(
         "Do not overwrite the pending check. Wait for the engine dice result, then narrate only that outcome.",
+        narrateHints,
+      ),
     };
   }
+
+  const companionCombat = await maybeResolvePendingCompanionCombat(
+    checkRequest.character_id,
+  );
+
   const thresholdText =
     resolved.checkKind === "sanity" && resolved.skill_value != null
       ? `${whoLabel}當前 SAN ${resolved.skill_value}，成功需 <= ${resolved.target_value}（CoC 理智檢定）`
@@ -1079,8 +1294,10 @@ async function runNarrateStory(args: NarrateStoryArgs) {
         "A player-facing check is already pending. Wait for the dice result before requesting another check.",
       narrative_recorded: true as const,
       cancelled: true,
-      gm_instruction:
+      gm_instruction: joinGmInstructions(
         "Do not overwrite the pending check. Wait for the engine dice result, then narrate only that outcome.",
+        narrateHints,
+      ),
     };
   }
   // 隊友檢定絕不可落到「已取消／不進行」；若誤走玩家 UI 被取消，強制改為自動擲骰
@@ -1126,6 +1343,12 @@ async function runNarrateStory(args: NarrateStoryArgs) {
     .slice(0, 12)
     .join("、");
 
+  const mythosSan = await maybeRunEngineMythosSan({
+    narrative: narrativeText,
+    alreadySanityCheck:
+      isSanityCheckName(skillLabel) || resolved.checkKind === "sanity",
+  });
+
   activeCompanionResolveId = null;
 
   return {
@@ -1137,15 +1360,19 @@ async function runNarrateStory(args: NarrateStoryArgs) {
       outcome: roll.outcome,
       difficulty: resolved.difficulty,
     }),
-    gm_instruction:
+    gm_instruction: joinGmInstructions(
       "CRITICAL: Your next narrate_story.narrative_text must ONLY describe this check outcome and immediate consequences. Do NOT repeat, paraphrase, or rewrite any previously narrated scene text. Prefer updating location/scene_id/npc_updates if the scene changed. Sheet skills for " +
-      whoLabel +
-      ": " +
-      (skillHint || "（無）") +
-      `. Dice result labels (Traditional Chinese): ${formatDiceResultLabels({
-        outcome: roll.outcome,
-        difficulty: resolved.difficulty,
-      })}. Engine outcome_zh=${successQualityLabel(roll.outcome)}. You MUST use this exact success-quality label — if it is 失敗, do NOT write 大失敗; only FUMBLE is 大失敗. Use 成功品質 wording (普通成功／困難級成功<=半值／極限級成功<=1/5／失敗／大失敗), not casual「很辛苦才成功」. On FAILURE: no full key_clue dump / no soft-win climax.`,
+        whoLabel +
+        ": " +
+        (skillHint || "（無）") +
+        `. Dice result labels (Traditional Chinese): ${formatDiceResultLabels({
+          outcome: roll.outcome,
+          difficulty: resolved.difficulty,
+        })}. Engine outcome_zh=${successQualityLabel(roll.outcome)}. You MUST use this exact success-quality label — if it is 失敗, do NOT write 大失敗; only FUMBLE is 大失敗. Use 成功品質 wording (普通成功／困難級成功<=半值／極限級成功<=1/5／失敗／大失敗), not casual「很辛苦才成功」. On FAILURE: no full key_clue dump / no soft-win climax.`,
+      narrateHints,
+      companionCombat?.gm_instruction,
+      mythosSan?.gm_instruction,
+    ),
   };
 }
 
@@ -1714,6 +1941,12 @@ function registerHandlers(
         reason: string;
         character_id?: string;
       };
+      if (resolveCocAttributeKeyFromCheckName(raw.skill_name)) {
+        return {
+          ok: false,
+          error: `${raw.skill_name} 是屬性不是技能，不可標記成長。請用技能名（如格鬥、偵查）。`,
+        };
+      }
       const coerced = coerceCompanionCharacterId(raw.character_id);
       if (coerced.corrected) {
         noteCompanionIdCorrection("mark_skill_success");
@@ -1798,25 +2031,29 @@ function registerHandlers(
 
   disposers.push(
     session.onTool("request_companion_action", async (args) => {
-      const a = args as {
-        companion_id: string;
-        reason: string;
-        situation?: string;
-        prefer_immediate?: boolean;
-      };
+      const raw = args as Record<string, unknown>;
+      const companionId = String(
+        raw.companion_id || raw.character_id || "",
+      ).trim();
+      const reason =
+        String(raw.reason || raw.prompt || "").trim() || "玩家點名隊友";
+      const situation = String(raw.situation || "").trim() || undefined;
+      const timing = String(raw.timing || "").trim().toLowerCase();
+      const preferImmediate =
+        raw.prefer_immediate === true || timing === "immediate";
       const store = useGameStore.getState();
       if (store.phase !== "PLAYING") {
         // 結局/結算中或其他非遊玩階段：拒絕新的隊友動作請求
         return {
           ok: true,
           acted: false,
-          companion_id: a.companion_id,
+          companion_id: companionId,
         };
       }
       const member = useGameStore
         .getState()
         .party.find(
-          (m) => m.id === a.companion_id || m.sheet.id === a.companion_id,
+          (m) => m.id === companionId || m.sheet.id === companionId,
         );
       if (!member || member.controller !== "ai") {
         return {
@@ -1829,9 +2066,9 @@ function registerHandlers(
       try {
         const decision = await requestCompanionDecision({
           companionId: member.id,
-          reason: a.reason,
-          situation: a.situation,
-          preferImmediate: Boolean(a.prefer_immediate),
+          reason,
+          situation,
+          preferImmediate,
         });
         if (!decision.acted) {
           // 靜默：不寫入任何玩家可見訊息
@@ -1844,6 +2081,8 @@ function registerHandlers(
           openingBeat,
         });
 
+        const combatNeed = companionActionNeedsCheck(decision.action);
+
         return {
           ok: true,
           acted: true,
@@ -1853,7 +2092,9 @@ function registerHandlers(
           handoff: decision.handoff,
           gm_instruction: openingBeat
             ? "OPENING BEAT: Companion speech is now a separate bubble. Do NOT call narrate_story again with the opening scene. Do NOT rewrite the opening. Stop and wait for the human player."
-            : "Companion declaration is visible as a separate bubble. Do NOT re-narrate previous scene text. Do NOT prefix 【隊友·】 or paraphrase their line. Narrate only NPC/world reaction (1–5 sentences), then pause for the human PC.",
+            : combatNeed
+              ? `MANDATORY CHECK: ${decision.companionName} declared a physical/combat/medical attempt. Next narrate_story MUST include check_request with character_id=${member.id} check_target_name=${combatNeed.skillHint}. Engine will auto-roll that companion if you omit it. Do NOT narrate a hit or successful treatment without dice. Companion declaration is a separate bubble — do not paraphrase it.`
+              : "Companion declaration is visible as a separate bubble. Do NOT re-narrate previous scene text. Do NOT prefix 【隊友·】 or paraphrase their line. Narrate only NPC/world reaction (1–5 sentences), then pause for the human PC.",
         };
       } catch (e) {
         return {
@@ -1899,23 +2140,17 @@ function registerHandlers(
           text: "No hidden bible yet. Call setup_script in Session 0, or improvise only within public_summary.",
         };
       }
-      const kindRaw = (a.kind ?? "any").trim().toLowerCase();
-      const kind =
-        kindRaw === "npc" ||
-        kindRaw === "scene" ||
-        kindRaw === "creature" ||
-        kindRaw === "faction" ||
-        kindRaw === "clue" ||
-        kindRaw === "core" ||
-        kindRaw === "any"
-          ? kindRaw
-          : "any";
+      const kind = normalizeScenarioTermKind(a.kind);
       const result = lookupScenarioTerm(hidden, {
         query: a.query ?? "",
         kind,
         limit: a.limit,
       });
-      return result;
+      return {
+        ...result,
+        kind,
+        kind_raw: a.kind ?? "any",
+      };
     }),
   );
 
@@ -2030,6 +2265,8 @@ function registerHandlers(
 }
 
 async function disposeGmSessionOnly() {
+  pendingCompanionCombatCheck = null;
+  resetMythosSanSightings();
   if (!activeHandle) return;
   const handle = activeHandle;
   activeHandle = null;
@@ -2062,7 +2299,7 @@ export async function createGameSession(options: {
       guidance: GM_SESSION_GUIDANCE,
       tools: [...tools],
     },
-    autoEndOnDisconnect: false,
+    autoEndOnDisconnect: true,
   })) as PedelecSession<SessionToolName>;
   activeToolset = toolset;
 
@@ -2127,6 +2364,7 @@ export async function createGameSession(options: {
       return;
     }
 
+    lastGmActivityAt = Date.now();
     if (!sameTurn) {
       activeAgentMessageId = s.appendMessage({
         role: "agent",
@@ -2164,10 +2402,14 @@ export async function createGameSession(options: {
   });
 
   const offError = session.onError((error: PedelecError) => {
+    settlePendingDiceOnTeardown();
     const s = useGameStore.getState();
     s.setSessionError({ code: error.code, message: error.message });
     s.appendSystem(`錯誤：${error.code} — ${error.message}`);
     s.setIsTyping(false);
+    if (s.sessionStatus !== "error" && s.sessionStatus !== "ended") {
+      s.setSessionStatus("error");
+    }
   });
 
   const offEnded = session.onEnded(() => {
@@ -2203,6 +2445,17 @@ export async function createGameSession(options: {
   };
 
   activeHandle = handle;
+
+  // 等 createSession replay 安靜下來再 sendText，否則遲到的 idle 會清掉 activeTurn。
+  await waitForPedelecSessionSettled(session, {
+    timeoutMs: 4000,
+    quietMs: 400,
+    allowTimeout: true,
+  });
+  store.setSessionStatus(normalizePedelecSessionStatus(session.getStatus()));
+  if (gmTurnInFlight && !gmSendStarted) {
+    store.setIsTyping(true);
+  }
   return handle;
 }
 
@@ -2226,25 +2479,41 @@ function maybeWarnMissingSetupScript(
 
 function applySessionStatus(
   session: PedelecSession<SessionToolName>,
-  status: PedelecSessionStatus,
+  status: PedelecSessionStatus | string,
 ) {
   const s = useGameStore.getState();
   const prev = s.sessionStatus;
-  if (status === "waiting_tool_result") {
+  const normalized = normalizePedelecSessionStatus(status);
+  if (
+    normalized === "idle" &&
+    gmTurnInFlight &&
+    !gmSendStarted
+  ) {
+    // compact／create replay 的 idle：不要解鎖輸入、不要當成回合結束
+    if (!s.isTyping) s.setIsTyping(true);
+    waitingToolSince = null;
+    return;
+  }
+  if (normalized === "waiting_tool_result") {
     if (waitingToolSince == null) waitingToolSince = Date.now();
-  } else {
+    lastGmActivityAt = Date.now();
+  } else if (normalized !== "running") {
     waitingToolSince = null;
   }
-  if (prev === status) return;
+  if (prev === normalized) return;
 
-  s.setSessionStatus(status);
-  if (status === "running") {
+  s.setSessionStatus(normalized);
+  if (normalized === "running") {
     s.setIsTyping(true);
+    lastGmActivityAt = Date.now();
     // 不在 running 清除 sessionError：擴充元件斷線／失敗後偶發仍會噴 running，
     // 若此處清空會讓重試按鈕消失（開場寫到一半尤甚）
     activeAgentMessageId = null;
   }
-  if (status === "idle") {
+  if (normalized === "idle") {
+    gmTurnInFlight = false;
+    gmSendStarted = false;
+    lastGmActivityAt = null;
     s.setIsTyping(false);
     flushLeakedChatBuffers(session);
     s.trimAgentRewriteAfterCompanion();
@@ -2259,11 +2528,14 @@ function applySessionStatus(
     maybeWarnMissingSetupScript(prev);
     // 不在 idle 清除 sessionError：錯誤後 Session 常回到 idle，仍需顯示重試按鈕
   }
-  if (status === "error" || status === "ended") {
+  if (normalized === "error" || normalized === "ended") {
+    gmTurnInFlight = false;
+    gmSendStarted = false;
+    lastGmActivityAt = null;
     s.setIsTyping(false);
     leakedChatBufferByTurn.clear();
   }
-  if (status === "waiting_tool_result") {
+  if (normalized === "waiting_tool_result") {
     s.setIsTyping(false);
   }
 }
@@ -2275,7 +2547,7 @@ function applySessionStatus(
 export function syncSessionStatusFromLive() {
   const session = getActiveSession();
   if (!session) return null;
-  const live = session.getStatus();
+  const live = normalizePedelecSessionStatus(session.getStatus());
   applySessionStatus(session, live);
 
   const store = useGameStore.getState();
@@ -2288,11 +2560,28 @@ export function syncSessionStatusFromLive() {
     store.setSessionError({
       code: "TOOL_RESULT_TIMEOUT",
       message:
-        "工具結果逾時未送達網頁。請重建 Session 後請 GM 再呼叫 setup_script。",
+        "工具結果逾時未送達網頁。請重建 Session 後重試上一步。",
     });
     store.appendSystem(
-      "（系統）setup_script 工具結果逾時未送達，畫面可能卡在「Agent 執行中」。請按重試／重建 Session，再請 GM 呼叫 setup_script。",
+      "（系統）工具結果逾時未送達，畫面可能卡在「Agent 執行中」。請按重試／重建 Session。",
     );
+  }
+  if (
+    gmSendStarted &&
+    live === "running" &&
+    lastGmActivityAt != null &&
+    Date.now() - lastGmActivityAt >= RUNNING_STUCK_MS &&
+    !store.sessionError
+  ) {
+    store.setSessionError({
+      code: "GM_TURN_TIMEOUT",
+      message:
+        "GM 回合過久沒有敘事或工具回傳。請重建 Session 後重試上一步。",
+    });
+    store.appendSystem(
+      "（系統）GM 回合沒有進到網頁（常見於壓縮後立刻重送）。請按重試／重建 Session。",
+    );
+    store.setIsTyping(false);
   }
   return live;
 }
@@ -2344,6 +2633,24 @@ export function peekGmPromptMode(): "seed" | "delta" {
   return providerSendCount === 0 ? "seed" : "delta";
 }
 
+async function sendTextAndConfirmChannel(
+  session: PedelecSession<SessionToolName>,
+  prompt: string,
+) {
+  const accepted = waitForPedelecTurnSignal(session, { timeoutMs: 8000 });
+  try {
+    await session.sendText(prompt);
+    await accepted;
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : EVENT_CHANNEL_FAILED_MESSAGE;
+    if (isPedelecEventChannelFailure(err) || message === EVENT_CHANNEL_FAILED_MESSAGE) {
+      markPedelecEventChannelFailed(message);
+    }
+    throw err instanceof Error ? err : new Error(message);
+  }
+}
+
 /**
  * 所有主 GM session 的 sendText 應走這裡，以便計數與週期壓縮。
  * companion／aiPlayer 等獨立 session 不要用此函式。
@@ -2365,7 +2672,7 @@ export async function sendGmText(
     if (isOutgoingPromptCancelled(err)) return;
     throw err;
   }
-  await session.sendText(prompt);
+  await sendTextAndConfirmChannel(session, prompt);
   providerSendCount += 1;
 }
 
@@ -2376,6 +2683,8 @@ export async function sendPlayerAction(
     extraLayers?: string[];
     /** 內部：正在結算隊友宣告，勿再轉成 handoff resolve */
     companionResolve?: boolean;
+    /** 重試／重送時不要先 compact，避免新建 session 後 idle replay 吃掉 tool call */
+    skipCompact?: boolean;
   },
 ) {
   const session = getActiveSession();
@@ -2417,6 +2726,9 @@ export async function sendPlayerAction(
   }
   autoCompanionHandledForAction = null;
   store.setSessionError(null);
+  gmTurnInFlight = true;
+  gmSendStarted = false;
+  lastGmActivityAt = Date.now();
   store.setIsTyping(true);
   if (!opts?.skipUserMessage) {
     store.appendMessage({ role: "user", content: text });
@@ -2425,7 +2737,9 @@ export async function sendPlayerAction(
   try {
     // compact／PLAYING 換 toolset 可能重建 session；先 peek 會偏舊
     await ensureGmToolsetForPhase();
-    await maybeCompactBeforeSend();
+    if (!opts?.skipCompact) {
+      await maybeCompactBeforeSend();
+    }
     const latest = useGameStore.getState();
     const promptMode = peekGmPromptMode();
     const prompt = assemblePlayerTurnPrompt({
@@ -2455,9 +2769,14 @@ export async function sendPlayerAction(
     await gateOutgoingPrompt(prompt, {
       label: opts?.companionResolve ? "隊友結算／接續" : "玩家行動",
     });
-    await active.sendText(prompt);
+    gmSendStarted = true;
+    lastGmActivityAt = Date.now();
+    await sendTextAndConfirmChannel(active, prompt);
     providerSendCount += 1;
   } catch (err) {
+    gmTurnInFlight = false;
+    gmSendStarted = false;
+    lastGmActivityAt = null;
     useGameStore.getState().setIsTyping(false);
     if (isOutgoingPromptCancelled(err)) {
       if (!opts?.skipUserMessage) {
@@ -2509,6 +2828,10 @@ export async function sendOpeningNarration() {
     label: isRetry ? "重試開場敘事" : "述說開場敘事",
   });
   store.setSessionError(null);
+  gmTurnInFlight = true;
+  gmSendStarted = false;
+  lastGmActivityAt = Date.now();
+  store.setIsTyping(true);
   // 清掉寫到一半的 GM 敘事；首次／重試用不同系統提示
   store.clearIncompleteOpening(isRetry ? "retry" : "first");
 
@@ -2551,10 +2874,16 @@ export async function sendOpeningNarration() {
   try {
     await gateOutgoingPrompt(prompt, { label: "開場敘事" });
   } catch (err) {
+    gmTurnInFlight = false;
+    gmSendStarted = false;
+    lastGmActivityAt = null;
+    useGameStore.getState().setIsTyping(false);
     if (isOutgoingPromptCancelled(err)) return;
     throw err;
   }
-  await active.sendText(prompt);
+  gmSendStarted = true;
+  lastGmActivityAt = Date.now();
+  await sendTextAndConfirmChannel(active, prompt);
   providerSendCount += 1;
 }
 
@@ -2579,6 +2908,7 @@ export async function regenerateLastNarrative() {
   });
   await sendPlayerAction(REGENERATE_NARRATIVE_ACTION, {
     skipUserMessage: true,
+    skipCompact: true,
     extraLayers: [
       "[NARRATIVE CONTROL] Regenerate previous GM beat only. Write a fresh narrate_story; the engine will replace the last history narrative.",
     ],
@@ -2598,6 +2928,7 @@ export async function continueLastNarrative() {
   });
   await sendPlayerAction(CONTINUE_NARRATIVE_ACTION, {
     skipUserMessage: true,
+    skipCompact: true,
   });
 }
 
@@ -2605,8 +2936,7 @@ export async function continueLastNarrative() {
 export function sessionNeedsRebuild() {
   const session = getActiveSession();
   if (!session) return true;
-  const status = session.getStatus();
-  return status === "error" || status === "ended";
+  return sessionStatusNeedsRebuild(session.getStatus());
 }
 
 export function resolvePlayerDice(opts: {

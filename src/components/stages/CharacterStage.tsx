@@ -35,6 +35,7 @@ import {
   enrichCharacterSheetMeta,
   resolveSkillDescription,
   clampSkillsToSystemBases,
+  isScholarOccupationRole,
 } from "@/engine/creation";
 import { canonicalCocSkillName } from "@/engine/skillCheck";
 import {
@@ -982,6 +983,35 @@ export function CharacterStage({
     commitArrayAssignments({ ...assignments, [key]: idxOrEmpty });
   };
 
+  // 學者／知識職：ARRAY 未指派 EDU 時，預填最高未用分數
+  useEffect(() => {
+    if (!isCoc || mode !== "ARRAY" || !character) return;
+    if (!attrKeys.includes("EDU") || !arrayValues.length) return;
+    if (!isScholarOccupationRole(character.role_title, character.profile_coc?.occupation)) {
+      return;
+    }
+    if (assignments.EDU !== undefined && assignments.EDU !== "") return;
+    const used = new Set(
+      Object.entries(assignments)
+        .filter(([k, v]) => k !== "EDU" && v !== "" && v != null)
+        .map(([, v]) => Number(v)),
+    );
+    const pick = arrayValues
+      .map((v, i) => ({ v, i }))
+      .sort((a, b) => b.v - a.v)
+      .find((x) => !used.has(x.i));
+    if (!pick) return;
+    commitArrayAssignments({ ...assignments, EDU: pick.i });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 僅在職稱／陣列就緒時預填一次
+  }, [
+    character?.id,
+    character?.role_title,
+    character?.profile_coc?.occupation,
+    mode,
+    arrayValues.join(","),
+    attrKeys.join(","),
+  ]);
+
   /** 點陣列池中的分數：拿起／放下 */
   const pickArrayScore = (idx: number) => {
     if (usedArrayIndices.has(idx)) return;
@@ -1362,14 +1392,13 @@ export function CharacterStage({
         );
       }
       const edu = character.attributes.EDU ?? 0;
-      const role = `${character.role_title} ${character.profile_coc?.occupation ?? ""}`;
       if (
         edu > 0 &&
-        edu < 50 &&
-        /調查|學者|教授|研究員|圖書館|神秘|人類學|歷史/.test(role)
+        edu < 70 &&
+        isScholarOccupationRole(character.role_title, character.profile_coc?.occupation)
       ) {
         warns.push(
-          `教育（EDU ${edu}）偏低，與「${character.role_title || "調查員／學者"}」敘事不太相符；建議提高 EDU 或調整職稱。`,
+          `教育（EDU ${edu}）偏低，與「${character.role_title || "調查員／學者"}」敘事不太相符；知識職建議 EDU ≥70，或調整職稱。`,
         );
       }
       if (showSkillAlloc && occUsed > occBudget) {
@@ -1409,7 +1438,12 @@ export function CharacterStage({
         );
       }
       for (const [name, val] of Object.entries(character.skills)) {
-        const base = resolveSkillBaseValue(character.system_id, name, undefined);
+        const base = resolveSkillBaseValue(
+          character.system_id,
+          name,
+          undefined,
+          character.attributes,
+        );
         if (val < base) {
           warns.push(
             `「${name}」目前 ${val}% 低於系統基礎 ${base}%（確認時會自動抬升）。`,
@@ -2682,7 +2716,11 @@ export function CharacterStage({
           syncSkillsFromSpend(skillSpendRef.current);
           updateCharacterField((s) => ({
             ...s,
-            skills: clampSkillsToSystemBases(s.system_id, s.skills),
+            skills: clampSkillsToSystemBases(
+              s.system_id,
+              s.skills,
+              s.attributes,
+            ),
           }));
           const latest = useGameStore.getState().character;
           if (!latest) return;

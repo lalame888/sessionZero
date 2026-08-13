@@ -209,7 +209,7 @@ export const setupScriptTool = defineTool({
 export const generateCharacterSchemaTool = defineTool({
   name: "generate_character_schema",
   description:
-    "產生雙軌創角規則（數值 Stats + 劇情鉤子 Hooks）。SSOT 由前端依 creation_mode 擲骰／陣列／購點完成；CoC 屬性就緒後固定再分配職業／興趣技能點。禁止在對話中直接給定最終屬性數字。所有 label／技能名／說明／鉤子問題用繁體中文。若已在創角頁且藍圖存在：creation_mode／attribute_defs／mode_config 必須沿用現有值（全隊固定），僅可重推 recommended_skills（職業包／技能設計）與建議職稱／背包。",
+    "產生雙軌創角規則（數值 Stats + 劇情鉤子 Hooks）。SSOT 由前端依 creation_mode 擲骰／陣列／購點完成；CoC 屬性就緒後固定再分配職業／興趣技能點。禁止在對話中直接給定最終屬性數字。所有 label／技能名／說明／鉤子問題用繁體中文。若已在創角頁且藍圖存在：creation_mode／attribute_defs／mode_config 必須沿用現有值（全隊固定），僅可重推 recommended_skills（職業包／技能設計）與建議職稱／背包。CoC ARRAY：學者／教授／研究員／圖書館員等知識職應把最高或次高分給 EDU（建議 ≥70）。recommended_skills 應含母語（系統基礎＝EDU）。",
   argsSchema: {
     type: "object",
     properties: {
@@ -493,7 +493,7 @@ export const fillCharacterNarrativeTool = defineTool({
 export const narrateStoryTool = defineTool({
   name: "narrate_story",
   description:
-    "輸出主線劇情（可用 Markdown），並可選擇發起玩家可見的擲骰檢定請求。Never narrate/decide PC actions, speech, or thoughts — especially on the opening beat; end with the situation waiting for the player. Never rewrite the player's declared intent into a different action. Never write UI prompts like「請輸入您的下一步行動」. Never state exact win steps (ritual dials, 完成超渡, full Win paths) in player-facing text. When check_request is present, wait for the tool result containing the dice outcome before continuing. After a dice outcome is returned, the NEXT narrate_story must ONLY narrate the check result and immediate consequences — never repeat or rewrite previously narrated scene text. Prefer setting location / scene_id / npc_updates when the scene or cast changes. Do not attach check_request on the opening beat unless the player already declared an action. Rotate check skills — avoid defaulting every investigation to 偵查. narrative_text 必須為繁體中文。",
+    "輸出主線劇情（可用 Markdown），並可選擇發起玩家可見的擲骰檢定請求。Never narrate/decide PC actions, speech, or thoughts — especially on the opening beat; end with the situation waiting for the player. Never rewrite the player's declared intent into a different action. Never write UI prompts like「請輸入您的下一步行動」. Never state exact win steps (ritual dials, 完成超渡, full Win paths) in player-facing text. If the player asks how to win, lookup_scenario_term({ query: \"win\", kind: \"core\" }) then hint via documents/NPC only. When check_request is present, wait for the tool result containing the dice outcome before continuing. After a dice outcome is returned, the NEXT narrate_story must ONLY narrate the check result and immediate consequences — never repeat or rewrite previously narrated scene text. Prefer setting location / scene_id / npc_updates when the scene or cast changes; location alone still syncs bible scene_id. Do not attach check_request on the opening beat unless the player already declared an action. Rotate check skills — avoid defaulting every investigation to 偵查. Companion firearm/first-aid/lockpick/attack declarations require check_request for that companion. Mythos creatures on-screen require SAN via update_game_stats. narrative_text 必須為繁體中文（勿簡體、勿 OOC meta）。",
   timeoutMs: 180_000,
   argsSchema: {
     type: "object",
@@ -508,7 +508,7 @@ export const narrateStoryTool = defineTool({
       scene_id: {
         type: "string",
         description:
-          "必須是 bible scenes[].id 原樣（例如 s02_inn）。禁止自創後綴（s02_inn_lobby）。若不確定，先 lookup_scenario_term。",
+          "必須是 bible scenes[].id 原樣（例如 s02_inn）。禁止自創後綴（s02_inn_lobby）。若不確定，先 lookup_scenario_term({ kind: \"scene\" })。只填 location 時引擎也會嘗試對回既有 scene_id。",
       },
       scene_goal: {
         type: "string",
@@ -642,7 +642,7 @@ export const updateGameStatsTool = defineTool({
 export const markSkillSuccessTool = defineTool({
   name: "mark_skill_success",
   description:
-    "標記成功檢定的技能，以便在遊戲結束時進行成長升級檢定。不可用於「克蘇魯神話」（該技能在遭遇／禁書當下以 update_game_stats 即時增加）。",
+    "標記成功檢定的技能，以便在遊戲結束時進行成長升級檢定。不可用於「克蘇魯神話」（該技能在遭遇／禁書當下以 update_game_stats 即時增加）。不可標記屬性名（力量／體質／敏捷／教育等）——屬性不是技能。",
   argsSchema: {
     type: "object",
     properties: {
@@ -729,7 +729,7 @@ export const endGameSessionTool = defineTool({
 export const requestCompanionActionTool = defineTool({
   name: "request_companion_action",
   description:
-    "喚起一名 AI 隊友以桌邊玩家口吻宣告（或靜默 pass）。隊友可 pause（等人類插話）或 immediate（危機立刻結算）。勿每位每回合必叫。結算時必須對該隊友使用 character_id。",
+    "喚起一名 AI 隊友以桌邊玩家口吻宣告（或靜默 pass）。隊友可 pause（等人類插話）或 immediate（危機立刻結算）。勿每位每回合必叫。結算時必須對該隊友使用 character_id。參數可用 companion_id 或別名 character_id；reason 可用 prompt；timing=immediate 等同 prefer_immediate。",
   argsSchema: {
     type: "object",
     properties: {
@@ -737,9 +737,17 @@ export const requestCompanionActionTool = defineTool({
         type: "string",
         description: "隊伍成員 id（與角色卡 id 相同）",
       },
+      character_id: {
+        type: "string",
+        description: "companion_id 別名",
+      },
       reason: {
         type: "string",
         description: "為何此刻適合喚起此隊友",
+      },
+      prompt: {
+        type: "string",
+        description: "reason 別名",
       },
       situation: {
         type: "string",
@@ -750,8 +758,11 @@ export const requestCompanionActionTool = defineTool({
         description:
           "危機中可設 true，提示隊友若出手需立刻檢定則用 handoff=immediate；最終仍由隊友決定",
       },
+      timing: {
+        type: "string",
+        description: "immediate | pause；immediate 等同 prefer_immediate=true",
+      },
     },
-    required: ["companion_id", "reason"],
   },
 });
 
@@ -783,7 +794,7 @@ export const lookupScenarioTermTool = defineTool({
       kind: {
         type: "string",
         description:
-          "any | npc | scene | creature | faction | clue | core（預設 any）",
+          "any | npc | scene | creature | faction | clue | core（預設 any；複數 scenes/npcs/creatures/clues 或 truth/win/timeline 亦可）",
       },
       limit: {
         type: "number",

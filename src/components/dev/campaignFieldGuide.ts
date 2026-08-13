@@ -320,6 +320,21 @@ export const CAMPAIGN_FIELD_GROUPS: FieldGuideGroup[] = [
         getValue: (c) => (c.endingCharacterSettled ? "是" : "否"),
       },
       {
+        path: "endingSettlement",
+        label: "結局結算快照",
+        meaning:
+          "成長檢定原文、劇本物資回繳與結算前後數值。寫入檔案庫後角色卡標記／背包會清空，此欄供 replay／HTML 回放保留紀錄。",
+        getValue: (c) =>
+          c.endingSettlement?.members?.length
+            ? c.endingSettlement.members.map((m) => ({
+                name: m.name,
+                controller: m.controller,
+                growth: m.growthLog,
+                returned: m.inventoryReturned,
+              }))
+            : "（無）",
+      },
+      {
         path: "partySize",
         label: "隊伍人數",
         meaning: "玩家確認的同行人數（1–4，含玩家）。",

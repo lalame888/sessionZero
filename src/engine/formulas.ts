@@ -277,6 +277,7 @@ export function migrateCharacterSheet(
     skills: clampSkillsToSystemBases(
       sheet.system_id,
       sheet.skills ?? {},
+      sheet.attributes,
     ),
     skill_descriptions: sheet.skill_descriptions,
   });

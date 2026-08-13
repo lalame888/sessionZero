@@ -56,7 +56,8 @@ export function resolveCanonicalSceneId(
     );
     if (byLoc) return byLoc.id;
   }
-  return raw || null;
+  // 自創 id（如 scene_salt_mine_cell）不要寫進 SSOT
+  return null;
 }
 
 function sceneMatches(scene: ScenarioScene, hay: string): boolean {
@@ -282,6 +283,110 @@ export type ScenarioTermKind =
   | "faction"
   | "clue"
   | "core";
+
+/** GM 常傳複數／近義（scenes、npcs、truth）→ 正規 kind */
+export function normalizeScenarioTermKind(
+  raw?: string | null,
+): ScenarioTermKind {
+  const k = (raw ?? "any").trim().toLowerCase();
+  if (!k || k === "any" || k === "all") return "any";
+  if (k === "scene" || k === "scenes" || k === "location" || k === "locations") {
+    return "scene";
+  }
+  if (k === "npc" || k === "npcs" || k === "character" || k === "characters") {
+    return "npc";
+  }
+  if (
+    k === "creature" ||
+    k === "creatures" ||
+    k === "monster" ||
+    k === "monsters"
+  ) {
+    return "creature";
+  }
+  if (k === "faction" || k === "factions") return "faction";
+  if (k === "clue" || k === "clues" || k === "key_clue" || k === "key_clues") {
+    return "clue";
+  }
+  if (
+    k === "core" ||
+    k === "truth" ||
+    k === "win" ||
+    k === "timeline" ||
+    k === "acts" ||
+    k === "bible"
+  ) {
+    return "core";
+  }
+  return "any";
+}
+
+/**
+ * narrate_story：即使只給 location、沒給 scene_id，也對回 bible 場景並刷新 sceneGoal。
+ */
+export function patchSceneDirectorFromNarrate(input: {
+  scenes: ScenarioScene[] | undefined | null;
+  location?: string | null;
+  requestedSceneId?: string | null;
+  requestedGoal?: string | null;
+  tension?: string | null;
+  directorNotes?: string | null;
+  previous: { currentSceneId?: string; sceneGoal?: string };
+}): {
+  currentSceneId?: string;
+  sceneGoal?: string;
+  tension?: string;
+  notes?: string;
+  resolvedSceneId: string | null;
+  inventedSceneId: boolean;
+  locationSynced: boolean;
+} | null {
+  const loc = input.location?.trim() || "";
+  const requestedId = input.requestedSceneId?.trim() || "";
+  const requestedGoal = input.requestedGoal?.trim() || "";
+  const hasNotes = input.directorNotes != null;
+  const hasAny =
+    Boolean(loc) ||
+    Boolean(requestedId) ||
+    Boolean(requestedGoal) ||
+    Boolean(input.tension) ||
+    hasNotes;
+  if (!hasAny) return null;
+
+  const resolvedSceneId = resolveCanonicalSceneId(
+    input.scenes,
+    requestedId || null,
+    loc || null,
+  );
+  const scene = input.scenes?.find((s) => s.id === resolvedSceneId);
+  const sceneChanged =
+    Boolean(resolvedSceneId) &&
+    resolvedSceneId !== input.previous.currentSceneId;
+  const nextGoal =
+    requestedGoal ||
+    (sceneChanged && scene?.summary?.trim()
+      ? scene.summary.trim()
+      : undefined);
+
+  const patch: {
+    currentSceneId?: string;
+    sceneGoal?: string;
+    tension?: string;
+    notes?: string;
+  } = {};
+  if (resolvedSceneId) patch.currentSceneId = resolvedSceneId;
+  if (nextGoal !== undefined) patch.sceneGoal = nextGoal;
+  if (input.tension) patch.tension = input.tension;
+  if (hasNotes) patch.notes = input.directorNotes ?? "";
+
+  return {
+    ...patch,
+    resolvedSceneId,
+    inventedSceneId: Boolean(requestedId) && requestedId !== (resolvedSceneId ?? ""),
+    locationSynced:
+      !requestedId && Boolean(loc) && Boolean(resolvedSceneId) && sceneChanged,
+  };
+}
 
 function termHay(query: string): string {
   return query.trim().toLowerCase();

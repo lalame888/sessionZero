@@ -84,8 +84,15 @@ import type {
   ThemeId,
   UniversalCharacterSheet,
 } from "@/types/game";
-import type { CharacterStatSnapshot } from "@/types/characterLibrary";
-import { captureStatSnapshot } from "@/engine/adventureDossier";
+import type {
+  CharacterStatSnapshot,
+  EndingSettlement,
+  EndingSettlementMember,
+} from "@/types/characterLibrary";
+import {
+  captureStatSnapshot,
+  endingSettlementMemberFromCareer,
+} from "@/engine/adventureDossier";
 import {
   npcNameMentionedInText,
   toStoredNpc,
@@ -215,6 +222,8 @@ interface GameStore {
   } | null;
   /** 結局頁已完成成長／儲存（再進入略過結算） */
   endingCharacterSettled: boolean;
+  /** 結局成長／回繳快照（replay 用；舊存檔可能缺） */
+  endingSettlement: EndingSettlement | null;
   timelineIndex: number | null;
 
   diceResolver: ((result: {
@@ -400,6 +409,8 @@ interface GameStore {
   }) => void;
   /** 標記結局角色結算＋存檔已完成 */
   markEndingCharacterSettled: () => void;
+  /** 寫入／更新結局結算快照（玩家或 AI 隊友） */
+  upsertEndingSettlementMember: (member: EndingSettlementMember) => void;
   undoLastTurn: () => void;
   setTimelineIndex: (idx: number | null) => void;
   confirmCharacterAndPlay: () => void;
@@ -475,6 +486,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   ending: null,
   pendingManualEnding: null,
   endingCharacterSettled: false,
+  endingSettlement: null,
   timelineIndex: null,
   diceResolver: null,
 
@@ -1098,7 +1110,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         normalized.role_title_suggestion ||
         "",
       attributes: { ...shell.attributes, ...attrs },
-      skills: clampSkillsToSystemBases(systemId, skills),
+      skills: clampSkillsToSystemBases(systemId, skills, attrs),
       inventory,
       backstory_hooks: prevHooks,
     });
@@ -1424,7 +1436,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
         if (idx >= 0) inv.splice(idx, 1);
       }
       next.inventory = inv;
-      next.skills = clampSkillsToSystemBases(next.system_id, next.skills);
+      next.skills = clampSkillsToSystemBases(
+        next.system_id,
+        next.skills,
+        next.attributes,
+      );
       return next;
     });
     if (allowed.length || autoMythosGain > 0) {
@@ -1468,6 +1484,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
   markSkillSuccess: (skill_name, character_id = null) => {
     const sheet = get().getSheetById(character_id);
     if (!sheet) return;
+    if (resolveCocAttributeKeyFromCheckName(skill_name)) {
+      get().appendSystem(
+        `「${skill_name}」是屬性不是技能，無法標記成長。請用技能名（如格鬥、偵查）。`,
+      );
+      return;
+    }
     if (isCthulhuMythosSkillName(skill_name)) {
       get().appendSystem(
         "「克蘇魯神話」不走結局成長檢定；請以 update_game_stats 在遭遇／禁書當下增加。",
@@ -1841,6 +1863,22 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   markEndingCharacterSettled: () => {
     set({ endingCharacterSettled: true });
+  },
+
+  upsertEndingSettlementMember: (member) => {
+    set((s) => {
+      const prev = s.endingSettlement;
+      const members = [...(prev?.members ?? [])];
+      const idx = members.findIndex((m) => m.characterId === member.characterId);
+      if (idx >= 0) members[idx] = member;
+      else members.push(member);
+      return {
+        endingSettlement: {
+          settledAt: prev?.settledAt ?? Date.now(),
+          members,
+        },
+      };
+    });
   },
 
   undoLastTurn: () => {
@@ -2234,6 +2272,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       composerDraft: s.composerDraft,
       suggestPlayerActions: s.suggestPlayerActions,
       endingCharacterSettled: s.endingCharacterSettled,
+      endingSettlement: s.endingSettlement,
       partySize: s.partySize,
       recommendedPartySize: s.recommendedPartySize,
       party: s.party,
@@ -2291,6 +2330,40 @@ export const useGameStore = create<GameStore>((set, get) => ({
           : data.character
         : data.character,
     );
+    let endingSettlement = data.endingSettlement ?? null;
+    if (!endingSettlement?.members?.length) {
+      const backfill: EndingSettlementMember[] = [];
+      const pushFromCareer = (
+        sheet: UniversalCharacterSheet,
+        controller: "player" | "ai",
+      ) => {
+        const rec = getLibraryCharacter(sheet.id)?.career.find(
+          (r) => r.campaignId === data.id,
+        );
+        if (!rec) return;
+        backfill.push(
+          endingSettlementMemberFromCareer({
+            characterId: sheet.id,
+            name: sheet.name?.trim() || "未命名",
+            controller,
+            systemId: sheet.system_id,
+            record: rec,
+          }),
+        );
+      };
+      if (playerSheet) pushFromCareer(playerSheet, "player");
+      for (const m of canonParty) {
+        if (m.controller === "ai" && m.sheet) {
+          pushFromCareer(m.sheet, "ai");
+        }
+      }
+      if (backfill.length) {
+        endingSettlement = {
+          settledAt: Date.now(),
+          members: backfill,
+        };
+      }
+    }
     const scenes = data.script.hidden_full_script?.scenes ?? [];
     const sceneDirector = data.sceneDirector
       ? {
@@ -2364,6 +2437,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       pendingManualEnding: null,
       endingCharacterSettled:
         Boolean(data.endingCharacterSettled) || settledFromCareer,
+      endingSettlement,
       timelineIndex: data.timelineIndex,
       lastPlayerAction: data.lastPlayerAction,
       composerDraft: data.composerDraft,

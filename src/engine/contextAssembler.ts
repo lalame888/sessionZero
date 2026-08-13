@@ -11,6 +11,10 @@ import type {
   UniversalCharacterSheet,
 } from "@/types/game";
 import type { PartyMember } from "@/types/party";
+import {
+  playerActionAsksForWinPath,
+  buildWinAskDirective,
+} from "@/engine/antiSpoiler";
 import { buildCompanionMentionDirective } from "@/engine/companionTrigger";
 import { formatPartyRosterForGm } from "@/engine/partyNarrativeBrief";
 import { buildStructuredChapterSummary } from "@/engine/chapterSummary";
@@ -45,7 +49,7 @@ const BIO_FIELD_MAX = 220;
 /** seed 模式最多帶回幾則近對話（避免與 provider history 雙重疊加） */
 const SEED_DIALOGUE_MAX_MSGS = 4;
 
-const MEMORY_TOOL_HINT = `If unsure of facts or live tools: call lookup_game_state (includes Available tools + script/SSOT). Continuity: lookup_history. Proper nouns / win/truth/timeline: lookup_scenario_term({ query, kind: "core" }). ${GM_STANDING_RULES_READ_HINT} Do not invent sheet/bible facts. Never dump GM-only canon to the player.`;
+const MEMORY_TOOL_HINT = `If unsure of facts or live tools: call lookup_game_state (includes Available tools + script/SSOT). Continuity: lookup_history. Proper nouns / win/truth/timeline: lookup_scenario_term({ query, kind: "core" }). ${GM_STANDING_RULES_READ_HINT} Do not invent sheet/bible facts. Never dump GM-only canon to the player. Player-facing narrate_story: Traditional Chinese only (繁體, never 简体); no OOC/UI meta.`;
 
 
 function seedAlreadyHasScaleRequirements(input: ContextAssemblyInput): boolean {
@@ -211,7 +215,7 @@ function buildSceneDirectorBlock(
 - Tension: ${tension}
 ${notes ? `- Director notes: ${notes}\n` : ""}- NEVER speak/decide for the PC (no invented PC dialogue). Follow the player's stated intent this turn; do not substitute a different action.
 - Check economy: no SAN loss for social/info failures; avoid isomorphic re-rolls; prefer NPC/document beats; rotate skills — do not spam 偵查/Spot Hidden.
-- ANTI-SPOILER: never tell the player exact win steps (times, ritual dials, "完成超渡"); companions must not dump full Win paths.
+- ANTI-SPOILER: never tell the player exact win steps (times, ritual dials, "完成超渡"); companions must not dump full Win paths. If they ask how to win, lookup_scenario_term({ query: "win", kind: "core" }) then hint via documents/NPC only.
 ${hooks ? `- Hook callbacks available: ${hooks}` : ""}`;
 }
 
@@ -360,6 +364,33 @@ function buildIncapacitatedBlock(input: ContextAssemblyInput): string | null {
   return `[INCAPACITATED — MANDATORY]\nThese characters failed major-wound CON and cannot make proactive attacks/rituals until treated: ${names}. Narrate accordingly; pause their agency.`;
 }
 
+function buildTimelinePressureBlock(
+  input: ContextAssemblyInput,
+): string | null {
+  const beats = input.script.hidden_full_script?.timeline;
+  if (!beats?.length) return null;
+  const loc = `${input.location} ${input.sceneDirector?.currentSceneId ?? ""}`;
+  const climax = /祭壇|儀式|高潮|終局|altar|finale|core|climax/i.test(loc);
+  if (!climax && input.turn < 20) return null;
+  const lines = beats
+    .slice(0, 8)
+    .map((b) => `- ${b.when}: ${b.what}`)
+    .join("\n");
+  return `[TIMELINE PRESSURE — GM ONLY]
+Bible timeline (do not quote verbatim to the player):
+${lines}
+If the clock is overdue relative to this location/turn, escalate environment (tide, patrol, ritual progress) — do not freeze the island in eternal dusk without consequence.`;
+}
+
+function companionDirectiveOpts(input: ContextAssemblyInput) {
+  const hp = input.character?.derived.hp;
+  return {
+    messages: input.recentMessages,
+    pcHpCurrent: hp?.current ?? null,
+    pcHpMax: hp?.max ?? null,
+  };
+}
+
 function buildCheckEconomyBlock(input: ContextAssemblyInput): string | null {
   const recentChecks = input.recentMessages
     .filter((m) => m.role === "system" && /需要檢定：/.test(m.content))
@@ -415,7 +446,8 @@ Title: ${input.script.public_summary?.title ?? "（討論中）"} | Turn: ${inpu
 - Scene: ${input.sceneDirector?.currentSceneId ?? "（未標）"} | Tension: ${input.sceneDirector?.tension ?? "?"}
 - Player: ${c ? `${c.name} id=${c.id}` : "尚未創角"} | HP: ${hp} | SAN: ${san}
 - Clues: ${input.clues.map((x) => x.title).join("、") || "無"}
-- NPCs: ${input.npcs.map((n) => n.name).join("、") || "無"}
+- NPCs: ${input.npcs.map((n) => `${n.name}（${n.status}/${n.relation}）`).join("、") || "無"}
+- Do NOT search for NPCs already with the party or listed ALIVE here.
 - Inventory: ${c?.inventory.join(", ") || "無"}`);
 
   const incap = buildIncapacitatedBlock(input);
@@ -424,10 +456,18 @@ Title: ${input.script.public_summary?.title ?? "（討論中）"} | Turn: ${inpu
   const economy = buildCheckEconomyBlock(input);
   if (economy) layers.push(economy);
 
+  const timeline = buildTimelinePressureBlock(input);
+  if (timeline) layers.push(timeline);
+
+  if (playerActionAsksForWinPath(input.playerAction)) {
+    layers.push(buildWinAskDirective());
+  }
+
   const companionTrigger = buildCompanionMentionDirective(
     input.playerAction,
     input.party ?? [],
     input.playerMemberId,
+    companionDirectiveOpts(input),
   );
   if (companionTrigger) layers.push(companionTrigger);
 
@@ -560,10 +600,18 @@ ${hr}`);
   const economy = buildCheckEconomyBlock(input);
   if (economy) layers.push(economy);
 
+  const timeline = buildTimelinePressureBlock(input);
+  if (timeline) layers.push(timeline);
+
+  if (playerActionAsksForWinPath(input.playerAction)) {
+    layers.push(buildWinAskDirective());
+  }
+
   const companionTrigger = buildCompanionMentionDirective(
     input.playerAction,
     input.party ?? [],
     input.playerMemberId,
+    companionDirectiveOpts(input),
   );
   if (companionTrigger) layers.push(companionTrigger);
 

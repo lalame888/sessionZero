@@ -12,6 +12,28 @@ export interface CharacterStatSnapshot {
   madnessName?: string;
 }
 
+/** 結局結算成員（寫入戰役存檔，供 replay／HTML 回放；與檔案庫履歷分開） */
+export type EndingSettlementController = "player" | "ai";
+
+export interface EndingSettlementMember {
+  characterId: string;
+  name: string;
+  controller: EndingSettlementController;
+  systemId: GameSystemID;
+  /** 成長檢定原文（不含回繳行） */
+  growthLog: string[];
+  /** 結局勾選回繳、已從背包移除的劇本物資 */
+  inventoryReturned: string[];
+  statsBefore: CharacterStatSnapshot;
+  statsAfter: CharacterStatSnapshot;
+  savedToLibrary: boolean;
+}
+
+export interface EndingSettlement {
+  settledAt: number;
+  members: EndingSettlementMember[];
+}
+
 /** 單場冒險履歷（壓縮，不含完整對話） */
 export interface AdventureRecord {
   id: string;

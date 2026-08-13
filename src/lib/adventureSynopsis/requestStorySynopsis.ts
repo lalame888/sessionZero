@@ -3,6 +3,7 @@ import { defineTool } from "@kaoruisaac/pedelec";
 import { isNoiseHistoryNarrative } from "@/lib/historyHygiene";
 import { parseHistoryActorInput } from "@/lib/historySpeaker";
 import { explicitSessionModel, pedelec } from "@/lib/pedelec/client";
+import { waitForPedelecCoreStatus } from "@/lib/pedelec/sessionLiveness";
 import { useGameStore } from "@/store/useGameStore";
 
 const submitSynopsisTool = defineTool({
@@ -117,7 +118,7 @@ export async function requestStorySynopsis(options: {
       guidance: SYNOPSIS_GUIDANCE,
       tools: [submitSynopsisTool],
     },
-    autoEndOnDisconnect: false,
+    autoEndOnDisconnect: true,
   });
 
   let captured: string | null = null;
@@ -143,6 +144,10 @@ export async function requestStorySynopsis(options: {
 
   try {
     assertNotAborted(options.signal);
+    await waitForPedelecCoreStatus(session, {
+      timeoutMs: 500,
+      allowTimeout: true,
+    });
     await session.sendText(assembleStoryContext());
     assertNotAborted(options.signal);
 
