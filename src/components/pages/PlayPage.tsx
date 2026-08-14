@@ -17,6 +17,7 @@ import {
 } from "@/lib/endingDetect";
 import { shouldOfferOpeningRetry, findLatestOpeningFailure, hadPriorOpeningAttempt, hasAgentNarrative } from "@/lib/openingRetry";
 import { isBusyPedelecStatus } from "@/lib/pedelec/sessionLiveness";
+import { publicGeographyLabel } from "@/engine/publicGeography";
 import { useGameStore } from "@/store/useGameStore";
 import { cn } from "@/lib/utils";
 
@@ -49,8 +50,10 @@ function PlayTitleCard() {
           ? `${character.name} · ${character.role_title}`
           : summary.protagonist_role}
       </p>
-      {summary.geography ? (
-        <p className="text-[11px] text-muted">舞台：{summary.geography}</p>
+      {publicGeographyLabel(summary.geography) ? (
+        <p className="text-[11px] text-muted">
+          舞台：{publicGeographyLabel(summary.geography)}
+        </p>
       ) : null}
     </div>
   );

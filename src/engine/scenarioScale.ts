@@ -41,7 +41,7 @@ export function scenarioScaleRequirements(scale: ScenarioScale): string {
     return `SCENARIO SCALE = oneshot（一晚正規短篇）
 MUST call setup_script with richer Traditional Chinese content:
 - public_summary: title, background (1 short paragraph), protagonist_role, genre,
-  player_hook (委託／開場理由), known_facts (3–6 公開已知事實), geography (舞台範圍).
+  player_hook (委託／開場理由), known_facts (3–6 公開已知事實), geography (公開舞台地名即可，如「宜蘭縣龜山島」；禁止列出碼頭／坑道／場景清單，那些只寫 hidden scenes).
 - hidden_full_script:
   - truth_and_secrets: 完整神話／陰謀說明（數段，含誰在做什麼、為何）.
   - key_clues: 6–10 條，彼此可串成調查路徑.
@@ -58,7 +58,7 @@ MUST call setup_script with richer Traditional Chinese content:
   }
   return `SCENARIO SCALE = arc（多場次長篇）
 MUST call setup_script with campaign-arc Traditional Chinese content:
-- public_summary: same fields as oneshot but broader geography / longer hook.
+- public_summary: same fields as oneshot but a wider public place name / longer hook (still no scene list in geography).
 - hidden_full_script:
   - truth_and_secrets: 多層陰謀（表面案件 + 深層神話）.
   - key_clues: 10–16 條.

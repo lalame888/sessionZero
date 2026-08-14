@@ -158,7 +158,7 @@ export interface ScriptPublicSummary {
   player_hook?: string;
   /** 開場前已知的公開事實 */
   known_facts?: string[];
-  /** 地理／舞台範圍简述 */
+  /** 公開舞台地名（如宜蘭縣龜山島；不含場景清單） */
   geography?: string;
 }
 

@@ -419,7 +419,7 @@ export const NESTED_FIELD_HINTS: Record<string, { label: string; meaning: string
     },
     "script.public_summary.geography": {
       label: "地理範圍",
-      meaning: "舞台／地點範圍简述。",
+      meaning: "公開舞台地名（如宜蘭縣龜山島）。不可列出場景／地圖清單。",
     },
     "script.hidden_full_script.truth_and_secrets": {
       label: "真相與秘密",

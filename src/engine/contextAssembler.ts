@@ -23,6 +23,7 @@ import {
   resolveCanonicalSceneId,
 } from "@/engine/scenarioLorebook";
 import { lookupSrdEntries } from "@/engine/srdLorebook";
+import { sanitizePublicGeography } from "@/engine/publicGeography";
 import {
   GM_STANDING_RULES_READ_HINT,
   SCENARIO_BIBLE_READ_HINT,
@@ -519,7 +520,8 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
     layers.push(`[PLAYER HOOK]\n${input.script.public_summary.player_hook}`);
   }
   if (input.script.public_summary?.geography) {
-    layers.push(`[GEOGRAPHY]\n${input.script.public_summary.geography}`);
+    const geo = sanitizePublicGeography(input.script.public_summary.geography);
+    if (geo) layers.push(`[GEOGRAPHY]\n${geo}`);
   }
   if (input.script.public_summary?.known_facts?.length) {
     layers.push(

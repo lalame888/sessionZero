@@ -15,6 +15,7 @@ import type {
   UniversalCharacterSheet,
 } from "@/types/game";
 import type { PartyMember } from "@/types/party";
+import { sanitizePublicGeography } from "@/engine/publicGeography";
 import { isNoiseHistoryNarrative } from "@/lib/historyHygiene";
 import { looksLikeLeakedToolCall } from "@/lib/pedelec/leakedToolCall";
 
@@ -78,7 +79,8 @@ export function formatLookupGameState(input: {
       scriptLines.push(`Player hook: ${clip(pub.player_hook, 200)}`);
     }
     if (pub.geography) {
-      scriptLines.push(`Geography: ${clip(pub.geography, 160)}`);
+      const geo = sanitizePublicGeography(pub.geography);
+      if (geo) scriptLines.push(`Geography: ${clip(geo, 80)}`);
     }
     if (pub.known_facts?.length) {
       scriptLines.push(

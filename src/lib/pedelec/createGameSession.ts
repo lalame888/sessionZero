@@ -25,8 +25,10 @@ import {
 } from "@/engine/companionTrigger";
 import { buildOpeningPartyDirective } from "@/engine/partyNarrativeBrief";
 import {
+  looksLikeCombatCheckName,
   resolveCheckOutcome,
   resolveD20Outcome,
+  rollDamageFormula,
   rollDice,
   type AdvantageMode,
 } from "@/engine/dice";
@@ -190,6 +192,7 @@ type NarrateStoryArgs = {
     dnd_advantage_mode?: string;
     reason: string;
     character_id?: string;
+    damage_dice?: string;
   };
 };
 
@@ -870,8 +873,53 @@ async function maybeResolvePendingCompanionCombat(
     reason: pending.action.slice(0, 160),
     character_id: pending.companionId,
   });
+  const combatDmg = maybeApplyCombatDamage({
+    skillLabel: pending.skillHint,
+    damageDice: undefined,
+    outcome: roll.outcome,
+    cancelled: roll.cancelled,
+    characterId: pending.companionId,
+  });
   return {
-    gm_instruction: `COMPANION CHECK (${pending.companionName}／${pending.skillHint}): outcome_zh=${successQualityLabel(roll.outcome)} detail=${roll.detail}. Narrate only this attempt's world result. On failure: miss / lamp dies / lock jams — do not auto-succeed.`,
+    gm_instruction:
+      joinGmInstructions(
+        `COMPANION CHECK (${pending.companionName}／${pending.skillHint}): outcome_zh=${successQualityLabel(roll.outcome)} detail=${roll.detail}. Narrate only this attempt's world result. On failure: miss / lamp dies / lock jams — do not auto-succeed.`,
+        combatDmg.gmInstruction,
+      ) ??
+      `COMPANION CHECK (${pending.companionName}／${pending.skillHint}): ${successQualityLabel(roll.outcome)}`,
+  };
+}
+
+function maybeApplyCombatDamage(input: {
+  skillLabel: string;
+  damageDice?: string;
+  outcome: string;
+  cancelled?: boolean;
+  characterId?: string | null;
+}): {
+  damage_dice?: string;
+  damage_total?: number;
+  damage_detail?: string;
+  gmInstruction?: string;
+} {
+  if (input.cancelled || !isSuccessDiceOutcome(input.outcome)) return {};
+  const formula = input.damageDice?.trim();
+  const combatish = Boolean(formula) || looksLikeCombatCheckName(input.skillLabel);
+  if (!combatish) return {};
+  const sheet = useGameStore.getState().getSheetById(input.characterId);
+  if (!formula) {
+    return {
+      gmInstruction:
+        "COMBAT HIT without damage_dice. You MUST still roll weapon damage (+DB if melee) minus armor, then apply HP. PC/companion → update_game_stats. Creature → bible creatures[].hp is max SSOT; track current yourself. Do not narrate a wound without dice.",
+    };
+  }
+  const dmg = rollDamageFormula(formula, sheet?.derived.damage_bonus);
+  useGameStore.getState().appendSystem(`傷害：${dmg.detail}`);
+  return {
+    damage_dice: formula,
+    damage_total: dmg.total,
+    damage_detail: dmg.detail,
+    gmInstruction: `DAMAGE ROLLED: ${dmg.detail}. Subtract armor then apply HP. PC/companion → update_game_stats. Creature → bible creatures[].hp (max SSOT); track current yourself. Do not invent a different damage number.`,
   };
 }
 
@@ -1351,6 +1399,14 @@ async function runNarrateStory(args: NarrateStoryArgs) {
 
   activeCompanionResolveId = null;
 
+  const combatDmg = maybeApplyCombatDamage({
+    skillLabel,
+    damageDice: checkRequest.damage_dice,
+    outcome: roll.outcome,
+    cancelled: roll.cancelled,
+    characterId: checkRequest.character_id,
+  });
+
   return {
     ...roll,
     outcome_zh: successQualityLabel(roll.outcome),
@@ -1360,6 +1416,13 @@ async function runNarrateStory(args: NarrateStoryArgs) {
       outcome: roll.outcome,
       difficulty: resolved.difficulty,
     }),
+    ...(combatDmg.damage_total != null
+      ? {
+          damage_dice: combatDmg.damage_dice,
+          damage_total: combatDmg.damage_total,
+          damage_detail: combatDmg.damage_detail,
+        }
+      : {}),
     gm_instruction: joinGmInstructions(
       "CRITICAL: Your next narrate_story.narrative_text must ONLY describe this check outcome and immediate consequences. Do NOT repeat, paraphrase, or rewrite any previously narrated scene text. Prefer updating location/scene_id/npc_updates if the scene changed. Sheet skills for " +
         whoLabel +
@@ -1369,6 +1432,7 @@ async function runNarrateStory(args: NarrateStoryArgs) {
           outcome: roll.outcome,
           difficulty: resolved.difficulty,
         })}. Engine outcome_zh=${successQualityLabel(roll.outcome)}. You MUST use this exact success-quality label — if it is 失敗, do NOT write 大失敗; only FUMBLE is 大失敗. Use 成功品質 wording (普通成功／困難級成功<=半值／極限級成功<=1/5／失敗／大失敗), not casual「很辛苦才成功」. On FAILURE: no full key_clue dump / no soft-win climax.`,
+      combatDmg.gmInstruction,
       narrateHints,
       companionCombat?.gm_instruction,
       mythosSan?.gm_instruction,

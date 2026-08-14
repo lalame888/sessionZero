@@ -1,4 +1,5 @@
 import { houseRulesSummary } from "@/engine/contextAssembler";
+import { sanitizePublicGeography } from "@/engine/publicGeography";
 import { formatLookupHistory } from "@/engine/gmMemoryLookup";
 import type {
   ChapterSummary,
@@ -56,7 +57,8 @@ export function formatCompanionLookupGameState(input: {
     scriptLines.push(`Player hook: ${pub.player_hook.trim()}`);
   }
   if (pub?.geography) {
-    scriptLines.push(`Geography: ${pub.geography.trim()}`);
+    const geo = sanitizePublicGeography(pub.geography);
+    if (geo) scriptLines.push(`Geography: ${geo}`);
   }
   if (pub?.known_facts?.length) {
     scriptLines.push(

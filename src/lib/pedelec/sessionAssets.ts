@@ -4,6 +4,7 @@ import {
   GM_STANDING_RULES_ASSET_PATH as GM_RULES_PATH_CONST,
   GM_STANDING_RULES_MARKDOWN,
 } from "@/prompts/gmDirectives";
+import { sanitizePublicGeography } from "@/engine/publicGeography";
 import type { ScriptState } from "@/types/game";
 
 /** sandbox assets/ 下的劇本 bible 路徑（SDK 路徑以 / 開頭） */
@@ -50,7 +51,9 @@ export function formatScenarioBibleAssetMarkdown(script: ScriptState): string | 
     `Scale: ${script.scenario_scale ?? "unknown"}`,
     pub?.title ? `Title: ${pub.title}` : null,
     pub?.genre ? `Genre: ${pub.genre}` : null,
-    pub?.geography ? `Geography: ${pub.geography}` : null,
+    pub?.geography
+      ? `Geography: ${sanitizePublicGeography(pub.geography) ?? pub.geography}`
+      : null,
     pub?.player_hook ? `Player hook: ${pub.player_hook}` : null,
     pub?.known_facts?.length
       ? `Known facts:\n${pub.known_facts.map((f) => `- ${f}`).join("\n")}`

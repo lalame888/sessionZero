@@ -28,6 +28,7 @@ import {
   normalizeCreationMode,
   resolveSkillBaseValue,
 } from "@/engine/creation";
+import { publicGeographyLabel } from "@/engine/publicGeography";
 import {
   SCENARIO_SCALE_HINTS,
   SCENARIO_SCALE_LABELS,
@@ -315,9 +316,9 @@ export function ScriptPage({
                       {script.public_summary.player_hook}
                     </p>
                   ) : null}
-                  {script.public_summary.geography ? (
+                  {publicGeographyLabel(script.public_summary.geography) ? (
                     <p className="mt-2 text-sm text-muted">
-                      舞台：{script.public_summary.geography}
+                      舞台：{publicGeographyLabel(script.public_summary.geography)}
                     </p>
                   ) : null}
                   {script.public_summary.known_facts?.length ? (

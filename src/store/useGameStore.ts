@@ -50,6 +50,7 @@ import {
   type CampaignPersist,
 } from "@/lib/campaignStorage";
 import { evaluateCombatStatAftermath, type CombatAftermathResult } from "@/engine/combatAftermath";
+import { sanitizePublicGeography } from "@/engine/publicGeography";
 import type { ContinuityBridgeState } from "@/engine/continuityBridge";
 import {
   applyContinuityRecovery,
@@ -592,10 +593,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const blank = createBlankCharacter(
       system_id === "DND_5E" ? "DND_5E" : "COC_7E",
     );
+    const pub = args.public_summary;
     set({
       script: {
         system_id,
-        public_summary: args.public_summary,
+        public_summary: pub
+          ? {
+              ...pub,
+              geography: sanitizePublicGeography(pub.geography),
+            }
+          : pub,
         hidden_full_script: args.hidden_full_script,
         recommended_creation_mode: normalizeCreationMode(
           args.recommended_creation_mode,
@@ -2139,7 +2146,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         lastPlayerAction: "",
         sessionError: null,
         location:
-          get().script.public_summary?.geography?.split(/[，,、]/)[0]?.trim() ||
+          sanitizePublicGeography(get().script.public_summary?.geography) ||
           "冒險開始之處",
         sceneDirector: {
           currentSceneId:
@@ -2388,7 +2395,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
         tension: "medium",
         notes: "",
       },
-      script: data.script,
+      script: {
+        ...data.script,
+        public_summary: data.script.public_summary
+          ? {
+              ...data.script.public_summary,
+              geography: sanitizePublicGeography(
+                data.script.public_summary.geography,
+              ),
+            }
+          : data.script.public_summary,
+      },
       houseRules: data.houseRules,
       character: playerSheet ?? data.character,
       characterSchema: data.characterSchema,

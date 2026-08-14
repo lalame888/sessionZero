@@ -3,6 +3,7 @@ import {
   houseRulesSummary,
 } from "@/engine/contextAssembler";
 import { isNoiseHistoryNarrative } from "@/lib/historyHygiene";
+import { sanitizePublicGeography } from "@/engine/publicGeography";
 import { normalizeScenarioScale } from "@/engine/scenarioScale";
 import type {
   ChapterSummary,
@@ -67,7 +68,8 @@ Genre: ${input.script.public_summary?.genre ?? "（未定）"}`);
     layers.push(`[PLAYER HOOK]\n${pub.player_hook}`);
   }
   if (pub?.geography) {
-    layers.push(`[GEOGRAPHY]\n${pub.geography}`);
+    const geo = sanitizePublicGeography(pub.geography);
+    if (geo) layers.push(`[GEOGRAPHY]\n${geo}`);
   }
   if (pub?.known_facts?.length) {
     layers.push(

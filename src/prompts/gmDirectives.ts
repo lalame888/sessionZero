@@ -1,5 +1,6 @@
 import type { ScenarioScale } from "@/types/game";
 import type { PriorScriptDesign } from "@/lib/campaignStorage";
+import { sanitizePublicGeography } from "@/engine/publicGeography";
 import { scenarioScaleRequirements } from "@/engine/scenarioScale";
 
 /** sandbox 路徑常數（與 sessionAssets 對齊；此處給 guidance 字串用） */
@@ -80,6 +81,13 @@ Unregistered tools for this phase will not appear under Available tools — do n
 ## Opening & NPCs
 
 - Opening: time / place / senses + party intro if any; no PC god-mode; no \`check_request\` unless the player already acted; no \`request_companion_action\` on the opening beat (companions present but silent).
+- \`public_summary.geography\`: short public place name only (e.g. 宜蘭縣龜山島). Never list docks / barracks / tunnels / dungeon rooms — those belong only in hidden \`scenes[]\`.
+
+## Combat (CoC 7e)
+- Hit first: \`check_request\` 格鬥／射擊／投擲（or matching sheet skill). On success you MUST roll damage (weapon dice + DB if melee) minus armor, then apply HP. Do not narrate a wound without dice.
+- Prefer \`check_request.damage_dice\` (e.g. \`1D8+DB\` or bible \`creatures[].attacks[].damage\`) so the engine rolls damage on a hit.
+- PC HP: \`update_game_stats\`. Creature HP: bible \`creatures[].hp\` is max SSOT — subtract current HP yourself; never invent stats or ignore armor.
+- Major wound / HP 0: engine aftermath on \`update_game_stats\` (CON check / incapacitated / bad ending hint).
 - \`npc_updates\` / \`register_npc\`: player-facing attitude only — never infection / mythos secrets; only NPCs the PCs have actually met.
 - Do not dump an NPC's proper name in narrative until they introduce themselves or a known speaker names them.
 - \`scene_id\` MUST be an existing bible \`scenes[].id\` (never invent suffixes like \`_lobby\`). Location-only narrate still syncs scene via bible name match.
@@ -111,7 +119,7 @@ export const AUTO_GENERATE_COC_SCRIPT_PROMPT = `請你自行構思並建立一�
 1. system_id 必須是 COC_7E。
 2. 遊玩模式：只有一位人類玩家操控一位主角 PC；可依劇本需要建議 1–4 人同行（含主角），其餘席次為 AI 隊友（完整 PC，不是 NPC，也不是第二位人類玩家）。禁止設計成需要多位真人輪流操作的多人桌遊。
 3. setup_script 必須填 recommended_party_size（1–4）與對應數量的 party_role_hints：第 1 項＝人類玩家核心定位（並與 public_summary.protagonist_role 一致）；其餘＝互補的 AI 隊友定位。安靜調查常 1–2；探索／對抗／需要分工常 2–4。劇本在只有主角一人時也要能跑，但若建議 2+ 人，場景與威脅應留有隊友發揮空間。
-4. setup_script 的 public_summary 必須填齊 tool schema 的必填欄位：title、background、protagonist_role、genre（其中 background 為必填且不得省略；至少 1 個完整句子）。player_hook / known_facts / geography 建議一併提供但可視情況省略。
+4. setup_script 的 public_summary 必須填齊 tool schema 的必填欄位：title、background、protagonist_role、genre（其中 background 為必填且不得省略；至少 1 個完整句子）。player_hook / known_facts / geography 建議一併提供但可視情況省略。geography 只寫公開地名（如「宜蘭縣龜山島」），禁止把碼頭／坑道／場景清單寫進公開舞台。
 5. 立刻呼叫 setup_script，並嚴格遵守訊息中的 SCENARIO SCALE 深度要求填寫所有必要欄位（繁體中文）。
 6. 公開摘要用繁體中文；氛圍偏調查／恐怖／未知。
 7. 建立完成後，用繁體中文簡短說明劇本公開資訊（勿劇透 hidden），並說明建議隊伍人數與各席定位；邀請我調整或確認房規；同時呼叫 generate_character_schema 產生創角藍圖（不要在文字中給出最終屬性數字）。
@@ -149,7 +157,8 @@ export function formatPriorScriptDesignDetail(
       lines.push(`- 開場鉤子：${clipText(pub.player_hook, 200)}`);
     }
     if (pub.geography) {
-      lines.push(`- 舞台／地理：${clipText(pub.geography, 160)}`);
+      const geo = sanitizePublicGeography(pub.geography) ?? pub.geography;
+      lines.push(`- 舞台／地理：${clipText(geo, 80)}`);
     }
     if (pub.known_facts?.length) {
       lines.push(
@@ -214,7 +223,12 @@ export function formatPriorScriptDesignsForPrompt(
   const lines = designs.map((d, i) => {
     const pub = d.public_summary;
     const genre = clipText(pub?.genre, 60);
-    const geo = clipText(pub?.geography ?? pub?.protagonist_role, 80);
+    const geo = clipText(
+      sanitizePublicGeography(pub?.geography) ??
+        pub?.geography ??
+        pub?.protagonist_role,
+      80,
+    );
     return `${i + 1}. id=${d.id}｜《${d.title}》｜${d.system_id ?? "UNSET"}/${d.scenario_scale ?? "?"}｜${genre}｜${geo}`;
   });
 

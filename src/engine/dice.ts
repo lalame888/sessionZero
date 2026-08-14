@@ -111,3 +111,81 @@ export function resolveD20Outcome(
   if (targetValue == null) return "ROLLED";
   return total >= targetValue ? "SUCCESS" : "FAILURE";
 }
+
+/** CoC 傷害式：1D6、1D6+1D4、1D8+DB、1d3+1 */
+export function rollDamageFormula(
+  formula: string,
+  damageBonus?: string | null,
+): DiceRollResult {
+  let expr = formula.trim().replace(/\s+/g, "");
+  if (!expr) {
+    return { diceType: formula, rolls: [], total: 0, detail: "0" };
+  }
+  const dbRaw = (damageBonus ?? "0").trim().replace(/\s+/g, "");
+  const db =
+    !dbRaw || dbRaw === "0" || dbRaw === "+0" || dbRaw === "—"
+      ? ""
+      : dbRaw.startsWith("+") || dbRaw.startsWith("-")
+        ? dbRaw
+        : `+${dbRaw}`;
+  expr = db
+    ? expr.replace(/\+?(DB|db|傷害加值)/g, db)
+    : expr.replace(/[+-]?(DB|db|傷害加值)/g, "");
+
+  const tokens: string[] = [];
+  let buf = "";
+  for (const ch of expr) {
+    if ((ch === "+" || ch === "-") && buf) {
+      tokens.push(buf);
+      buf = ch;
+    } else {
+      buf += ch;
+    }
+  }
+  if (buf) tokens.push(buf);
+
+  const rolls: number[] = [];
+  let total = 0;
+  const parts: string[] = [];
+  for (const tok of tokens) {
+    const sign = tok.startsWith("-") ? -1 : 1;
+    const body = tok.replace(/^[+-]/, "");
+    if (!body) continue;
+    if (/^\d+$/.test(body)) {
+      const n = sign * Number(body);
+      total += n;
+      parts.push(n >= 0 ? `+${n}` : String(n));
+      continue;
+    }
+    const parsed = parseDiceType(body);
+    const sub = Array.from({ length: Math.max(1, parsed.count) }, () =>
+      Math.floor(Math.random() * parsed.sides) + 1,
+    );
+    const subSum = sub.reduce((a, b) => a + b, 0) + parsed.modifier;
+    total += sign * subSum;
+    rolls.push(...sub);
+    const diceLabel = `${parsed.count || 1}d${parsed.sides}`;
+    parts.push(
+      `${sign < 0 ? "-" : "+"}${diceLabel}[${sub.join(",")}]${
+        parsed.modifier
+          ? parsed.modifier > 0
+            ? `+${parsed.modifier}`
+            : String(parsed.modifier)
+          : ""
+      }`,
+    );
+  }
+
+  return {
+    diceType: formula,
+    rolls,
+    total,
+    detail: `${formula}${db ? `（DB ${db}）` : ""} → ${parts.join("")} = ${total}`,
+  };
+}
+
+export function looksLikeCombatCheckName(name: string): boolean {
+  return /格鬥|鬥毆|拳腳|射擊|手槍|步槍|衝鋒槍|弓|投擲|刀|劍|矛|斧|火器|搏擊|fight|brawl|firearm|gun|combat/i.test(
+    name.trim(),
+  );
+}

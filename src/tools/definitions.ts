@@ -41,7 +41,11 @@ export const setupScriptTool = defineTool({
           genre: { type: "string" },
           player_hook: { type: "string" },
           known_facts: { type: "array", items: { type: "string" } },
-          geography: { type: "string" },
+          geography: {
+            type: "string",
+            description:
+              "公開舞台地名即可（如「宜蘭縣龜山島」）。禁止列出碼頭／坑道／場景清單；那些只寫在 hidden scenes。",
+          },
         },
         required: ["title", "background", "protagonist_role", "genre"],
       },
@@ -493,7 +497,7 @@ export const fillCharacterNarrativeTool = defineTool({
 export const narrateStoryTool = defineTool({
   name: "narrate_story",
   description:
-    "輸出主線劇情（可用 Markdown），並可選擇發起玩家可見的擲骰檢定請求。Never narrate/decide PC actions, speech, or thoughts — especially on the opening beat; end with the situation waiting for the player. Never rewrite the player's declared intent into a different action. Never write UI prompts like「請輸入您的下一步行動」. Never state exact win steps (ritual dials, 完成超渡, full Win paths) in player-facing text. If the player asks how to win, lookup_scenario_term({ query: \"win\", kind: \"core\" }) then hint via documents/NPC only. When check_request is present, wait for the tool result containing the dice outcome before continuing. After a dice outcome is returned, the NEXT narrate_story must ONLY narrate the check result and immediate consequences — never repeat or rewrite previously narrated scene text. Prefer setting location / scene_id / npc_updates when the scene or cast changes; location alone still syncs bible scene_id. Do not attach check_request on the opening beat unless the player already declared an action. Rotate check skills — avoid defaulting every investigation to 偵查. Companion firearm/first-aid/lockpick/attack declarations require check_request for that companion. Mythos creatures on-screen require SAN via update_game_stats. narrative_text 必須為繁體中文（勿簡體、勿 OOC meta）。",
+    "輸出主線劇情（可用 Markdown），並可選擇發起玩家可見的擲骰檢定請求。Never narrate/decide PC actions, speech, or thoughts — especially on the opening beat; end with the situation waiting for the player. Never rewrite the player's declared intent into a different action. Never write UI prompts like「請輸入您的下一步行動」. Never state exact win steps (ritual dials, 完成超渡, full Win paths) in player-facing text. If the player asks how to win, lookup_scenario_term({ query: \"win\", kind: \"core\" }) then hint via documents/NPC only. When check_request is present, wait for the tool result containing the dice outcome before continuing. After a dice outcome is returned, the NEXT narrate_story must ONLY narrate the check result and immediate consequences — never repeat or rewrite previously narrated scene text. Prefer setting location / scene_id / npc_updates when the scene or cast changes; location alone still syncs bible scene_id. Do not attach check_request on the opening beat unless the player already declared an action. Rotate check skills — avoid defaulting every investigation to 偵查. Combat hit checks should include check_request.damage_dice (e.g. 1D8+DB); engine rolls damage on success. Companion firearm/first-aid/lockpick/attack declarations require check_request for that companion. Mythos creatures on-screen require SAN via update_game_stats. narrative_text 必須為繁體中文（勿簡體、勿 OOC meta）。",
   timeoutMs: 180_000,
   argsSchema: {
     type: "object",
@@ -566,6 +570,11 @@ export const narrateStoryTool = defineTool({
           character_id: {
             type: "string",
             description: "檢定對象角色 id；省略則為玩家 PC",
+          },
+          damage_dice: {
+            type: "string",
+            description:
+              "CoC 戰鬥命中檢定可帶：傷害骰（如 1D6、1D8+DB、1D6+1D4）。成功時引擎代骰；近戰請把 DB 寫進公式或用 +DB。",
           },
         },
         required: ["request_id", "check_target_name", "dice_type", "reason"],
